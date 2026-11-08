@@ -140,7 +140,7 @@ housesitter is experimental (0.1). Honest status, as of 2026-11-08:
 | Knowing the FileVault screen without OCR (the boot watch) | **Built on real frames** from our Comet and Mac mini, and first armed there by our private fleet tooling; not yet seen unlocking a real FileVault screen |
 | A frozen Mac | **Seen for real** on 2026-11-08: after an EDID change, our Mac mini froze. The KVM saw it, and keys, the force-restart chord and the password changed nothing. With no smart plug yet, it needed a person, which is exactly what the plug is for |
 | FileVault unlock on a real Mac | **Not yet verified.** The first restart proof on a Mac mini (M5 Pro) is next, recorded with `housesitter proof` |
-| Which display shows the FileVault screen when the Mac has other displays attached | **Unknown.** If it isn't the KVM's, the sitter sees a blank screen and tells you rather than typing blind. A headless Mac with only the KVM attached is the simple case |
+| Which display shows the FileVault screen when the Mac has other displays attached | **Unknown.** With OCR, a dark KVM display gets you a message, never typing. The boot watch types after a real boot even when the KVM's display stays dark, because after a FileVault restart the unlock prompt is the only thing that takes keys; it confirms only once a desktop reaches the KVM's display. Our own Mac mini draws its login window on another display. A headless Mac with only the KVM attached is the simple case |
 | Reading the screen with OCR | **English macOS only** for now: the sitter looks for "Enter Password". The boot watch reads no words, so it works in any language |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
