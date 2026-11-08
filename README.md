@@ -16,9 +16,9 @@
 npx github:ourostack/housesitter demo     # one bad night, rehearsed in seconds, no hardware
 ```
 
-housesitter turns a small IP-KVM next to your Mac into a sitter that never sleeps. The KVM sees the Mac's screen through HDMI and is its keyboard through USB, so it works where nothing on the Mac can: at the FileVault screen after a panic, and, with a smart plug, on a Mac frozen too hard to panic. A short script on the KVM looks every minute, types the password only when it reads the password prompt, switches the plug off and on when the Mac hangs, and messages you once if it's stuck. Your agents get the same eyes and hands, from before login, over Tailscale, your LAN or the GitHub outbox.
+housesitter turns a small IP-KVM next to your Mac into a sitter that never sleeps. The KVM sees the Mac's screen through HDMI and is its keyboard through USB, so it works where nothing on the Mac can: at the FileVault screen after a panic, and, with a smart plug, on a Mac frozen too hard to panic. A short script on the KVM looks every minute, types the password only at the password prompt, switches the plug off and on when the Mac hangs, and messages you once if it's stuck. Your agents get the same eyes and hands, from before login, over Tailscale, your LAN or the GitHub outbox.
 
-<p align="center"><img src="assets/night.svg" alt="A timeline from 2 a.m. to 6:30 a.m. At 3:12 a kernel panic: the sitter reads the FileVault prompt and types its sealed copy of the password, and the Mac is back by itself in 4 minutes. At 4:31 the Mac freezes solid: after 5 minutes the smart plug goes off and on, FileVault is unlocked, and it is back in 10 minutes. At 5:41 another panic, but the password changed the day before: the sitter tries twice, stops and sends one message to your phone." width="100%"></p>
+<p align="center"><img src="assets/night.svg" alt="A timeline from 2 a.m. to 6:30 a.m. At 3:12 a kernel panic: the sitter sees the FileVault prompt and types its sealed copy of the password, and the Mac is back by itself in 4 minutes. At 4:31 the Mac freezes solid: after 5 minutes the smart plug goes off and on, FileVault is unlocked, and it is back in 10 minutes. At 5:41 another panic, but the password changed the day before: the sitter tries twice, stops and sends one message to your phone." width="100%"></p>
 
 *That night is the rehearsal `housesitter demo` prints: a pretend Mac and KVM, with the real rules and the real client. A recording of the real thing goes here after the first restart proof on real hardware ([what's verified](#whats-verified)).*
 
@@ -56,7 +56,7 @@ On the Mac, once: `sudo pmset -a autorestart 1 displaysleep 0`, so it turns back
 
 | When your Mac… | The sitter on the KVM | Back in |
 | --- | --- | --- |
-| **kernel-panics** and restarts to the FileVault screen | reads "Enter Password", types its sealed copy of the password, slowly | about 4 min |
+| **kernel-panics** and restarts to the FileVault screen | sees the Mac boot, waits for the password prompt to settle, types its sealed copy of the password | about 4 min |
 | **freezes solid** (frozen clock, no answer, still drawing power) | after 5 minutes, smart plug off for 10 s, then on by itself, then unlocks | about 10 min |
 | **loses power** | nothing to do until power is back; the Mac boots (`autorestart`), then it unlocks | power + 4 min |
 | **keeps falling back** to FileVault | three unlocks an hour at most, then it tells you | you decide |
@@ -102,7 +102,7 @@ Transports are pluggable (`registerTransport`), so another KVM or relay can slot
 
 The point of housesitter is to type a password with nobody watching, so it is careful about exactly that:
 
-- **It types only at the prompt.** Before every unlock, the sitter wakes the screen with a lone Shift and reads it fresh. It types only if it reads the FileVault or login prompt and no menu bar or app. A desktop is a hard no, because the password would land in whatever has focus.
+- **It types only at the prompt.** With OCR, it reads "Enter Password" fresh before every unlock. Without it (the Comet at 2K has none that works), it types only right after a real boot, which it sees as the Mac enumerating the KVM's keyboard again, on a settled screen with no menu bar. A desktop is a hard no, because the password would land in whatever has focus. HDMI waking up alone never counts as a boot.
 - **It lives in two places: your Keychain and the KVM.** It travels once, over SSH stdin, to the KVM, where it is encrypted with a key derived from the KVM's hardware ids and kept root-only. That stops a copied file, not root on the KVM. It is never in argv, a log, a status file, a gist or a cloud.
 - **Nothing types it remotely.** No command sends the password; `housesitter unlock` asks the sitter to type its own copy, under the same rules.
 - **Budgets.** Three unlocks an hour at most; two wrong passwords in a row and it stops.
@@ -127,7 +127,7 @@ About $125-145 all in. The non-PoE Comet (GL-RM1) runs the same firmware and sho
 - **Smart plug (optional, for hangs):** a [Shelly Gen2+ or Gen4](https://us.shelly.com/) plug, over Wi-Fi or, where the plug can't join the network, Bluetooth from the KVM. Any plug you can drive from a shell works through the `command` adapter.
 - **Not for Macs:** ATX power boards. A Mac has no ATX header. A Fingerbot on the power button is supported if you have one.
 
-[docs/hardware.md](docs/hardware.md) has the wiring, the display settings that keep the Mac happy, and what to buy.
+**Never change the KVM's EDID or the Mac's display mode while the Mac runs.** We did once, and our Mac mini froze until a power cycle. housesitter takes whatever the Mac sends. [docs/hardware.md](docs/hardware.md) has the wiring, that story, and what to buy.
 
 ## What's verified
 
@@ -135,11 +135,13 @@ housesitter is experimental (0.1). Honest status, as of 2026-11-08:
 
 | Part | Status |
 | --- | --- |
-| Watchdog rules, sitter, adopt, transports, Reins, demo | **Tested with fakes**: 60 tests in Node and Python, on every push |
-| GL-RM1PE quirks (API off, encoder, MJPEG, ECDSA) | **Seen on real units**, by [kvm-pilot](https://github.com/DustinTrap/kvm-pilot) and on our own Comet (firmware V1.7.1, kvmd 4.82), and handled in code; housesitter itself has not run on it yet |
+| Watchdog rules, sitter, adopt, transports, Reins, demo | **Tested with fakes**: 76 tests in Node and Python, on every push |
+| GL-RM1PE quirks (API off, idle encoder, H.264 snapshots, no OCR at 2K, ECDSA) | **Seen on real units**, by [kvm-pilot](https://github.com/DustinTrap/kvm-pilot) and on our own Comet (firmware V1.7.1, kvmd 4.82), and handled in code; housesitter itself has not run on it yet |
+| Knowing the FileVault screen without OCR (the boot watch) | **Built on real frames** from our Comet and Mac mini, and first armed there by our private fleet tooling; not yet seen unlocking a real FileVault screen |
+| A frozen Mac | **Seen for real** on 2026-11-08: after an EDID change, our Mac mini froze. The KVM saw it, and keys, the force-restart chord and the password changed nothing. With no smart plug yet, it needed a person, which is exactly what the plug is for |
 | FileVault unlock on a real Mac | **Not yet verified.** The first restart proof on a Mac mini (M5 Pro) is next, recorded with `housesitter proof` |
 | Which display shows the FileVault screen when the Mac has other displays attached | **Unknown.** If it isn't the KVM's, the sitter sees a blank screen and tells you rather than typing blind. A headless Mac with only the KVM attached is the simple case |
-| Reading the screen | **English macOS only** for now: the sitter looks for "Enter Password" |
+| Reading the screen with OCR | **English macOS only** for now: the sitter looks for "Enter Password". The boot watch reads no words, so it works in any language |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art

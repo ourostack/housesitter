@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 470" width="1200" height="470" role="img" aria-labelledby="t d">
   <title id="t">One bad night, and the sitter's answer to each part of it</title>
-  <desc id="d">A timeline from 2 a.m. to 6:30 a.m. that turns from night to dawn. At 3:12 the Mac kernel-panics and restarts to the FileVault screen; the sitter on the KVM reads the password prompt and types its sealed copy of the password, and the Mac is back by itself 4 minutes after it went down. At 4:31 the Mac freezes solid; after 5 minutes the sitter switches the smart plug off and on, unlocks FileVault, and the Mac is back 10 minutes after it froze. At 5:41 the Mac panics again, but its password was changed the day before, so the sitter tries twice, stops, and sends one message to your phone. This is the rehearsal that housesitter demo prints, not a recording.</desc>
+  <desc id="d">A timeline from 2 a.m. to 6:30 a.m. that turns from night to dawn. At 3:12 the Mac kernel-panics and restarts to the FileVault screen; the sitter on the KVM sees the password prompt and types its sealed copy of the password, and the Mac is back by itself 4 minutes after it went down. At 4:31 the Mac freezes solid; after 5 minutes the sitter switches the smart plug off and on, unlocks FileVault, and the Mac is back 10 minutes after it froze. At 5:41 the Mac panics again, but its password was changed the day before, so the sitter tries twice, stops, and sends one message to your phone. This is the rehearsal that housesitter demo prints, not a recording.</desc>
   <defs>
     <linearGradient id="sky" x1="0" x2="1" y1="0" y2="0">
       <stop offset="0" stop-color="#151a33"/>
@@ -66,7 +66,7 @@
   <text x="122" y="146" class="when">3:12 A.M.</text>
   <text x="122" y="178" class="what">Kernel panic</text>
   <text x="122" y="210" class="how">It restarts to the FileVault screen.</text>
-  <text x="122" y="234" class="how">The sitter reads "Enter Password"</text>
+  <text x="122" y="234" class="how">The sitter sees the password prompt</text>
   <text x="122" y="258" class="how">and types its own sealed copy.</text>
   <text x="122" y="296" class="ok">✓ Back by itself in 4 min</text>
 

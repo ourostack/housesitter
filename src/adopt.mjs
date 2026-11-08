@@ -153,7 +153,7 @@ export function steps() {
       },
     },
     {
-      id: 'video', title: 'An HDMI picture, at 1920x1080 or less',
+      id: 'video', title: 'An HDMI picture, at whatever the Mac sends',
       async run(x) {
         const src = await withWarm(x.client.warm, async () => {
           let last = {};
@@ -165,10 +165,12 @@ export function steps() {
           }
           return { ...last, online: false };
         });
-        if (!src.online) return { ok: false, detail: "no HDMI picture (no frames). Plug the KVM's HDMI into the Mac itself (its HDMI port, or a USB-C-to-HDMI adapter), not a dock; if the Mac lists the KVM as a display, set it to 1920x1080 in System Settings > Displays so the KVM's capture chip can lock on. Adopt carries on: the sitter and its secrets don't need the picture" };
+        if (!src.online) return { ok: false, detail: "no HDMI picture (no frames). Plug the KVM's HDMI into the Mac itself (its HDMI port, or a USB-C-to-HDMI adapter), not a dock. Adopt carries on: the sitter and its secrets don't need the picture" };
         const w = src.resolution?.width || 0;
         const res = src.resolution ? `${src.resolution.width}x${src.resolution.height}` : '?';
-        return { ok: w > 0 && w <= 1920, detail: w <= 1920 ? `signal ${res}` : `signal ${res}: set the KVM's EDID to 1920x1080, so the Mac runs it native and the encoder stays reliable` };
+        // Any mode is fine. Never change the KVM's EDID or the Mac's display settings to suit the KVM: an EDID change on
+        // a live Mac mini hung it (2026-11-08). The sitter reads whatever arrives.
+        return { ok: w > 0, detail: `signal ${res}; housesitter never changes it` };
       },
     },
     {
@@ -183,11 +185,13 @@ export function steps() {
       },
     },
     {
-      id: 'eyes', title: "The KVM's OCR reads the Mac's screen",
+      id: 'eyes', title: "The KVM reads the Mac's screen",
       async run(x) {
         const text = await x.client.ocr().catch(() => null);
         const s = classifyScreen(text, { userNames: x.mac.user_names || [] });
-        return { ok: s.kind !== 'unknown', detail: `the screen reads as ${s.kind} (${s.why})` };
+        if (s.kind !== 'unknown') return { ok: true, detail: `with kvmd's OCR: the screen reads as ${s.kind} (${s.why})` };
+        x.eyesWithoutOcr = true;
+        return { ok: true, detail: "kvmd's OCR doesn't work here (a GL.iNet Comet at 2K hands back H.264), so the sitter decodes frames on the KVM itself and knows the FileVault screen by the Mac's boot; checked once the sitter is installed" };
       },
     },
     {
@@ -282,12 +286,20 @@ export function steps() {
         const lines = String(r.stdout).trim().split('\n');
         let sec = {}, first = {};
         try { sec = JSON.parse(lines[0]); first = JSON.parse(lines.at(-1)); } catch { /* shown below */ }
+        let eyes = '';
+        if (x.eyesWithoutOcr) {
+          const e = await x.deps.ssh(`python3 ${DIR}/sitter.py eyes`);
+          let j = {};
+          try { j = JSON.parse(String(e.stdout).trim().split('\n').at(-1)); } catch { /* reported below */ }
+          if (!j.frame) return { ok: false, detail: `the sitter can't see the Mac: no OCR, and no frame decoded on the KVM (${j.frame_error || String(e.stderr).slice(0, 120) || '?'})` };
+          eyes = `; eyes: frames decoded on the KVM (${(j.size || []).join('x')}, ${j.frame})`;
+        }
         let hello = '';
         if (x.mac.notify?.url) {
           const h = await x.deps.ssh(`python3 ${DIR}/sitter.py hello`);
           hello = h.status === 0 ? '; sent you a hello, so check your phone' : `; the hello didn't arrive (${String(h.stdout || h.stderr).trim().slice(0, 120)}): check the --notify address`;
         }
-        return { ok: Boolean(sec.kvmd) && (Boolean(sec.mac) || x.mac.unlock === false), detail: `secrets ${Object.entries(sec).map(([k, v]) => `${k} ${v ? '✓' : '✗'}`).join(', ')}; first look: ${first.state || '?'}; it can ${Object.entries(first.can || {}).filter(([, v]) => v).map(([k]) => k).join(', ') || '?'}${hello}` };
+        return { ok: Boolean(sec.kvmd) && (Boolean(sec.mac) || x.mac.unlock === false), detail: `secrets ${Object.entries(sec).map(([k, v]) => `${k} ${v ? '✓' : '✗'}`).join(', ')}; first look: ${first.state || '?'}; it can ${Object.entries(first.can || {}).filter(([, v]) => v).map(([k]) => k).join(', ') || '?'}${eyes}${hello}` };
       },
     },
     {
@@ -337,8 +349,9 @@ export async function adopt(x) {
 
 // ---------- the worlds ----------
 
-export function fakeDeps({ apiClosed = true } = {}) {
-  const w = fakeWorld({ apiClosed, inited: false });
+// The rehearsal plays the KVM we have: a GL.iNet Comet as it ships (API off), driving 2560x1440, with no working OCR.
+export function fakeDeps({ apiClosed = true, comet = true } = {}) {
+  const w = fakeWorld({ apiClosed, inited: false, ...(comet ? { resolution: [2560, 1440], ocr: false } : {}) });
   const vault = { 'keychain:housesitter/studio-mac-password': 'correct horse' };
   const s = { ssh: [], files: {}, secretsOnKvm: {}, rootKeys: [], init: 'busybox', saved: {}, firstRun: 0 };
   return {
@@ -374,6 +387,7 @@ export function fakeDeps({ apiClosed = true } = {}) {
           const cfg = JSON.parse(Object.entries(s.files).find(([f]) => f.endsWith('/config.json'))?.[1] || '{}');
           return { status: 0, stdout: `${JSON.stringify({ mac: Boolean(s.secretsOnKvm.mac), kvmd: Boolean(s.secretsOnKvm.kvmd), outbox: Boolean(s.secretsOnKvm.outbox) })}\n${JSON.stringify({ state: 'healthy', can: { unlock: Boolean(s.secretsOnKvm.mac), plug: Boolean(cfg.power), notify: Boolean(cfg.notify?.url) } })}\n`, stderr: '' };
         }
+        if (cmd.includes('sitter.py eyes')) return { status: 0, stdout: `${JSON.stringify({ mode: [2560, 1440], ocr: null, frame: 'desktop', size: [2560, 1440] })}\n`, stderr: '' };
         if (cmd.includes('sitter.py hello')) { s.hello = (s.hello || 0) + 1; return { status: 0, stdout: '{"sent": "posted 200"}\n', stderr: '' }; }
         return { status: 0, stdout: '', stderr: '' };
       },

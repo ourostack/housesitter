@@ -469,3 +469,196 @@ class Do(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+FRAMES = json.load(open(os.path.join(HERE, "fixtures", "comet-frames-20261108.json")))
+
+
+class BootWatch(unittest.TestCase):
+    """No OCR on a real Comet at 2K: the post-boot password prompt is known by the boot and a steady screen with no menu
+    bar. The frames are features of real frames from a GL-RM1PE (V1.7.1) on a Mac mini, 2026-11-08."""
+
+    def run_boot(self, frames, typed_effect=None, ledger=None, start_usb=16.8, kvm_up=1200):
+        bw, ledger = None, ledger if ledger is not None else []
+        now, usb = 1_000_000, start_usb
+        log = []
+        bw, act, note = W.boot_tick(bw, ledger, now, {"usb": usb, "mode": (2560, 1440), "frame": None}, W.BOOT, kvm_up)
+        self.assertIsNone(bw.get("boot_at"), "a running KVM does not count its own boot enumeration as the Mac's")
+        now += 2000
+        bw, act, note = W.boot_tick(bw, ledger, now, {"usb": usb + 900, "mode": None, "frame": None}, W.BOOT, kvm_up)
+        self.assertTrue(bw.get("pending"), "a boot is pending until a desktop shows")
+        queue = list(frames)
+        while queue:
+            f = queue.pop(0)
+            now += 3000
+            bw, act, note = W.boot_tick(bw, ledger, now, {"usb": usb + 900, "mode": (2560, 1440), "frame": f}, W.BOOT, kvm_up)
+            log.append((act, note))
+            if act == "type":
+                ledger.append({"at": now, "kind": "unlock"})
+                bw["typed"] = (bw.get("typed") or []) + [now]
+                bw["stable"] = 0
+                if typed_effect:
+                    queue = list(typed_effect)
+            if act in ("verified", "stuck"):
+                break
+        return bw, ledger, log
+
+    def test_real_frames_classify(self):
+        self.assertEqual(W.classify_frame(FRAMES["desktop-2560"]), "desktop")
+        for k in ("lock-1080", "lock-2560-after-edid-restore", "lock-2560-after-unlock-attempt", "lock-2560-later"):
+            self.assertEqual(W.classify_frame(FRAMES[k]), "prompt_like", k)
+        self.assertLess(W.thumb_diff(FRAMES["lock-2560-after-edid-restore"]["thumb"], FRAMES["lock-2560-later"]["thumb"]), W.BOOT["same_diff"])
+        self.assertGreater(W.thumb_diff(FRAMES["desktop-2560"]["thumb"], FRAMES["lock-2560-later"]["thumb"]), W.BOOT["same_diff"])
+
+    def test_boot_to_prompt_types_once_after_it_settles_then_sees_the_desktop(self):
+        lock, desk = FRAMES["lock-2560-later"], FRAMES["desktop-2560"]
+        bw, ledger, log = self.run_boot([lock] * 12, typed_effect=[desk])
+        acts = [a for a, _ in log]
+        self.assertEqual(acts.count("type"), 1)
+        self.assertGreaterEqual((acts.index("type") + 1) * 3, W.BOOT["settle_sec"], "waits for the boot to settle")
+        self.assertEqual(acts[-1], "verified")
+        self.assertIsNone(bw.get("pending"))
+        self.assertEqual([e["kind"] for e in ledger], ["unlock"])
+
+    def test_wrong_password_retries_once_then_stops_and_says_how_to_fix_it(self):
+        bw, ledger, log = self.run_boot([FRAMES["lock-2560-later"]] * 60)
+        acts = [a for a, _ in log]
+        self.assertEqual(acts.count("type"), W.BOOT["per_boot"])
+        self.assertEqual(acts[-1], "stuck")
+        self.assertIn("housesitter secret <mac> mac-password", bw["stuck"])
+        self.assertTrue(bw.get("pending"))
+
+    def test_hourly_budget_is_shared_with_earlier_unlocks(self):
+        earlier = [{"at": 1_000_000 - 60000 * k, "kind": "unlock"} for k in (5, 10, 15)]
+        bw, ledger, log = self.run_boot([FRAMES["lock-2560-later"]] * 20, ledger=earlier)
+        self.assertNotIn("type", [a for a, _ in log])
+        self.assertIn("budget", log[-1][1])
+
+    def test_no_boot_no_typing(self):
+        bw = None
+        for k in range(30):
+            bw, act, _ = W.boot_tick(bw, [], 1_000_000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"]}, W.BOOT, 1200)
+            self.assertNotEqual(act, "type")
+
+    def test_hdmi_back_alone_is_not_a_boot(self):
+        bw, _, _ = W.boot_tick(None, [], 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 1200)
+        bw, _, _ = W.boot_tick(bw, [], 2000, {"usb": 16.8, "mode": None, "frame": None}, W.BOOT, 1200)
+        bw, act, note = W.boot_tick(bw, [], 9000, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 1200)
+        self.assertIn("not a boot", note)
+        self.assertIsNone(bw.get("boot_at"))
+        for k in range(30):
+            bw, act, _ = W.boot_tick(bw, [], 12000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"]}, W.BOOT, 1200)
+            self.assertNotEqual(act, "type")
+
+    def test_a_kvm_that_booted_with_the_mac_counts_that_enumeration(self):
+        bw, _, _ = W.boot_tick(None, [], 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 40)
+        self.assertEqual(bw["boot_at"], 0)
+
+    def test_usb_and_hdmi_readers(self):
+        d = "[   16.786538] dwc3 21500000.usb: device reset\n[   16.856062] android_work: sent uevent USB_STATE=CONFIGURED\n[ 2001.5] lt6911c x\n[ 2050.25] dwc3 21500000.usb: device reset\n"
+        self.assertEqual(W.usb_last_enum(dmesg=d), 2050.25)
+        files = {"/proc/gl-hw-info/hdmipatch": "1-002b\n", "/sys/bus/i2c/devices/1-002b/resolution": "2560x1440@60\n"}
+        self.assertEqual(W.hdmi_mode(read=lambda p: files[p]), (2560, 1440))
+        files["/sys/bus/i2c/devices/1-002b/resolution"] = "no signal\n"
+        self.assertIsNone(W.hdmi_mode(read=lambda p: files[p]))
+
+        def missing(p):
+            raise OSError(p)
+
+        class K:
+            def json(self, p):
+                return {"streamer": {"source": {"online": True, "resolution": {"width": 1920, "height": 1080}}}}
+        self.assertEqual(W.hdmi_mode(read=missing, kvmd=K()), (1920, 1080), "a PiKVM without GL.iNet's receiver files asks kvmd")
+
+    def test_frame_features_see_menu_bar_text(self):
+        w, h = 320, 180
+        smooth = bytes([90]) * (w * h)
+        text = bytearray(smooth)
+        for row in range(4, 20):
+            for x in range(0, w, 4):
+                text[row * w + x] = 230
+        self.assertEqual(W.classify_frame(W.frame_features(smooth, w, h)), "prompt_like")
+        self.assertEqual(W.classify_frame(W.frame_features(bytes(text), w, h)), "desktop")
+        self.assertEqual(W.classify_frame(W.frame_features(bytes([3]) * (w * h), w, h)), "black")
+
+
+class EyesWithoutOcr(unittest.TestCase):
+    """What the rules see when kvmd can't OCR: they must never power-cycle a Mac that is only waiting at FileVault,
+    and never one whose desktop clock still ticks."""
+
+    w, h = 320, 180
+
+    def desktop(self, minute):
+        y = bytearray(bytes([90]) * (self.w * self.h))
+        for row in range(4, 20):
+            for x in range(0, self.w, 4):
+                y[row * self.w + x] = 230
+        y[2 * self.w + self.w - 10 - minute] = 7  # the clock's pixels move each minute
+        return bytes(y), self.w, self.h
+
+    def lock(self):
+        return bytes([90]) * (self.w * self.h), self.w, self.h
+
+    def test_after_a_boot_the_steady_prompt_is_filevault_and_the_rules_dont_type(self):
+        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": 1})
+        self.assertEqual(o["screen"], "filevault")
+        self.assertEqual(W.raw_state(dict(o, answers=False, video=True)), "filevault")
+
+    def test_stuck_at_the_prompt_says_why_in_the_message_signs(self):
+        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": 1, "stuck": "the password didn't take, 2 tries this boot. Fix: housesitter secret <mac> mac-password"})
+        self.assertIn("housesitter secret studio mac-password", o["boot"])
+
+    def test_no_boot_and_no_menu_bar_while_not_answering_is_a_hang(self):
+        o = W.eyes_without_ocr({}, {}, self.lock(), {})
+        self.assertEqual(o["screen"], "unknown")
+        self.assertEqual(W.raw_state(dict(o, answers=False, video=True)), "hung")
+
+    def test_a_ticking_desktop_clock_overrules_a_lost_network(self):
+        mem = {}
+        for minute in range(3):
+            o = W.eyes_without_ocr({}, mem, self.desktop(minute), {})
+        self.assertEqual(o["screen"], "desktop")
+        self.assertTrue(o["clock_ticking"])
+        self.assertEqual(W.raw_state(dict(o, answers=False, video=True)), "degraded", "never power-cycle a working Mac")
+
+    def test_a_frozen_desktop_clock_is_a_hang(self):
+        mem = {}
+        for _ in range(3):
+            o = W.eyes_without_ocr({}, mem, self.desktop(0), {})
+        self.assertFalse(o["clock_ticking"])
+        self.assertEqual(W.raw_state(dict(o, answers=False, video=True)), "hung")
+
+    def test_once_with_frame_eyes_leaves_typing_to_the_boot_watch(self):
+        d = scratch()
+        old = W.HOME
+        W.HOME = d
+        try:
+            W.save("state.json", {"mem": None, "ledger": [], "boot": {"pending": 1}})
+
+            class K:
+                calls = []
+                def json(self, p):
+                    if "ocr" in p:
+                        raise RuntimeError("HTTP 500")
+                    return {"streamer": {"source": {"online": True, "resolution": {"width": 320, "height": 180}}}}
+                def post(self, p, **kw):
+                    self.calls.append(p)
+                def get(self, p, **kw):
+                    self.calls.append(p)
+                    return b""
+            orig_raw, orig_arp = W.frame_raw, W.arp_alive
+            W.frame_raw = lambda kvmd, run=None: self.lock()
+            W.arp_alive = lambda ips, macs: None
+            try:
+                k = K()
+                cfg = {"name": "studio", "rules": {"filevault_wait_min": 0, "settle_min": 0}}
+                for t in range(3):
+                    st = W.once(cfg, k, None, lambda m: None, now=t * 60000)
+            finally:
+                W.frame_raw, W.arp_alive = orig_raw, orig_arp
+            self.assertEqual(st["state"], "filevault")
+            self.assertEqual(st["obs"]["eyes"], "frame")
+            self.assertFalse(st["can"]["unlock"])
+            self.assertFalse(any("hid/print" in c for c in k.calls), "the rules never type without OCR")
+        finally:
+            W.HOME = old

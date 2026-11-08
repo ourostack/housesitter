@@ -41,7 +41,7 @@ test('where it messages you: --notify ntfy makes a private topic, the sitter say
   assert.equal(cfg.notify.url, f.s.saved.notify.url);
   assert.equal(cfg.heartbeat.url, 'https://hc-ping.com/abc');
   assert.equal(f.s.hello, 1);
-  assert.match(results.find((r) => r.id === 'start').detail, /it can unlock, notify; sent you a hello/);
+  assert.match(results.find((r) => r.id === 'start').detail, /it can unlock, notify;.*sent you a hello/);
 });
 
 test('nowhere to message you: adopt says so and how to fix it, and never claims it can notify', async () => {

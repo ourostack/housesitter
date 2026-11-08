@@ -46,6 +46,8 @@ export function directTransport(client, { via = `direct ${client.base}` } = {}) 
       const q = maxWidth ? `&preview=1&preview_max_width=${maxWidth}&preview_quality=80` : '';
       const r = await withWarm(client.warm, () => client.raw('GET', `/api/streamer/snapshot?allow_offline=1${q}`, { timeoutMs: 15000 }));
       if (r.status !== 200) throw new Refusal('action-failed', `snapshot -> HTTP ${r.status}${r.status === 503 ? ' (no video client: the encoder is idle; GLKVM starts it only while something watches)' : ''}`);
+      // A GL-RM1PE (V1.7.1) at 2560x1440 answers 200 with raw H.264 instead of a JPEG (seen 2026-11-08).
+      if (!(r.body?.[0] === 0xff && r.body?.[1] === 0xd8) && r.body?.[0] !== 0x89) throw new Refusal('action-failed', 'snapshot -> not a JPEG (raw H.264: this KVM needs a frame decoded on the device; the sitter does that)');
       const size = imageSize(r.body);
       if (!maxWidth) real = size;
       return { image: r.body, ...size, real: (await realSize()) || size };
@@ -191,7 +193,7 @@ registerTransport('direct', async (mac, deps) => {
     const direct = t.screenshot;
     t.screenshot = async (o = {}) => {
       try { return await direct(o); } catch (e) {
-        if (!/503/.test(e.message)) throw e;
+        if (!/503|not a JPEG/.test(e.message)) throw e;
         const r = await deps.sitter.op('screenshot', { width: o.maxWidth || 1920 });
         const b64 = r.ok && Object.values(r.files || {})[0];
         if (!b64) throw e;

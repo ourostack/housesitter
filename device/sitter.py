@@ -3,15 +3,18 @@
 
 It needs nothing else to be up. Every minute it looks at the Mac, with no help from it:
   - the picture: kvmd's own OCR on a snapshot (FileVault/login prompt, desktop, blank), and whether the menu-bar
-    clock still changes (a frozen desktop is a hang);
+    clock still changes (a frozen desktop is a hang). Where the KVM has no working OCR (a GL.iNet Comet at 2560x1440),
+    it decodes a frame on the device itself and reads it without OCR: a menu bar means a desktop, and a steady screen
+    with no menu bar right after the Mac booted is the FileVault prompt (the boot watch, below);
   - the HDMI signal (kvmd /streamer);
   - the Mac's network stack, when the Mac is on this KVM's own network: one ping to make the kernel resolve ARP, then
     /proc/net/arp (macOS answers ARP even in stealth mode, and a hung kernel doesn't);
   - optionally a TCP port on the Mac (health), and the smart plug's relay and power draw.
 It decides with the same rules as src/watchdog.mjs (both run spec/watchdog-cases.json) and acts locally:
   - unlock FileVault by typing the Mac's password, which it holds itself, sealed, so a panic at 3 am is unlocked in
-    minutes with no laptop, cloud or internet. Only when its own fresh look reads the password prompt, and at most
-    three times an hour;
+    minutes with no laptop, cloud or internet. Only when its own fresh look reads the password prompt, or, without OCR,
+    when the Mac has just booted (it enumerated the KVM's keyboard again) and sits on a steady screen with no menu bar;
+    at most twice a boot and three times an hour;
   - power-cycle a hung Mac through a smart plug (Shelly Switch.Set with toggle_after, so the plug switches itself
     back on even if this process dies), switch it on, or press its power button with a Fingerbot;
   - tell you when it's stuck (ntfy or any webhook), and once more when the Mac is back.
@@ -353,9 +356,15 @@ def snapshot_jpeg(kvmd, query="allow_offline=1"):
         kvmd.post("/streamer/set_params?video_format=1", timeout=15)
         time.sleep(1.5)
         img = kvmd.get("/streamer/snapshot?%s" % query, timeout=20)
-        if not is_jpeg(img):
-            raise RuntimeError("the KVM's encoder gave no JPEG even in MJPEG mode (lower the EDID resolution, or reboot the KVM)")
-        return img
+        if is_jpeg(img):
+            return img
+        # GL-RM1PE V1.7.1 at 2560x1440 stays on H.264 either way (seen 2026-11-08): put the encoder back and decode a
+        # keyframe on the device instead. Never change the EDID or the Mac's display mode to get a picture.
+        try:
+            kvmd.post("/streamer/set_params?video_format=0", timeout=15)
+        except Exception:  # noqa: BLE001
+            pass
+    return frame_jpeg(kvmd)
 
 
 def ocr_text(kvmd, box=None):
@@ -717,6 +726,238 @@ def unlock(cfg, kvmd, secret=None):
     return "typed the password at the %s prompt (slow mode)" % kind
 
 
+# ---------- eyes without kvmd snapshots, and the boot watch ----------
+# On a GL.iNet Comet (GL-RM1PE, firmware V1.7.1) driving 2560x1440, kvmd's snapshot hands back raw H.264 and its OCR
+# answers HTTP 500 (no tesseract on the device). The Comet's own ffmpeg decodes one keyframe from ustreamer's H.264
+# memory sink instead (about 2 s at 2560x1440). Without OCR, the FileVault prompt is recognised by when and what it is:
+# the Mac has just booted (it enumerated the KVM's USB keyboard again; HDMI coming back alone doesn't count), the frame
+# is not a desktop (no menu bar), and it has stopped changing. After a reboot with FileVault on, the unlock prompt is
+# the only thing on screen that takes keys. Never reshape the picture to suit this: an EDID change on a live Mac mini
+# hung it (2026-11-08). The sitter adapts to whatever arrives. Built and first armed on a real Comet by our own fleet
+# tooling, from real frames of that day.
+
+H264_DUMP = "ustreamer-dump --sink kvmd::ustreamer::h264 --key-required --count 30 --sink-timeout 3 --output - 2>/dev/null"
+FRAME_RAW = H264_DUMP + " | ffmpeg -hide_banner -loglevel quiet -f h264 -i - -frames:v 1 -f rawvideo -pix_fmt yuv420p -"
+FRAME_JPEG = H264_DUMP + " | ffmpeg -hide_banner -loglevel quiet -f h264 -i - -frames:v 1 -c:v mjpeg -strict -1 -q:v 5 -f image2pipe -"
+SIZES = {w * h * 3 // 2: (w, h) for w, h in ((2560, 1440), (1920, 1080), (1920, 1200), (3840, 2160), (1280, 720), (1680, 1050), (1440, 900), (2560, 1600), (3008, 1692))}
+
+BOOT = {"tick_sec": 2, "frame_every_sec": 3, "armed_min": 15, "settle_sec": 20, "black_settle_sec": 60, "stable_frames": 2,
+        "retry_sec": 40, "per_boot": 2, "desktop_edges": 40, "black_mean": 10, "same_diff": 6}
+
+
+def hdmi_mode(read=lambda p: open(p).read(), kvmd=None):
+    """(w, h) the KVM's HDMI receiver is locked on, or None with no signal. GL.iNet's receiver first, then kvmd."""
+    try:
+        dev = read("/proc/gl-hw-info/hdmipatch").strip()
+        m = re.match(r"(\d+)x(\d+)", read("/sys/bus/i2c/devices/%s/resolution" % dev).strip())
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    except OSError:
+        pass
+    if kvmd is None:
+        return None
+    try:
+        src = ((kvmd.json("/streamer").get("streamer") or {}).get("source") or {})
+        r = src.get("resolution") or {}
+        return (int(r["width"]), int(r["height"])) if src.get("online") and r.get("width") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def usb_last_enum(dmesg=None, run=subprocess.run):
+    """Kernel time (s) of the last time the Mac (re)enumerated the KVM's USB gadget: a Mac boot shows up here."""
+    text = dmesg if dmesg is not None else run(["dmesg"], capture_output=True, text=True, timeout=10).stdout
+    last = 0.0
+    for m in re.finditer(r"^\[\s*([\d.]+)\][^\n]*(?:dwc[23][^\n]*(?:device reset|USB RESET)|USB_STATE=CONFIGURED)", text, re.M):
+        last = max(last, float(m.group(1)))
+    return last
+
+
+def frame_raw(kvmd, run=subprocess.run):
+    with StreamWarm(kvmd):
+        out = run(["sh", "-c", FRAME_RAW], capture_output=True, timeout=20).stdout
+    wh = SIZES.get(len(out))
+    return (out[:wh[0] * wh[1]], wh[0], wh[1]) if wh else None
+
+
+def frame_jpeg(kvmd, run=subprocess.run):
+    with StreamWarm(kvmd):
+        out = run(["sh", "-c", FRAME_JPEG], capture_output=True, timeout=20).stdout
+    if not is_jpeg(out):
+        raise RuntimeError("no picture: kvmd gave no JPEG and the KVM couldn't decode a frame itself (is ffmpeg there?)")
+    return out
+
+
+def frame_features(y, w, h):
+    """Mean brightness, menu-bar text edges in the top rows, and a 32x18 thumbnail (luma only)."""
+    step = max(1, len(y) // 4000)
+    sample = y[::step]
+    mean = sum(sample) / max(1, len(sample))
+    edges = 0
+    for row in range(2, min(40, h), 2):
+        r = y[row * w:(row + 1) * w:2]
+        edges += sum(1 for a, b in zip(r, r[1:]) if abs(a - b) > 30)
+    thumb = []
+    for ty in range(18):
+        for tx in range(32):
+            yy, xx = int((ty + 0.5) * h / 18), int((tx + 0.5) * w / 32)
+            thumb.append(y[yy * w + xx])
+    return {"mean": round(mean, 1), "top_edges": edges, "thumb": thumb, "size": [w, h]}
+
+
+def clock_sig(y, w, h):
+    """A fingerprint of the menu bar's right end, where the clock is: it changes every minute on a live desktop."""
+    rows = max(2, int(h * 0.022))
+    x0 = int(w * 0.8)
+    return hashlib.sha256(b"".join(bytes(y[r * w + x0:(r + 1) * w]) for r in range(rows))).hexdigest()[:16]
+
+
+def classify_frame(f, cfg=BOOT):
+    if not f:
+        return "none"
+    if f["mean"] < cfg["black_mean"]:
+        return "black"
+    if f["top_edges"] >= cfg["desktop_edges"]:
+        return "desktop"
+    return "prompt_like"
+
+
+def thumb_diff(a, b):
+    if not a or not b or len(a) != len(b):
+        return 255
+    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+
+def type_password(kvmd, pw):
+    kvmd.post("/hid/print?limit=0&slow=1", body=pw.encode("utf-8"), timeout=90)
+    time.sleep(0.6)
+    kvmd.post("/hid/events/send_key?key=Enter", timeout=10)
+
+
+def boot_tick(bw, ledger, now, obs, cfg=BOOT, kvm_up_s=None, unlocks_per_hour=None):
+    """Pure: given what was seen this tick, the boot-watch memory and the ledger, decide. Returns (bw, action, note).
+    obs: {"usb": last enumeration (kernel s), "mode": (w, h) or None, "frame": features or None}.
+    bw["pending"] is the boot that hasn't reached a desktop yet: the rules read it as the FileVault screen."""
+    bw = dict(bw or {})
+    note = None
+    if bw.get("usb_seen") is None:
+        # A KVM that has just booted itself may have booted with the Mac (powered from the Mac's USB): count it.
+        bw["usb_seen"] = 0.0 if (kvm_up_s is not None and kvm_up_s < 180) else obs.get("usb", 0.0)
+    if obs.get("usb", 0.0) > bw["usb_seen"]:
+        bw.update(usb_seen=obs["usb"], boot_at=now, pending=now, typed=[], stable=0, last_thumb=None, stuck=None)
+        note = "boot seen: the Mac enumerated the KVM's keyboard again"
+    if obs.get("mode") is None:
+        if bw.get("no_signal_since") is None:
+            bw["no_signal_since"] = now
+        return bw, None, note
+    if bw.get("no_signal_since") is not None:
+        # HDMI coming back alone is NOT a boot (display sleep, a cable, a full-screen app with no menu bar would then
+        # get the password). A real Mac boot always re-enumerates the KVM's keyboard, so only that arms the unlock.
+        if now - bw["no_signal_since"] >= 3000:
+            note = "HDMI back after %d s without signal (not a boot by itself)" % ((now - bw["no_signal_since"]) // 1000)
+        bw["no_signal_since"] = None
+    f = obs.get("frame")
+    if f is not None and bw.get("pending") and classify_frame(f, cfg) == "desktop":
+        done = "unlocked: the desktop is up after the password" if bw.get("typed") else "came up at the desktop without a prompt"
+        verified = bool(bw.get("typed"))
+        bw.update(boot_at=None, pending=None, stuck=None, last_kind="desktop", result=done, result_at=now)
+        return bw, ("verified" if verified else None), done
+    boot_at = bw.get("boot_at")
+    if not boot_at or now - boot_at > cfg["armed_min"] * 60000:
+        return bw, None, note
+    if f is None:
+        return bw, "frame", note
+    kind = classify_frame(f, cfg)
+    bw["last_kind"] = kind
+    same = thumb_diff(f.get("thumb"), bw.get("last_thumb")) <= cfg["same_diff"]
+    bw["stable"] = bw.get("stable", 0) + 1 if same else 0
+    bw["last_thumb"] = f.get("thumb")
+    wait = cfg["black_settle_sec"] if kind == "black" else cfg["settle_sec"]
+    if now - boot_at < wait * 1000 or bw["stable"] < cfg["stable_frames"]:
+        return bw, None, note
+    typed = bw.get("typed") or []
+    if typed and now - typed[-1] < cfg["retry_sec"] * 1000:
+        return bw, None, note
+    if len(typed) >= cfg["per_boot"]:
+        bw["stuck"] = "the password didn't take, %d tries this boot. Fix: housesitter secret <mac> mac-password, then housesitter adopt <mac>" % len(typed)
+        return bw, "stuck", bw["stuck"]
+    per_hour = unlocks_per_hour or DEFAULTS["unlocks_per_hour"]
+    if len(_recent(ledger, "unlock", now, 60)) >= per_hour:
+        bw["stuck"] = "unlock budget used (%d in the last hour)" % per_hour
+        return bw, "stuck", bw["stuck"]
+    return bw, "type", "the Mac booted and is waiting at its password prompt (%s, steady for %d frames)" % (kind, bw["stable"])
+
+
+def kvm_uptime_s(read=lambda: open("/proc/uptime").read()):
+    try:
+        return float(read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
+    """One boot-watch tick: look, decide, act. The main loop calls it every couple of seconds."""
+    now = now if now is not None else int(time.time() * 1000)
+    bcfg = dict(BOOT, **cfg.get("boot", {}))
+    st = load("state.json", {"mem": None, "ledger": []})
+    bw, ledger = st.get("boot") or {}, st.get("ledger") or []
+    obs = {"usb": usb_last_enum(run=run), "mode": hdmi_mode(kvmd=kvmd)}
+    armed = bool(bw.get("boot_at")) and now - bw["boot_at"] <= bcfg["armed_min"] * 60000
+    new_usb = bw.get("usb_seen") is not None and obs["usb"] > bw["usb_seen"]
+    obs["frame"] = None
+    if obs["mode"] and (armed or new_usb or bw.get("pending")) and now - bw.get("frame_at", 0) >= bcfg["frame_every_sec"] * 1000:
+        try:
+            raw = frame_raw(kvmd, run=run)
+            obs["frame"] = frame_features(*raw) if raw else None
+        except Exception as e:  # noqa: BLE001
+            log("boot-watch: frame failed: %s" % str(e)[:120])
+        bw["frame_at"] = now
+    rules = dict(DEFAULTS, **cfg.get("rules", {}))
+    b2, act, note = boot_tick(bw, ledger, now, obs, bcfg, kvm_uptime_s(), rules["unlocks_per_hour"])
+    if note and note != bw.get("last_note"):
+        log("boot-watch: %s" % note)
+        b2["last_note"] = note
+    if act == "type":
+        pw = (secret or load_secret)("mac")
+        if not pw or cfg.get("unlock", True) is False or cfg.get("dry_run"):
+            log("boot-watch: at the prompt, not typing (%s)" % ("dry run" if cfg.get("dry_run") else "unlock is off" if cfg.get("unlock", True) is False else "no password on the sitter"))
+            b2["typed"] = (b2.get("typed") or []) + [now]
+        else:
+            entry = {"at": now, "kind": "unlock", "state": "filevault", "result": "started", "why": note}
+            ledger.append(entry)
+            try:
+                type_password(kvmd, pw)
+                entry["result"] = "typed the password at the boot prompt"
+            except Exception as e:  # noqa: BLE001
+                entry["result"] = "failed: %s" % str(e)[:120]
+            b2["typed"] = (b2.get("typed") or []) + [now]
+            b2["stable"] = 0
+            log("boot-watch: %s" % entry["result"])
+    elif act == "verified":
+        ledger.append({"at": now, "kind": "unlock_verified", "state": "healthy", "result": note})
+    st = load("state.json", {"mem": None, "ledger": []})
+    st.update({"boot": b2, "ledger": ledger[-200:]})
+    save("state.json", st)
+    return {"obs": {k: v for k, v in obs.items() if k != "frame"}, "frame": {k: v for k, v in (obs.get("frame") or {}).items() if k != "thumb"},
+            "act": act, "note": note, "boot": {k: v for k, v in b2.items() if k != "last_thumb"}}
+
+
+def eyes_without_ocr(cfg, mem, raw, boot):
+    """What the rules see when kvmd can't OCR: a decoded frame, read for a menu bar, and the boot watch's memory."""
+    if not raw:
+        return {"screen": "unknown", "eyes": "frame"}
+    y, w, h = raw
+    kind = classify_frame(frame_features(y, w, h), dict(BOOT, **cfg.get("boot", {})))
+    if kind == "desktop":
+        return {"screen": "desktop", "eyes": "frame", "clock_ticking": clock_ticking(mem, clock_sig(y, w, h))}
+    out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown"}
+    if (boot or {}).get("pending"):
+        # A boot that hasn't reached a desktop: the FileVault screen. The boot watch types; the rules only wait and tell.
+        out["screen"] = "filevault"
+        if boot.get("stuck"):
+            out["boot"] = boot["stuck"].replace("<mac>", cfg.get("name", "<mac>"))
+    return out
+
+
 # ---------- notify: ntfy or any webhook ----------
 
 def notify(cfg, subject, body, opener=urllib.request.urlopen):
@@ -920,7 +1161,12 @@ def observe(cfg, kvmd, power, mem, now):
             box = cfg.get("clock_box", [1500, 0, 1920, 32])
             obs["clock_ticking"] = clock_ticking(mem, re.sub(r"\s+", " ", str(ocr_text(kvmd, box))).strip())
         except Exception as e:  # noqa: BLE001
-            obs["screen"], obs["ocr_error"] = "unknown", str(e)[:120]
+            obs["ocr_error"] = str(e)[:120]
+            try:
+                raw = frame_raw(kvmd)
+            except Exception as e2:  # noqa: BLE001
+                raw, obs["frame_error"] = None, str(e2)[:120]
+            obs.update(eyes_without_ocr(cfg, mem, raw, load("state.json", {}).get("boot")))
     elif obs.get("video") is False:
         obs["screen"] = "blank"
     obs["arp"] = arp_alive(cfg.get("mac_ips") or [], [m.lower() for m in cfg.get("mac_macs") or []])
@@ -984,6 +1230,8 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
     mem, ledger = st.get("mem") or {}, st.get("ledger") or []
     obs = observe(cfg, kvmd, power, mem, now)
     caps = caps_of(cfg, power)
+    if obs.get("eyes") == "frame":
+        caps["unlock"] = False  # without OCR, only the boot watch types, under its own boot-and-steady-screen rule
     clock_seen = mem.get("clock_seen")
     mem, actions = tick(mem or None, ledger, {k: v for k, v in obs.items() if not k.endswith("_error")}, now, caps, dict(DEFAULTS, **cfg.get("rules", {})))
     if clock_seen is not None:
@@ -1102,6 +1350,27 @@ def main(argv):
     if argv[:1] == ["once"]:
         print(json.dumps(once(cfg, kvmd, power, log, gh=gh)))
         return 0
+    if argv[:1] == ["boot-watch"]:
+        print(json.dumps(boot_watch(cfg, kvmd, log)))
+        return 0
+    if argv[:1] == ["frame"]:
+        sys.stdout.buffer.write(frame_jpeg(kvmd))
+        return 0
+    if argv[:1] == ["eyes"]:
+        # adopt's check: can this KVM see the Mac, with OCR or by decoding a frame itself?
+        out = {"mode": hdmi_mode(kvmd=kvmd)}
+        try:
+            out["ocr"] = classify_screen(ocr_text(kvmd), cfg.get("user_names") or ())
+        except Exception as e:  # noqa: BLE001
+            out["ocr"], out["ocr_error"] = None, str(e)[:120]
+        try:
+            raw = frame_raw(kvmd)
+            out["frame"] = classify_frame(frame_features(*raw)) if raw else None
+            out["size"] = list(raw[1:]) if raw else None
+        except Exception as e:  # noqa: BLE001
+            out["frame"], out["frame_error"] = None, str(e)[:120]
+        print(json.dumps(out))
+        return 0 if (out["ocr"] or out["frame"]) else 1
     if argv[:1] == ["hello"]:
         # Sent once by adopt, so the first message you get from the sitter is a calm one.
         name = cfg.get("name") or "your Mac"
@@ -1131,8 +1400,16 @@ def main(argv):
         return 0 if rep.get("ok") else (2 if rep.get("code") in ("action-unavailable", "input-invalid") else 1)
     log("start: sitter %s watching %s every %ss; unlock %s; outbox %s" % (VERSION, cfg.get("name"), cfg.get("interval_sec", 60), "ready" if has_secret("mac") else "NOT provisioned", "on" if gh else "off"))
     interval, poll = cfg.get("interval_sec", 60), o.get("poll_sec", 2)
+    boot_every = dict(BOOT, **cfg.get("boot", {}))["tick_sec"]
     next_look = 0
+    next_boot = 0 if cfg.get("boot_watch", True) is not False else float("inf")
     while True:
+        if cfg.get("boot_watch", True) is not False and time.time() >= next_boot:
+            next_boot = time.time() + boot_every
+            try:
+                boot_watch(cfg, kvmd, log)
+            except Exception as e:  # noqa: BLE001
+                log("boot-watch failed: %s" % str(e)[:160])
         if time.time() >= next_look:
             next_look = time.time() + interval
             try:
@@ -1145,7 +1422,7 @@ def main(argv):
             except Exception as e:  # noqa: BLE001
                 log("inbox poll failed: %s" % str(e)[:160])
                 time.sleep(10)
-        time.sleep(poll if gh else max(1, next_look - time.time()))
+        time.sleep(min(poll if gh else max(1, next_look - time.time()), max(0.2, next_boot - time.time())))
 
 
 if __name__ == "__main__":
