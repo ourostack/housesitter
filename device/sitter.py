@@ -268,11 +268,25 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self._path)
 
 
+def refuse_reshape(method, path):
+    """Never reshape what the Mac sees: no EDID writes, no factory reset, no firmware upgrade through this sitter. An
+    EDID change on a live Mac mini froze it (2026-11-08). Checked below every kvmd call, so nothing can get round it."""
+    q = str(path).split("?")[0].lower()
+    if "edid" in q and method != "GET":
+        return "refused: %s changes the display the Mac sees; never reshape a live Mac's displays" % q
+    if re.search(r"reset_default|factory|/upgrade(/|$)", q) and (method != "GET" or "reset" in q or "factory" in q):
+        return "refused: %s resets or reflashes the KVM, EDID included; never from housesitter" % q
+    return None
+
+
 class Kvmd:
     def __init__(self, sock="/run/kvmd/kvmd.sock", user="admin", passwd=""):
         self.sock, self.user, self.passwd = sock, user, passwd
 
     def request(self, method, path, body=None, timeout=15):
+        refused = refuse_reshape(method, path)
+        if refused:
+            raise RuntimeError("kvmd: %s" % refused)
         c = UnixHTTPConnection(self.sock, timeout)
         headers = {"X-KVMD-User": self.user, "X-KVMD-Passwd": self.passwd}
         if body is not None:
@@ -385,14 +399,89 @@ def real_size(kvmd):
     return {"width": 1920, "height": 1080}
 
 
-def harden(kvmd):
-    """GL.iNet's cloud binding (Astrowarp) off: the KVM is reached only over your tailnet or LAN, and the outbox."""
-    kvmd.get("/astrowarp/enable?enable=false", timeout=20)
-    try:
+def is_gl(exists=os.path.exists):
+    return exists("/proc/gl-hw-info")
+
+
+def harden(kvmd, cfg=None, run=subprocess.run, gl=None):
+    """GL.iNet's cloud binding (Astrowarp) off, read back as disabled or this fails; then ingress for where the KVM is
+    (location "home": the LAN may reach SSH and HTTPS; anywhere else: only tailscale0)."""
+    cfg = cfg or {}
+    out = {}
+    if gl if gl is not None else is_gl():
+        kvmd.get("/astrowarp/enable?enable=false", timeout=20)
         st = kvmd.json("/astrowarp/status")
-        return {"gl_cloud": "off" if not st.get("enabled") else "STILL ON"}
-    except Exception as e:  # noqa: BLE001
-        return {"gl_cloud": "off (status unreadable: %s)" % str(e)[:60]}
+        if not isinstance(st, dict) or st.get("enabled") is not False:
+            raise RuntimeError("GL.iNet's cloud binding did not read back as disabled (status: %s); not hardened" % json.dumps(st)[:80])
+        out["gl_cloud"] = "off (read back)"
+    else:
+        out["gl_cloud"] = "n/a (not a GL.iNet KVM)"
+    out["ingress"] = apply_ingress(ingress_mode(cfg), run=run)
+    return out
+
+
+INGRESS_PORTS = (22, 443)
+CHAIN = "HOUSESITTER_IN"
+
+
+def ingress_mode(cfg):
+    """At home, the LAN may reach the KVM's SSH and HTTPS (setup, and your own devices). Anywhere else (an office's
+    guest network, a colo) only the tailnet may."""
+    return "lan" if (cfg.get("location") or "home") == "home" else "tailnet"
+
+
+def ingress_rules(mode, ports=INGRESS_PORTS):
+    """The firewall commands for a mode, for iptables and ip6tables alike. Pure, so it is tested."""
+    rules = []
+    for t in ("iptables", "ip6tables"):
+        rules += [[t, "-N", CHAIN], [t, "-F", CHAIN]]
+        if mode == "tailnet":
+            rules += [[t, "-A", CHAIN, "-i", "lo", "-j", "RETURN"], [t, "-A", CHAIN, "-i", "tailscale0", "-j", "RETURN"],
+                      [t, "-A", CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"]]
+            rules += [[t, "-A", CHAIN, "-p", "tcp", "--dport", str(p), "-j", "DROP"] for p in ports]
+        rules += [[t, "-C", "INPUT", "-j", CHAIN]]
+    return rules
+
+
+def tailnet_running(run=subprocess.run):
+    """Joined and running, with a tailnet address: only then can tailnet-only ingress still reach the KVM."""
+    try:
+        r = run(["tailscale", "status", "--json", "--peers=false"], capture_output=True, text=True, timeout=10)
+        j = json.loads(r.stdout or "{}")
+        return j.get("BackendState") == "Running" and bool((j.get("Self") or {}).get("TailscaleIPs") or j.get("TailscaleIPs"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def apply_ingress(mode, run=subprocess.run, iface_up=lambda i: os.path.exists("/sys/class/net/%s" % i), joined=None):
+    if mode == "tailnet" and not (iface_up("tailscale0") and (joined if joined is not None else tailnet_running(run))):
+        raise RuntimeError("refusing tailnet-only SSH and HTTPS: this KVM hasn't joined a running tailnet, so nothing could reach it. Join first (adopt does, with a tagged auth key)")
+    for cmd in ingress_rules(mode):
+        r = run(cmd, capture_output=True, text=True, timeout=10)
+        if cmd[1] == "-C" and r.returncode != 0:
+            r = run([cmd[0], "-I", "INPUT", "-j", CHAIN], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0 and cmd[1] not in ("-N",):
+            raise RuntimeError("%s failed: %s" % (" ".join(cmd), (r.stderr or "")[:120]))
+    return "SSH and HTTPS from %s" % ("the LAN and the tailnet" if mode == "lan" else "the tailnet only (tailscale0)")
+
+
+CERT_PATHS = ("/etc/kvmd/nginx/ssl/server.crt", "/etc/kvmd/nginx/ssl/server.pem", "/etc/nginx/ssl/server.crt")
+
+
+def cert_fingerprint(paths=CERT_PATHS, read=lambda p: open(p).read()):
+    """The SHA-256 fingerprint of the KVM's own HTTPS certificate, read on the KVM itself: compare it, out of band,
+    with the one adopt pinned on first contact."""
+    for path in paths:
+        try:
+            pem = read(path)
+        except OSError:
+            continue
+        m = re.search(r"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", pem, re.S)
+        if m:
+            der = base64.b64decode("".join(m.group(1).split()))
+            h = hashlib.sha256(der).hexdigest().upper()
+            return {"path": path, "sha256": ":".join(h[i:i + 2] for i in range(0, len(h), 2))}
+    raise RuntimeError("no certificate found at %s" % ", ".join(paths))
 
 
 NGINX_CONF = "/etc/kvmd/nginx-kvmd.conf"
@@ -711,19 +800,203 @@ def look_now(kvmd, cfg):
         kvmd.post("/hid/events/send_key?key=ShiftLeft", timeout=10)
     except Exception:  # noqa: BLE001
         pass
-    time.sleep(1.5)
+    SLEEP(1.5)
     return classify_screen(ocr_text(kvmd), cfg.get("user_names") or ())
 
 
-def unlock(cfg, kvmd, secret=None):
+SLEEP = time.sleep
+
+
+def see_field(cfg, kvmd):
+    """A fresh look: is the FileVault or login password field itself visible on the KVM's own picture? Returns
+    (visible, what the screen reads as, how). With OCR, the field's own words; without, a match of a frame against a
+    password prompt an operator taught the sitter while looking at it (learn-prompt). Nothing else counts."""
+    try:
+        kind = look_now(kvmd, cfg)
+        return kind in ("filevault", "login"), kind, "ocr"
+    except Exception:  # noqa: BLE001
+        pass
+    raw = frame_raw(kvmd)
+    if not raw:
+        return False, "unknown", "frame"
+    f = frame_features(*raw)
+    return prompt_visible(f), classify_frame(f), "frame"
+
+
+# ---------- the password gate ----------
+# A stored password is never typed until it has proven itself (a wrong password typed again and again risks a FileVault
+# or account lockout). "unverified" is the default, and every new password starts there: never typed. "trial": an
+# operator armed exactly one supervised try. "verified": that try was followed by the Mac's own desktop within
+# VERIFY_SEC. A desktop that appears without our try (someone else unlocked it, or it never locked) never counts.
+VERIFY_SEC = 120
+TRUST = ("unverified", "trial", "verified")
+
+
+def password_gate():
+    g = load("password.json", {}) or {}
+    return g if g.get("trust") in TRUST else {"trust": "unverified", "why": "never verified"}
+
+
+def set_password_trust(trust, why, now=None, **extra):
+    if trust not in TRUST:
+        raise ValueError("trust must be one of %s" % ", ".join(TRUST))
+    g = dict(trust=trust, why=why, at=now if now is not None else int(time.time() * 1000), **extra)
+    save("password.json", g)
+    return g
+
+
+def gate_refusal(g):
+    if g["trust"] == "verified":
+        return None
+    if g["trust"] == "trial" and not g.get("tried_at"):
+        return None
+    if g["trust"] == "trial":
+        return "the one trial try is used; waiting to see whether it reached the desktop"
+    return "the stored password is unverified, so it is never typed. Arm one supervised try: housesitter unlock <mac> --trial"
+
+
+def settle_trial(now, desktop, log=None):
+    """After the trial try: verified only when that try is followed by the desktop within VERIFY_SEC; back to
+    unverified once the window passes without it."""
+    g = password_gate()
+    t = g.get("tried_at")
+    if g["trust"] != "trial" or not t:
+        return g["trust"]
+    if desktop and 0 <= now - t <= VERIFY_SEC * 1000:
+        set_password_trust("verified", "the trial try at %d reached the desktop at %d" % (t, now), now)
+        if log:
+            log("password verified: the trial try reached the desktop")
+        return "verified"
+    if now - t > VERIFY_SEC * 1000:
+        set_password_trust("unverified", "the trial try at %d did not reach the desktop within %d s" % (t, VERIFY_SEC), now)
+        if log:
+            log("the trial password did not unlock the Mac: back to unverified, nothing more is typed")
+        return "unverified"
+    return "trial"
+
+
+def typing_budget(st, now, rules=DEFAULTS, bcfg=None):
+    """Limits that live in state.json, so a KVM reboot can't reset them: tries since the Mac was last seen at its
+    desktop (per boot), tries in the last hour, and a pause after each try. Write-ahead entries count too."""
+    bcfg = bcfg or BOOT
+    ledger = st.get("ledger") or []
+    since = st.get("desktop_at") or 0
+    tries = [e for e in ledger if e.get("kind") == "unlock" and e.get("at", 0) > since]
+    if len(tries) >= bcfg["per_boot"]:
+        return "%d tries since the Mac was last at its desktop, so it stops. Fix: housesitter secret <mac> mac-password, then housesitter adopt <mac>" % len(tries)
+    if len(_recent(ledger, "unlock", now, 60)) >= rules["unlocks_per_hour"]:
+        return "unlock budget used (%d in the last hour)" % rules["unlocks_per_hour"]
+    if tries and now - tries[-1]["at"] < bcfg["retry_sec"] * 1000:
+        return "waiting %d s after the last try" % bcfg["retry_sec"]
+    return None
+
+
+def merge_ledger(a, b):
+    """Two copies of the ledger (the file's, then this process's) into one: by id where there is one, field by field
+    (so `judged` and the like survive), a finished result beating "started" either way; oldest first, the last 200."""
+    out, idx = [], {}
+    for e in (a or []) + (b or []):
+        k = e.get("id") or "%s@%s" % (e.get("kind"), e.get("at"))
+        if k in idx:
+            old = out[idx[k]]
+            m = dict(old, **e)
+            if e.get("result") == "started" and old.get("result") not in (None, "started"):
+                m["result"] = old["result"]
+            out[idx[k]] = m
+            continue
+        idx[k] = len(out)
+        out.append(dict(e))
+    out.sort(key=lambda e: e.get("at", 0))
+    return out[-200:]
+
+
+class _Locked:
+    """An exclusive lock on state.json's neighbour, so the daemon and `sitter.py do` never interleave a read-modify-write."""
+
+    def __enter__(self):
+        try:
+            import fcntl
+            os.makedirs(HOME, mode=0o700, exist_ok=True)
+            self.f = open(os.path.join(HOME, "state.lock"), "a")
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            self.f = None
+        return self
+
+    def __exit__(self, *a):
+        if self.f:
+            self.f.close()
+        return False
+
+
+def save_state(st, keys=()):
+    """Write back this process's ledger (merged with the file's) and only the other fields it owns (`keys`). Everything
+    else in state.json stays as the file has it, so a slow writer can't roll back another's inbox ETag, seen ids,
+    boot watch or rules memory."""
+    with _Locked():
+        disk = load("state.json", {"mem": None, "ledger": []})
+        disk["ledger"] = merge_ledger(disk.get("ledger"), st.get("ledger"))
+        for k in keys:
+            if k in st:
+                disk[k] = st[k]
+        save("state.json", disk)
+    st["ledger"] = disk["ledger"]
+
+
+def write_ahead(st, entry):
+    """Record an unlock or power action as started, on disk, before doing it: a crash or a KVM reboot mid-action still
+    counts it against every budget."""
+    entry = dict(entry, result="started", id="%s-%d-%s" % (entry["kind"], entry["at"], base64.b16encode(os.urandom(3)).decode("ascii").lower()))
+    st.setdefault("ledger", []).append(entry)
+    save_state(st)
+    return entry
+
+
+def finish(st, entry, result):
+    for e in st.get("ledger") or []:
+        if e.get("id") == entry["id"]:
+            e["result"] = result
+    entry["result"] = result
+    save_state(st)
+    return result
+
+
+def type_at_field(cfg, kvmd, st, now, why, by, log=lambda m: None, secret=None, visible=None):
+    """The only way the password is typed. Gate, then budgets, then a fresh look for the field itself, then a
+    write-ahead entry, then the keys. `visible` lets the boot watch pass the look it has just taken."""
+    if cfg.get("unlock") is False:
+        return "refused: unlock is off in this sitter's config"
+    g = password_gate()
+    r = gate_refusal(g)
+    if r:
+        return "refused: %s" % r
+    r = typing_budget(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {})))
+    if r:
+        return "refused: %s" % r
     pw = (secret or load_secret)("mac")
     if not pw:
-        return "no password on the sitter (housesitter adopt <mac> provisions it)"
-    kind = look_now(kvmd, cfg)
-    if kind not in ("filevault", "login"):
-        return "refused: the screen reads as %s, not the password prompt" % kind
-    kvmd.post("/hid/print?limit=0&slow=1", body=(pw + "\n").encode("utf-8"), timeout=90)
-    return "typed the password at the %s prompt (slow mode)" % kind
+        return "refused: no password on the sitter (housesitter adopt <mac> provisions it)"
+    seen, kind, how = visible if visible is not None else see_field(cfg, kvmd)
+    if not seen:
+        return "refused: no password field visible on the KVM's own picture (it reads as %s, by %s); blind unlock is unsupported" % (kind, how)
+    if cfg.get("dry_run"):
+        return "dry-run: would type at the %s prompt" % kind
+    if g["trust"] == "trial":
+        set_password_trust("trial", g.get("why", "armed"), now, tried_at=now)
+    entry = write_ahead(st, {"at": now, "kind": "unlock", "state": "filevault", "by": by, "why": why, "trust": g["trust"]})
+    try:
+        type_password(kvmd, pw)
+        res = "typed the password at the %s prompt (%s, %s)" % (kind, how, g["trust"])
+    except Exception as e:  # noqa: BLE001
+        res = "failed: %s" % str(e)[:120]
+    log("unlock: %s" % res)
+    return finish(st, entry, res)
+
+
+def unlock(cfg, kvmd, st=None, now=None, by="rules", log=lambda m: None, secret=None):
+    st = st if st is not None else load("state.json", {"mem": None, "ledger": []})
+    now = now if now is not None else int(time.time() * 1000)
+    return type_at_field(cfg, kvmd, st, now, "at the FileVault/login screen", by, log, secret)
 
 
 # ---------- eyes without kvmd snapshots, and the boot watch ----------
@@ -827,40 +1100,62 @@ def thumb_diff(a, b):
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
+def prompt_visible(f):
+    """Does this frame show the password prompt an operator taught the sitter (learn-prompt) while looking at the KVM's
+    own picture? A desktop or a black frame never does. So a prompt drawn on another display never matches."""
+    if not f or not f.get("thumb") or classify_frame(f) != "prompt_like":
+        return False
+    refs = load("prompt_refs.json", []) or []
+    return any(thumb_diff(f["thumb"], r.get("thumb")) <= BOOT["same_diff"] for r in refs)
+
+
+def learn_prompt(f, why, now=None):
+    """Keep this frame as a reference for the password prompt. Only an operator who is looking at the KVM's picture and
+    sees the password field on it runs this (housesitter learn-prompt <mac>)."""
+    k = classify_frame(f)
+    if k != "prompt_like":
+        raise ValueError("that frame reads as %s, not a password prompt; show the FileVault or login screen on the KVM's display first" % k)
+    refs = (load("prompt_refs.json", []) or [])[-4:]
+    refs.append({"thumb": f["thumb"], "size": f.get("size"), "at": now if now is not None else int(time.time() * 1000), "why": why})
+    save("prompt_refs.json", refs)
+    return len(refs)
+
+
 def type_password(kvmd, pw):
     kvmd.post("/hid/print?limit=0&slow=1", body=pw.encode("utf-8"), timeout=90)
-    time.sleep(0.6)
+    SLEEP(0.6)
     kvmd.post("/hid/events/send_key?key=Enter", timeout=10)
 
 
-def boot_tick(bw, ledger, now, obs, cfg=BOOT, kvm_up_s=None, unlocks_per_hour=None):
-    """Pure: given what was seen this tick, the boot-watch memory and the ledger, decide. Returns (bw, action, note).
-    obs: {"usb": last enumeration (kernel s), "mode": (w, h) or None, "frame": features or None}.
-    bw["pending"] is the boot that hasn't reached a desktop yet: the rules read it as the FileVault screen."""
+def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
+    """Pure: given what was seen this tick and the boot-watch memory, decide. Returns (bw, action, note).
+    obs: {"usb": last enumeration (kernel s), "mode": (w, h) or None, "frame": features or None, "prompt_visible": bool}.
+    A boot only tells the sitter when to look closely. It types only where the password field is visible on the KVM's
+    own picture ("type"); a settled screen without it is "blind", which is refused and reported, never typed into.
+    bw["pending"] is a boot that hasn't reached a desktop yet. Budgets and the password gate live in state.json, so a
+    KVM reboot can't reset them (type_at_field)."""
     bw = dict(bw or {})
     note = None
     if bw.get("usb_seen") is None:
         # A KVM that has just booted itself may have booted with the Mac (powered from the Mac's USB): count it.
         bw["usb_seen"] = 0.0 if (kvm_up_s is not None and kvm_up_s < 180) else obs.get("usb", 0.0)
     if obs.get("usb", 0.0) > bw["usb_seen"]:
-        bw.update(usb_seen=obs["usb"], boot_at=now, pending=now, typed=[], stable=0, last_thumb=None, stuck=None)
+        bw.update(usb_seen=obs["usb"], boot_at=now, pending=now, stable=0, last_thumb=None, stuck=None, blind_noted=None)
         note = "boot seen: the Mac enumerated the KVM's keyboard again"
     if obs.get("mode") is None:
         if bw.get("no_signal_since") is None:
             bw["no_signal_since"] = now
         return bw, None, note
     if bw.get("no_signal_since") is not None:
-        # HDMI coming back alone is NOT a boot (display sleep, a cable, a full-screen app with no menu bar would then
-        # get the password). A real Mac boot always re-enumerates the KVM's keyboard, so only that arms the unlock.
+        # HDMI coming back alone is NOT a boot (display sleep, a cable, a full-screen app).
         if now - bw["no_signal_since"] >= 3000:
             note = "HDMI back after %d s without signal (not a boot by itself)" % ((now - bw["no_signal_since"]) // 1000)
         bw["no_signal_since"] = None
     f = obs.get("frame")
-    if f is not None and bw.get("pending") and classify_frame(f, cfg) == "desktop":
-        done = "unlocked: the desktop is up after the password" if bw.get("typed") else "came up at the desktop without a prompt"
-        verified = bool(bw.get("typed"))
-        bw.update(boot_at=None, pending=None, stuck=None, last_kind="desktop", result=done, result_at=now)
-        return bw, ("verified" if verified else None), done
+    if f is not None and classify_frame(f, cfg) == "desktop":
+        was = bw.get("pending")
+        bw.update(boot_at=None, pending=None, stuck=None, last_kind="desktop", desktop_at=now)
+        return bw, "desktop", ("the desktop is up after the boot" if was else None)
     boot_at = bw.get("boot_at")
     if not boot_at or now - boot_at > cfg["armed_min"] * 60000:
         return bw, None, note
@@ -874,17 +1169,13 @@ def boot_tick(bw, ledger, now, obs, cfg=BOOT, kvm_up_s=None, unlocks_per_hour=No
     wait = cfg["black_settle_sec"] if kind == "black" else cfg["settle_sec"]
     if now - boot_at < wait * 1000 or bw["stable"] < cfg["stable_frames"]:
         return bw, None, note
-    typed = bw.get("typed") or []
-    if typed and now - typed[-1] < cfg["retry_sec"] * 1000:
-        return bw, None, note
-    if len(typed) >= cfg["per_boot"]:
-        bw["stuck"] = "the password didn't take, %d tries this boot. Fix: housesitter secret <mac> mac-password, then housesitter adopt <mac>" % len(typed)
-        return bw, "stuck", bw["stuck"]
-    per_hour = unlocks_per_hour or DEFAULTS["unlocks_per_hour"]
-    if len(_recent(ledger, "unlock", now, 60)) >= per_hour:
-        bw["stuck"] = "unlock budget used (%d in the last hour)" % per_hour
-        return bw, "stuck", bw["stuck"]
-    return bw, "type", "the Mac booted and is waiting at its password prompt (%s, steady for %d frames)" % (kind, bw["stable"])
+    if not obs.get("prompt_visible"):
+        bw["stuck"] = "no password field visible on the KVM's own picture after the boot (it reads as %s); blind unlock is unsupported, so it never types" % kind
+        if bw.get("blind_noted"):
+            return bw, None, note
+        bw["blind_noted"] = now
+        return bw, "blind", bw["stuck"]
+    return bw, "type", "the Mac booted and its password field is on the KVM's picture (steady for %d frames)" % bw["stable"]
 
 
 def kvm_uptime_s(read=lambda: open("/proc/uptime").read()):
@@ -899,7 +1190,7 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
     now = now if now is not None else int(time.time() * 1000)
     bcfg = dict(BOOT, **cfg.get("boot", {}))
     st = load("state.json", {"mem": None, "ledger": []})
-    bw, ledger = st.get("boot") or {}, st.get("ledger") or []
+    bw = st.get("boot") or {}
     obs = {"usb": usb_last_enum(run=run), "mode": hdmi_mode(kvmd=kvmd)}
     armed = bool(bw.get("boot_at")) and now - bw["boot_at"] <= bcfg["armed_min"] * 60000
     new_usb = bw.get("usb_seen") is not None and obs["usb"] > bw["usb_seen"]
@@ -911,40 +1202,131 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
         except Exception as e:  # noqa: BLE001
             log("boot-watch: frame failed: %s" % str(e)[:120])
         bw["frame_at"] = now
-    rules = dict(DEFAULTS, **cfg.get("rules", {}))
-    b2, act, note = boot_tick(bw, ledger, now, obs, bcfg, kvm_uptime_s(), rules["unlocks_per_hour"])
+    if obs["frame"]:
+        obs["prompt_visible"] = prompt_visible(obs["frame"])
+    b2, act, note = boot_tick(bw, now, obs, bcfg, kvm_uptime_s())
     if note and note != bw.get("last_note"):
         log("boot-watch: %s" % note)
         b2["last_note"] = note
+    st["boot"] = b2
+    if act == "desktop":
+        st["desktop_at"] = now
+        settle_trial(now, True, log)
+    else:
+        settle_trial(now, False, log)
     if act == "type":
-        # A boot plus a screen with no menu bar is not enough to type a password: the field may be on another display.
-        # Blind unlock is refused; tell the rules it's stuck so you get a message.
-        b2["stuck"] = "no password field visible on the KVM's own picture after the boot; blind unlock is unsupported"
-        log("boot-watch: refused to type blind (%s)" % note)
-        act = "refused"
-    if act == "type":
-        pw = (secret or load_secret)("mac")
-        if not pw or cfg.get("unlock", True) is False or cfg.get("dry_run"):
-            log("boot-watch: at the prompt, not typing (%s)" % ("dry run" if cfg.get("dry_run") else "unlock is off" if cfg.get("unlock", True) is False else "no password on the sitter"))
-            b2["typed"] = (b2.get("typed") or []) + [now]
-        else:
-            entry = {"at": now, "kind": "unlock", "state": "filevault", "result": "started", "why": note}
-            ledger.append(entry)
-            try:
-                type_password(kvmd, pw)
-                entry["result"] = "typed the password at the boot prompt"
-            except Exception as e:  # noqa: BLE001
-                entry["result"] = "failed: %s" % str(e)[:120]
-            b2["typed"] = (b2.get("typed") or []) + [now]
-            b2["stable"] = 0
-            log("boot-watch: %s" % entry["result"])
-    elif act == "verified":
-        ledger.append({"at": now, "kind": "unlock_verified", "state": "healthy", "result": note})
-    st = load("state.json", {"mem": None, "ledger": []})
-    st.update({"boot": b2, "ledger": ledger[-200:]})
-    save("state.json", st)
+        res = type_at_field(cfg, kvmd, st, now, note, "boot-watch", log, secret, visible=(True, obs["frame"] and classify_frame(obs["frame"]), "frame"))
+        if res.startswith("refused"):
+            b2["stuck"] = res[len("refused: "):]
+        b2["stable"] = 0
+    st["boot"] = b2
+    save_state(st, ("boot", "desktop_at"))
     return {"obs": {k: v for k, v in obs.items() if k != "frame"}, "frame": {k: v for k, v in (obs.get("frame") or {}).items() if k != "thumb"},
             "act": act, "note": note, "boot": {k: v for k, v in b2.items() if k != "last_thumb"}}
+
+
+GUARD = {"reads": 3, "gap_sec": 65}
+
+
+def screen_read(cfg, kvmd):
+    """(what the screen reads as, a fingerprint of the menu-bar clock) from one fresh look, with OCR or without."""
+    try:
+        kind = classify_screen(ocr_text(kvmd), cfg.get("user_names") or ())
+        box = cfg.get("clock_box", [1500, 0, 1920, 32])
+        return kind, re.sub(r"\s+", " ", str(ocr_text(kvmd, box))).strip() if kind == "desktop" else None
+    except Exception:  # noqa: BLE001
+        pass
+    raw = frame_raw(kvmd)
+    if not raw:
+        return "unknown", None
+    k = classify_frame(frame_features(*raw))
+    return {"desktop": "desktop", "black": "blank"}.get(k, "unknown"), clock_sig(*raw) if k == "desktop" else None
+
+
+def cycle_guard(cfg, kvmd, now, attended=False):
+    """Re-observe before cutting the power. Only a frozen desktop, seen several times across more than a minute with
+    its clock never moving, while the health probes fail. Never during a boot, or at FileVault, a login window, a
+    black or unknown screen, or anything else (an update's progress screen reads as one of those). `attended` is
+    the explicit override for a person who has looked: it skips the screen and probe checks, never the budgets."""
+    if attended:
+        return None
+    bw = load("state.json", {}).get("boot") or {}
+    if bw.get("pending") or (bw.get("boot_at") and now - bw["boot_at"] <= BOOT["armed_min"] * 60000):
+        return "the Mac is booting"
+    g = dict(GUARD, **cfg.get("cycle_guard", {}))
+    sigs = []
+    for i in range(g["reads"]):
+        if i:
+            SLEEP(g["gap_sec"])
+        kind, sig = screen_read(cfg, kvmd)
+        if kind != "desktop":
+            return "the screen reads as %s; only a frozen desktop is ever power-cycled" % kind
+        sigs.append(sig)
+    if None in sigs or len(set(sigs)) > 1:
+        return "the desktop's clock is still moving (or unreadable): it isn't frozen"
+    answers = tcp_answers(cfg.get("health"))
+    arp = arp_alive(cfg.get("mac_ips") or [], [m.lower() for m in cfg.get("mac_macs") or []])
+    if answers is True or arp is True:
+        return "it still answers on the network"
+    if answers is None and arp is None:
+        return "nothing confirms the hang: give the sitter a health probe, or run adopt on the Mac with --this-mac"
+    return None
+
+
+def off_guard(cfg, kvmd):
+    """For a button press that switches the Mac on: only when it reads as off (no picture, no network answer)."""
+    try:
+        src = ((kvmd.json("/streamer").get("streamer") or {}).get("source") or {})
+        if src.get("online"):
+            return "the KVM still sees a picture"
+    except Exception:  # noqa: BLE001
+        return "the KVM can't tell whether there's a picture"
+    if tcp_answers(cfg.get("health")) is True or arp_alive(cfg.get("mac_ips") or [], [m.lower() for m in cfg.get("mac_macs") or []]) is True:
+        return "it still answers on the network"
+    return None
+
+
+def power_action(kind, cfg, kvmd, power, st, now, by, attended=False, log=lambda m: None):
+    """The only way power is touched: budgets, the guard (for a cycle or a forced press), a write-ahead entry, then
+    the plug or the Fingerbot."""
+    rules = dict(DEFAULTS, **cfg.get("rules", {}))
+    ledger = st.setdefault("ledger", [])
+    fingerbot = (cfg.get("power") or {}).get("kind") == "fingerbot"
+    if not power and not fingerbot:
+        return "refused: no smart plug or Fingerbot configured on this sitter"
+    if kind == "power_cycle" and not power:
+        kind = "press_power"  # no plug: a forced power-off and on is the Fingerbot's long press
+    if kind == "power_on" and not power:
+        r = off_guard(cfg, kvmd)
+        if r:
+            return "refused: %s; pressing the power button of a running Mac would sleep it or ask it to shut down" % r
+    if kind in ("power_cycle", "press_power"):
+        cycles = _recent(ledger, kind, now, 24 * 60)
+        if _recent(ledger, kind, now, rules["cycle_gap_min"]) or len(cycles) >= rules["cycles_per_day"]:
+            return "refused: power-cycle budget used (%d today; one per %d min)" % (len(cycles), rules["cycle_gap_min"])
+        r = cycle_guard(cfg, kvmd, now, attended)
+        if r:
+            return "refused: %s. If you have looked and want it anyway: housesitter power-cycle <mac> --attended" % r
+    elif _recent(ledger, "power_on", now, rules["on_gap_min"]):
+        return "refused: switched on less than %d min ago" % rules["on_gap_min"]
+    if cfg.get("dry_run"):
+        return "dry-run: would %s" % kind
+    entry = write_ahead(st, {"at": now, "kind": kind, "by": by, "attended": bool(attended)})
+    try:
+        if kind == "power_cycle" and power:
+            res = "plug: %s" % power.cycle(cfg.get("off_sec", 10))
+        elif kind == "power_on" and power:
+            res = "plug: %s" % power.on()
+        elif kind == "press_power":
+            kvmd.get("/fingerbot/click?press_time=10000&angle_enum=2", timeout=30)
+            SLEEP(15)
+            res = "fingerbot: %s" % kvmd.get("/fingerbot/click?press_time=500&angle_enum=2", timeout=30)[:80]
+        else:
+            res = "fingerbot: %s" % kvmd.get("/fingerbot/click?press_time=500&angle_enum=2", timeout=30)[:80]
+    except Exception as e:  # noqa: BLE001
+        res = "failed: %s" % str(e)[:120]
+    log("%s: %s" % (kind, res))
+    return finish(st, entry, res)
 
 
 def eyes_without_ocr(cfg, mem, raw, boot):
@@ -1036,8 +1418,7 @@ def handle(cmd, cfg, kvmd, power, log, now, st):
         return {"ok": False, "code": "action-unavailable", "result": "unknown op %r; available: %s" % (op, ", ".join(OPS))}
     if cfg.get("dry_run") and op in ("unlock", "power_cycle", "power_on"):
         return {"ok": True, "result": "dry-run: would %s" % op}
-    ledger = st.setdefault("ledger", [])
-    rules = dict(DEFAULTS, **cfg.get("rules", {}))
+    st.setdefault("ledger", [])
     a = cmd.get("args") or {}
     if op == "status":
         return {"ok": True, "result": load("status.json", {})}
@@ -1081,23 +1462,13 @@ def handle(cmd, cfg, kvmd, power, log, now, st):
             kvmd.post("/hid/events/send_shortcut?keys=%s" % ",".join(names))
         return {"ok": True, "result": "pressed %s" % "+".join(names)}
     if op == "unlock":
-        if len(_recent(ledger, "unlock", now, 60)) >= rules["unlocks_per_hour"]:
-            return {"ok": False, "code": "action-failed", "result": "unlock budget used (%d in the last hour)" % rules["unlocks_per_hour"]}
-        res = unlock(cfg, kvmd)
-        if res.startswith("typed"):
-            ledger.append({"at": now, "kind": "unlock", "state": "filevault", "result": res, "by": "request"})
+        res = type_at_field(cfg, kvmd, st, now, "asked for", "request", log)
         return {"ok": res.startswith("typed"), "code": None if res.startswith("typed") else "action-failed", "result": res}
-    if not power:
+    if not power and (cfg.get("power") or {}).get("kind") != "fingerbot":
         return {"ok": False, "code": "action-unavailable", "result": "no smart plug configured on this sitter"}
-    if op == "power_cycle":
-        cycles = _recent(ledger, "power_cycle", now, 24 * 60)
-        if _recent(ledger, "power_cycle", now, rules["cycle_gap_min"]) or len(cycles) >= rules["cycles_per_day"]:
-            return {"ok": False, "code": "action-failed", "result": "power-cycle budget used (%d today; one per %d min)" % (len(cycles), rules["cycle_gap_min"])}
-        res = "plug: %s" % power.cycle(cfg.get("off_sec", 10))
-    else:
-        res = "plug: %s" % power.on()
-    ledger.append({"at": now, "kind": op, "state": "requested", "result": res, "by": "request"})
-    return {"ok": True, "result": res}
+    res = power_action(op, cfg, kvmd, power, st, now, "request", attended=a.get("attended") is True, log=log)
+    ok = not res.startswith(("refused", "failed"))
+    return {"ok": ok, "code": None if ok else "action-failed", "result": res}
 
 
 def poll_inbox(cfg, gh, kvmd, power, log, now=None):
@@ -1117,10 +1488,10 @@ def poll_inbox(cfg, gh, kvmd, power, log, now=None):
         cmd = None
     seen = st.get("seen_ids") or []
     if not cmd or not cmd.get("id") or cmd["id"] in seen or cmd.get("v") != 1:
-        save("state.json", st)
+        save_state(st, ("inbox_etag",))
         return None
     st["seen_ids"] = (seen + [cmd["id"]])[-100:]
-    save("state.json", st)  # marked seen before acting: a crash never runs the same request twice
+    save_state(st, ("inbox_etag", "seen_ids"))  # marked seen before acting: a crash never runs the same request twice
     if abs(now - int(cmd.get("at") or 0)) > 10 * 60000:
         return None
     t0 = time.time()
@@ -1129,9 +1500,7 @@ def poll_inbox(cfg, gh, kvmd, power, log, now=None):
     except Exception as e:  # noqa: BLE001
         rep = {"ok": False, "code": "action-failed", "result": "failed: %s" % str(e)[:200]}
     if cmd.get("op") in ("unlock", "power_cycle", "power_on"):
-        st2 = load("state.json", st)
-        st2["ledger"] = st["ledger"][-200:]
-        save("state.json", st2)
+        save_state(st)
     files = rep.pop("_files", {})
     reply = dict(v=1, re=cmd["id"], op=cmd.get("op"), at=now, ms=int((time.time() - t0) * 1000), **rep)
     files["%s.reply.json" % name] = json.dumps(reply)
@@ -1175,6 +1544,8 @@ def observe(cfg, kvmd, power, mem, now):
             obs.update(eyes_without_ocr(cfg, mem, raw, load("state.json", {}).get("boot")))
     elif obs.get("video") is False:
         obs["screen"] = "blank"
+    if obs.get("screen") == "desktop":
+        obs["desktop"] = True
     obs["arp"] = arp_alive(cfg.get("mac_ips") or [], [m.lower() for m in cfg.get("mac_macs") or []])
     if power:
         try:
@@ -1185,21 +1556,16 @@ def observe(cfg, kvmd, power, mem, now):
     return obs
 
 
-def perform(act, cfg, kvmd, power, mem, obs, log):
+def perform(act, cfg, kvmd, power, mem, obs, log, st=None, now=None):
     k = act["kind"]
+    st = st if st is not None else {"ledger": []}
+    now = now if now is not None else int(time.time() * 1000)
+    if k == "unlock":
+        return type_at_field(cfg, kvmd, st, now, act.get("why", ""), "rules", log)
+    if k in ("power_cycle", "power_on", "press_power"):
+        return power_action(k, cfg, kvmd, power, st, now, "rules", log=log)
     if cfg.get("dry_run"):
         return "dry-run: would %s" % k
-    if k == "unlock":
-        return unlock(cfg, kvmd)
-    if k == "power_cycle" and power:
-        return "plug: %s" % power.cycle(cfg.get("off_sec", 10))
-    if k == "power_on" and power:
-        return "plug: %s" % power.on()
-    if k in ("press_power", "power_on") and (cfg.get("power") or {}).get("kind") == "fingerbot":
-        if k == "press_power":
-            kvmd.get("/fingerbot/click?press_time=10000&angle_enum=2", timeout=30)
-            time.sleep(15)
-        return "fingerbot: %s" % kvmd.get("/fingerbot/click?press_time=500&angle_enum=2", timeout=30)[:80]
     if k == "notify":
         name = cfg.get("name", "your Mac")
         if act.get("recovered"):
@@ -1227,8 +1593,9 @@ def save(name, value):
 
 def caps_of(cfg, power):
     fingerbot = (cfg.get("power") or {}).get("kind") == "fingerbot"
-    # Typing is disarmed unless the config arms it explicitly: a default never types a password.
-    return {"unlock": cfg.get("unlock") is True and has_secret("mac"), "plug": bool(power), "fingerbot": fingerbot, "notify": bool((cfg.get("notify") or {}).get("url"))}
+    # Typing is disarmed until the password gate says otherwise: unverified (the default) never types.
+    armed = gate_refusal(password_gate()) is None
+    return {"unlock": cfg.get("unlock") is not False and has_secret("mac") and armed, "plug": bool(power), "fingerbot": fingerbot, "notify": bool((cfg.get("notify") or {}).get("url"))}
 
 
 def once(cfg, kvmd, power, log, now=None, gh=None):
@@ -1236,9 +1603,12 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
     st = load("state.json", {"mem": None, "ledger": []})
     mem, ledger = st.get("mem") or {}, st.get("ledger") or []
     obs = observe(cfg, kvmd, power, mem, now)
+    if obs.pop("desktop", False):
+        st["desktop_at"] = now
+    settle_trial(now, obs.get("screen") == "desktop", log)
     caps = caps_of(cfg, power)
     if obs.get("eyes") == "frame":
-        caps["unlock"] = False  # without OCR, only the boot watch types, under its own boot-and-steady-screen rule
+        caps["unlock"] = False  # without OCR, only the boot watch types, and only at a field it can match
     clock_seen = mem.get("clock_seen")
     mem, actions = tick(mem or None, ledger, {k: v for k, v in obs.items() if not k.endswith("_error")}, now, caps, dict(DEFAULTS, **cfg.get("rules", {})))
     if clock_seen is not None:
@@ -1248,27 +1618,41 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
         if a["kind"] == "wait":
             continue
         try:
-            res = perform(a, cfg, kvmd, power, mem, obs, log)
+            res = perform(a, cfg, kvmd, power, mem, obs, log, st, now)
         except Exception as e:  # noqa: BLE001
             res = "failed: %s" % str(e)[:160]
-        ledger.append({"at": now, "kind": a["kind"], "state": mem["state"], "result": res})
+        guarded = a["kind"] in ("unlock", "power_cycle", "power_on", "press_power")
+        if not guarded:
+            st.setdefault("ledger", []).append({"at": now, "kind": a["kind"], "state": mem["state"], "result": res})
+        elif res.startswith(("refused", "dry-run")):
+            # Not done, so it counts against no budget; noted so the rules settle, and you hear why once.
+            st.setdefault("ledger", []).append({"at": now, "kind": a["kind"] + "_refused", "state": mem["state"], "result": res})
+            inc = mem.get("incident")
+            remind = dict(DEFAULTS, **cfg.get("rules", {}))["remind_hours"] * 3600000
+            if res.startswith("refused") and inc and caps.get("notify") and (inc.get("notified_at") is None or now - inc["notified_at"] >= remind):
+                try:
+                    n = perform({"kind": "notify", "why": "it won't %s: %s" % (a["kind"].replace("_", " "), res[len("refused: "):])}, cfg, kvmd, power, mem, obs, log, st, now)
+                except Exception as e:  # noqa: BLE001
+                    n = "failed: %s" % str(e)[:160]
+                st["ledger"].append({"at": now, "kind": "notify", "state": mem["state"], "result": n})
+                inc["notified_at"] = now
         if a["kind"] == "notify" and mem.get("incident"):
             mem["incident"]["notified_at"] = now
         done.append({"kind": a["kind"], "why": a["why"], "result": res})
         log("%s %s -> %s: %s" % (mem["state"], a["kind"], a["why"], res))
     status = {"v": 1, "sitter": VERSION, "at": now, "name": cfg.get("name"), "state": mem["state"], "since": mem.get("since"), "obs": obs,
-              "actions": done, "can": caps, "incident": mem.get("incident"), "secrets": {n: has_secret(n) for n in SECRET_NAMES}}
+              "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in SECRET_NAMES}}
     o = cfg.get("outbox") or {}
     if gh and o.get("gist"):
         status["tailnet"] = tailnet_self()
-    st.update({"mem": mem, "ledger": ledger[-200:]})
+    st["mem"] = mem
     if gh and o.get("gist") and should_publish(st, status, now, o.get("beat_min", 10)):
         try:
             gh.put(o["gist"], {"%s.sitter.json" % cfg.get("name", "mac"): json.dumps(status, indent=1)})
             st["published"] = {"at": now, "state": status["state"]}
         except Exception as e:  # noqa: BLE001
             log("outbox publish failed: %s" % str(e)[:160])
-    save("state.json", st)
+    save_state(st, ("mem", "desktop_at", "published"))
     save("status.json", status)
     heartbeat(cfg, status)
     return status
@@ -1327,6 +1711,8 @@ def main(argv):
             value = value[:-1]
         try:
             print(json.dumps(store_secret(argv[1], value)))
+            if argv[1] == "mac":
+                set_password_trust("unverified", "a new password was stored")
             return 0
         except (ValueError, RuntimeError) as e:
             print("store-secret: %s" % e, file=sys.stderr)
@@ -1340,10 +1726,30 @@ def main(argv):
     if argv[:1] == ["secrets"]:
         print(json.dumps({n: has_secret(n) for n in SECRET_NAMES}))
         return 0
+    if argv[:1] == ["password-trial"]:
+        # One supervised try, armed by an operator over SSH. Never from the GitHub inbox.
+        if not has_secret("mac"):
+            print("password-trial: no password on the sitter", file=sys.stderr)
+            return 2
+        print(json.dumps(set_password_trust("trial", "armed by an operator for one supervised try")))
+        return 0
+    if argv[:1] == ["password-hold"]:
+        print(json.dumps(set_password_trust("unverified", "held by an operator")))
+        return 0
+    if argv[:1] == ["password"]:
+        print(json.dumps(password_gate()))
+        return 0
+    if argv[:1] == ["fingerprint"]:
+        print(json.dumps(cert_fingerprint()))
+        return 0
     kvmd_default = Kvmd(user="admin", passwd=load_secret("kvmd") or "")
     if argv[:1] == ["harden"]:
-        print(json.dumps(harden(kvmd_default)))
-        return 0
+        try:
+            print(json.dumps(harden(kvmd_default, load("config.json", None) or {})))
+            return 0
+        except Exception as e:  # noqa: BLE001
+            print("harden: %s" % e, file=sys.stderr)
+            return 1
     cfg = load("config.json", None)
     if not cfg:
         print("housesitter: no %s/config.json (housesitter adopt writes it)" % HOME, file=sys.stderr)
@@ -1357,6 +1763,18 @@ def main(argv):
     if argv[:1] == ["once"]:
         print(json.dumps(once(cfg, kvmd, power, log, gh=gh)))
         return 0
+    if argv[:1] == ["learn-prompt"]:
+        # An operator looking at the KVM's own picture, with the password field on it, teaches the sitter that screen.
+        raw = frame_raw(kvmd)
+        if not raw:
+            print("learn-prompt: no frame decoded from the KVM's picture", file=sys.stderr)
+            return 1
+        try:
+            print(json.dumps({"references": learn_prompt(frame_features(*raw), " ".join(argv[1:]) or "taught by an operator")}))
+            return 0
+        except ValueError as e:
+            print("learn-prompt: %s" % e, file=sys.stderr)
+            return 2
     if argv[:1] == ["boot-watch"]:
         print(json.dumps(boot_watch(cfg, kvmd, log)))
         return 0
@@ -1397,9 +1815,7 @@ def main(argv):
         except Exception as e:  # noqa: BLE001
             rep = {"ok": False, "code": "action-failed", "result": "failed: %s" % str(e)[:200]}
         if argv[1] in ("unlock", "power_cycle", "power_on"):
-            st2 = load("state.json", st)
-            st2["ledger"] = st["ledger"][-200:]
-            save("state.json", st2)
+            save_state(st)
         files = rep.pop("_files", {})
         if files:
             rep["files"] = files
@@ -1408,9 +1824,18 @@ def main(argv):
     log("start: sitter %s watching %s every %ss; unlock %s; outbox %s" % (VERSION, cfg.get("name"), cfg.get("interval_sec", 60), "ready" if has_secret("mac") else "NOT provisioned", "on" if gh else "off"))
     interval, poll = cfg.get("interval_sec", 60), o.get("poll_sec", 2)
     boot_every = dict(BOOT, **cfg.get("boot", {}))["tick_sec"]
+    next_ingress, ingress_ok = 0, False
     next_look = 0
     next_boot = 0 if cfg.get("boot_watch", True) is not False else float("inf")
     while True:
+        if not ingress_ok and time.time() >= next_ingress:
+            # iptables rules don't survive the KVM's reboot: put them back at every start, and until they hold.
+            next_ingress = time.time() + 60
+            try:
+                log("ingress: %s" % apply_ingress(ingress_mode(cfg)))
+                ingress_ok = True
+            except Exception as e:  # noqa: BLE001
+                log("ingress NOT applied (retrying every minute): %s" % str(e)[:160])
         if cfg.get("boot_watch", True) is not False and time.time() >= next_boot:
             next_boot = time.time() + boot_every
             try:

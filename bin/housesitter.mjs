@@ -21,7 +21,8 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 
   housesitter demo                         one bad night, rehearsed in seconds (no hardware)
   housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
-      [--notify ntfy|<url>] [--heartbeat <url>] [--this-mac] [--outbox] [--dry-run] [--fake]
+      [--notify ntfy|<url>] [--heartbeat <url>] [--location home|away] [--fingerprint <sha256>]
+      [--this-mac] [--outbox] [--dry-run] [--fake]
   housesitter secret <mac> <mac-password|kvm-admin|outbox-token>   store a secret (read from stdin, no echo)
   housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
 
@@ -30,7 +31,10 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter click <mac> <x> <y> [--right|--double]    in the last screenshot's pixels
   housesitter type <mac> <text>            housesitter key <mac> <combo>     housesitter scroll <mac> <up|down> [n]
   housesitter computer <mac> '<json>'      an Anthropic computer-use action, as-is
-  housesitter unlock|power-cycle|power-on <mac>     ask the sitter (it keeps its own limits)
+  housesitter unlock|power-cycle|power-on <mac>     ask the sitter (it keeps its own limits and checks)
+  housesitter unlock <mac> --trial|--hold  arm one supervised try of the stored password, or disarm it
+  housesitter learn-prompt <mac> --i-see-the-field  teach it the password prompt while you see it on the KVM
+  housesitter power-cycle <mac> --attended  you have looked: skip the frozen-desktop check (never the budgets)
 
   housesitter ls <mac>                     the Mac as state + the actions available now (Ouro Reins)
   housesitter do <mac> <action> ['<json>'] run one; refusals: action-unavailable, input-invalid, action-failed
@@ -95,7 +99,7 @@ async function main() {
     try { mac = macConfig(name); } catch { mac = { name, kvm: { endpoints: [] } }; }
     const x = {
       name, mac, refs: { ...defaultRefs(name), ...(mac.kvm?.admin_password ? { admin: mac.kvm.admin_password } : {}) }, address: val('--address') || (fake ? null : mac.kvm?.endpoints?.find((e) => e.fallback)?.url?.replace(/^https:\/\//, '') || null),
-      dryRun: flag('--dry-run'), outbox: flag('--outbox'), notify: val('--notify'), heartbeat: val('--heartbeat'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
+      dryRun: flag('--dry-run'), outbox: flag('--outbox'), notify: val('--notify'), heartbeat: val('--heartbeat'), location: val('--location'), expectFingerprint: val('--fingerprint'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
       deps: fake ? fake.deps : realDeps(name, { secrets: store, saveMac: (fn) => updateMac(name, fn) }), configFile: configPath(),
     };
     if (fake) x.mac = { name, kvm: { endpoints: [] }, user_names: ['Ada'] };
@@ -142,8 +146,25 @@ async function main() {
     return r.status === 0 ? 0 : 1;
   }
 
+  if (cmd === 'unlock' && (flag('--trial') || flag('--hold'))) {
+    // Arming the one supervised try is an operator act over SSH, never through the GitHub outbox.
+    const r = await sitterSsh(mac)(`python3 /etc/kvmd/user/housesitter/sitter.py ${flag('--trial') ? 'password-trial' : 'password-hold'}`);
+    if (r.status !== 0) { say(`✗ ${String(r.stderr || r.stdout).trim() || 'could not reach the KVM over SSH'}`); return 1; }
+    say(flag('--trial')
+      ? `armed one supervised try. Restart the Mac now and watch: housesitter proof ${name} --record ./proof. The sitter types once, only where it sees the password field; if the desktop follows within 2 minutes the password is verified, otherwise it goes back to unverified and types nothing more.`
+      : 'held: the password is unverified again, and nothing is typed until you arm a trial.');
+    return 0;
+  }
+
+  if (cmd === 'learn-prompt') {
+    if (!flag('--i-see-the-field')) { say(`Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`); return 2; }
+    const r = await sitterSsh(mac)('python3 /etc/kvmd/user/housesitter/sitter.py learn-prompt taught over SSH by an operator who saw the field');
+    say(r.status === 0 ? `learned: ${String(r.stdout).trim()}. The sitter types only where a frame matches this.` : `✗ ${String(r.stderr || r.stdout).trim()}`);
+    return r.status === 0 ? 0 : r.status === 2 ? 2 : 1;
+  }
+
   if (['unlock', 'power-cycle', 'power-on'].includes(cmd)) {
-    const r = await sitterClient(mac).op(cmd.replace('-', '_'), {});
+    const r = await sitterClient(mac).op(cmd.replace('-', '_'), flag('--attended') ? { attended: true } : {});
     if (json) emit(r); else say(`${r.ok ? '✓' : `✗ ${r.code}`} ${cmd}: ${typeof r.result === 'string' ? r.result : JSON.stringify(r.result)}${r.via ? `\n  via ${r.via}` : ''}`);
     return r.ok ? 0 : r.code === 'action-unavailable' || r.code === 'input-invalid' ? 2 : 1;
   }

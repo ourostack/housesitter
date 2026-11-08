@@ -52,12 +52,14 @@ housesitter adopt studio --address 192.168.1.50 --this-mac --notify ntfy
 
 On the Mac, once: `sudo pmset -a autorestart 1 displaysleep 0`, so it turns back on when the plug does and keeps the KVM's picture alive, and start your agents at login (a login item or a LaunchAgent), so they come back with it. To undo everything on the KVM: `housesitter forget studio --yes`.
 
+Then arm it, once, while you watch. With the FileVault or login screen showing on the KVM's display, `housesitter learn-prompt studio --i-see-the-field` teaches the sitter what the password field looks like there. Then `housesitter unlock studio --trial` arms one supervised try, and you restart the Mac (`housesitter proof studio --record ./proof` records it). If that one try reaches the desktop, the password is verified and the sitter may type it from then on. If not, it goes back to unverified and types nothing more. Until then it only watches and messages you.
+
 ## What it handles
 
 | When your Mac… | The sitter on the KVM | Back in |
 | --- | --- | --- |
 | **kernel-panics** and restarts to the FileVault screen | sees the password field on the KVM's own picture and types its sealed copy of the password (once you've armed and verified it) | about 4 min |
-| **freezes solid** (frozen clock, no answer, still drawing power) | after 5 minutes, smart plug off for 10 s, then on by itself, then unlocks | about 10 min |
+| **freezes solid** (frozen clock, no answer, still drawing power) | after 5 minutes, and only if a fresh look over two more minutes still shows a frozen desktop while the network probes fail: smart plug off for 10 s, then on by itself. Never during a boot, or at FileVault, a login window, a black or unknown screen | about 10 min |
 | **loses power** | nothing to do until power is back; the Mac boots (`autorestart`), then it unlocks | power + 4 min |
 | **keeps falling back** to FileVault | three unlocks an hour at most, then it tells you | you decide |
 | **won't take the password** | two tries, then it stops and tells you exactly what to fix | you decide |
@@ -67,6 +69,8 @@ On the Mac, once: `sudo pmset -a autorestart 1 displaysleep 0`, so it turns back
 It calls a Mac frozen when it has stopped answering on the network for 5 minutes while it still has power. A ticking menu-bar clock overrules that, so it never power-cycles a Mac that has only lost its network: keep the clock in the menu bar (the default), and don't leave a full-screen app in front.
 
 Every action has a budget: three unlocks an hour, one power cycle per 30 minutes and three a day. The same failure twice means stop and tell you, once, with a reminder every six hours at most and a "back" message when it recovers. Messages go to [ntfy](https://ntfy.sh) or any webhook. Hangs need the smart plug; without one, it unlocks FileVault and tells you about a hang.
+
+Every unlock and power action is written to the sitter's ledger as *started* before it happens, so a crash or a KVM reboot mid-action still counts it. Per-boot and hourly limits live in that ledger, so rebooting the KVM never resets them. A frozen Mac the sitter won't power-cycle (a lock screen, say) gets you a message with the reason. `housesitter power-cycle studio --attended` is the explicit override for a person who has looked; the budgets still hold.
 
 ## Eyes and hands for agents
 
@@ -107,7 +111,8 @@ The point of housesitter is to type a password with nobody watching, so it is ca
 - **It lives in two places: your Keychain and the KVM.** It travels once, over SSH stdin, to the KVM, where it is encrypted with a key derived from the KVM's hardware ids and kept root-only. That stops a copied file, not root on the KVM. It is never in argv, a log, a status file, a gist or a cloud.
 - **Nothing types it remotely.** No command sends the password; `housesitter unlock` asks the sitter to type its own copy, under the same rules.
 - **Budgets.** Three unlocks an hour at most; two wrong passwords in a row and it stops.
-- **The KVM reaches nothing.** On your tailnet it is `tag:kvm` with no outbound rules; GL.iNet's cloud binding is turned off.
+- **The KVM reaches nothing, and little reaches it.** On your tailnet it is `tag:kvm` with no outbound rules. GL.iNet's cloud binding is turned off and read back as off, or `adopt` stops. At home (`--location home`, the default) your LAN may reach its SSH and HTTPS; anywhere else (`--location away`) only the tailnet may (`tailscale0`).
+- **It never reshapes the display.** No EDID writes, no factory reset, no firmware upgrade: refused below every client call, raw ones included, in Node and on the KVM.
 
 [docs/security.md](docs/security.md) has the threat model, and why the encryption is built from Python's standard library (a KVM may have no AES module, and nothing should be installed on it).
 

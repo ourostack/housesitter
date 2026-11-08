@@ -81,3 +81,35 @@ test('passwords and network parsing', () => {
   const n = parseIfconfig('lo0: flags\n\tinet 127.0.0.1\nen0: flags\n\tether aa:bb:cc:dd:ee:ff\n\tinet 192.168.1.10 netmask\nutun3: flags\n\tinet 100.64.0.2\n');
   assert.deepEqual(n, { ips: ['192.168.1.10'], macs: ['aa:bb:cc:dd:ee:ff'] });
 });
+
+test('a fingerprint read on the KVM itself must match, or adopt stops before sending anything', async () => {
+  const { results, f } = await run({}, {}, { notify: 'ntfy', expectFingerprint: 'AA:BB' });
+  assert.equal(results.at(-1).id, 'discover');
+  assert.equal(results.at(-1).ok, false);
+  assert.equal(f.s.ssh.length, 0);
+  const good = await run({}, {}, { notify: 'ntfy', expectFingerprint: (fakeDeps().world.pin) });
+  assert.match(good.results[0].detail, /the one you read on the KVM itself/);
+});
+
+test('harden must succeed (GL cloud read back as off), or adopt stops', async () => {
+  const f = fakeDeps();
+  f.s.hardenFails = true;
+  const x = { name: 'studio', mac: { name: 'studio', kvm: { endpoints: [] }, user_names: ['Ada'] }, refs: defaultRefs('studio'), say: () => {}, deps: f.deps, notify: 'ntfy' };
+  const r = await adopt(x);
+  assert.equal(r.at(-1).id, 'harden');
+  assert.equal(r.at(-1).ok, false);
+  assert.match(r.at(-1).detail, /not hardened/);
+  assert.ok(r.findIndex((s) => s.id === 'tailnet') < r.findIndex((s) => s.id === 'harden'), 'the tailnet is joined before ingress can be narrowed to it');
+});
+
+test('location: away makes the sitter tailnet-only; anything but home or away is refused', async () => {
+  const away = await run({}, {}, { notify: 'ntfy', location: 'away' });
+  assert.equal(JSON.parse(away.f.s.files['/etc/kvmd/user/housesitter/config.json']).location, 'away');
+  assert.equal(away.f.s.saved.location, 'away');
+  const home = await run({}, {}, { notify: 'ntfy' });
+  assert.equal(JSON.parse(home.f.s.files['/etc/kvmd/user/housesitter/config.json']).location, 'home');
+  assert.equal(away.results.find((r) => r.id === 'harden').ok, false, 'away without a joined tailnet: harden refuses rather than lock you out');
+  assert.match(away.results.find((r) => r.id === 'harden').detail, /hasn't joined a running tailnet/);
+  const bad = await run({}, {}, { notify: 'ntfy', location: 'office' });
+  assert.equal(bad.results.at(-1).ok, false);
+});
