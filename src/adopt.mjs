@@ -191,7 +191,7 @@ export function steps() {
       },
     },
     {
-      id: 'outbox', title: 'The away route: two secret gists (status out, commands in)',
+      id: 'outbox', title: 'The GitHub outbox (optional): two secret gists, status out and requests in',
       async run(x) {
         if (!x.outbox) return { ok: true, skipped: true, detail: 'skipped (add --outbox to reach the sitter from anywhere with only GitHub)' };
         if (x.mac.outbox?.gist && x.mac.outbox?.inbox) return { ok: true, detail: 'already there' };
