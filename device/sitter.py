@@ -975,7 +975,7 @@ def save(name, value):
 
 def caps_of(cfg, power):
     fingerbot = (cfg.get("power") or {}).get("kind") == "fingerbot"
-    return {"unlock": cfg.get("unlock", True) is not False and has_secret("mac"), "plug": bool(power), "fingerbot": fingerbot, "notify": True}
+    return {"unlock": cfg.get("unlock", True) is not False and has_secret("mac"), "plug": bool(power), "fingerbot": fingerbot, "notify": bool((cfg.get("notify") or {}).get("url"))}
 
 
 def once(cfg, kvmd, power, log, now=None, gh=None):
@@ -1102,6 +1102,15 @@ def main(argv):
     if argv[:1] == ["once"]:
         print(json.dumps(once(cfg, kvmd, power, log, gh=gh)))
         return 0
+    if argv[:1] == ["hello"]:
+        # Sent once by adopt, so the first message you get from the sitter is a calm one.
+        name = cfg.get("name") or "your Mac"
+        try:
+            print(json.dumps({"sent": notify(cfg, "%s has a housesitter" % name, "It watches %s from the KVM beside it, and messages you here only when it needs you, and again when %s is back." % (name, name))}))
+            return 0
+        except Exception as e:  # noqa: BLE001
+            print(json.dumps({"sent": False, "error": str(e)[:200]}))
+            return 1
     if argv[:1] == ["do"] and len(argv) >= 2:
         # The same handler as the inbox, for a client that reaches this KVM over SSH (LAN or tailnet).
         st = load("state.json", {"mem": None, "ledger": []})

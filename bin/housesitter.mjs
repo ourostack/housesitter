@@ -21,7 +21,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 
   housesitter demo                         one bad night, rehearsed in seconds (no hardware)
   housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
-      [--outbox] [--this-mac] [--dry-run] [--fake [--api-closed]]
+      [--notify ntfy|<url>] [--heartbeat <url>] [--this-mac] [--outbox] [--dry-run] [--fake]
   housesitter secret <mac> <mac-password|kvm-admin|outbox-token>   store a secret (read from stdin, no echo)
   housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
 
@@ -88,14 +88,14 @@ async function main() {
   }
 
   if (cmd === 'adopt') {
-    need(name, 'housesitter adopt <mac> [--address <ip>] [--outbox] [--this-mac] [--dry-run] [--fake]');
-    const fake = flag('--fake') ? fakeDeps({ apiClosed: flag('--api-closed') }) : null;
+    need(name, 'housesitter adopt <mac> [--address <ip>] [--notify ntfy|<url>] [--heartbeat <url>] [--outbox] [--this-mac] [--dry-run] [--fake]');
+    const fake = flag('--fake') ? fakeDeps({ apiClosed: !flag('--api-open') }) : null;
     const store = secretStore();
     let mac;
     try { mac = macConfig(name); } catch { mac = { name, kvm: { endpoints: [] } }; }
     const x = {
       name, mac, refs: { ...defaultRefs(name), ...(mac.kvm?.admin_password ? { admin: mac.kvm.admin_password } : {}) }, address: val('--address') || (fake ? null : mac.kvm?.endpoints?.find((e) => e.fallback)?.url?.replace(/^https:\/\//, '') || null),
-      dryRun: flag('--dry-run'), outbox: flag('--outbox'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
+      dryRun: flag('--dry-run'), outbox: flag('--outbox'), notify: val('--notify'), heartbeat: val('--heartbeat'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
       deps: fake ? fake.deps : realDeps(name, { secrets: store, saveMac: (fn) => updateMac(name, fn) }), configFile: configPath(),
     };
     if (fake) x.mac = { name, kvm: { endpoints: [] }, user_names: ['Ada'] };
