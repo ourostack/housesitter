@@ -2,7 +2,7 @@
 // the first thing that needs a person or a decision. It runs once from a computer on the KVM's network (the one LAN
 // step); after it, you and your agents reach the KVM over the tailnet or the outbox.
 //
-//   housesitter adopt <mac> [--address <kvm ip>] [--dry-run] [--outbox] [--fake [--api-closed]] [--json]
+//   housesitter adopt <mac> [--address <kvm ip>] [--notify ntfy|<url>] [--heartbeat <url>] [--dry-run] [--outbox] [--fake [--api-open]] [--json]
 //
 // Secrets, each copied once to the KVM over SSH stdin (never argv, logs or git), where the sitter seals it root-only
 // to the KVM's own hardware ids: the KVM's admin password (generated here if the KVM is new), the Mac's password (so
@@ -203,6 +203,25 @@ export function steps() {
       },
     },
     {
+      id: 'notify', title: 'Where it messages you when it needs you',
+      async run(x) {
+        if (x.notify) {
+          const url = x.notify === 'ntfy' ? `https://ntfy.sh/housesitter-${x.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${crypto.randomBytes(9).toString('hex')}` : x.notify;
+          if (!/^https:\/\/\S+$/.test(url)) return { ok: false, stop: true, detail: `--notify takes ntfy (a private ntfy.sh topic made for you) or an https URL (got ${x.notify})` };
+          x.mac.notify = { kind: /^https:\/\/ntfy\./.test(url) ? 'ntfy' : 'webhook', url };
+        }
+        if (x.heartbeat) {
+          if (!/^https:\/\/\S+$/.test(x.heartbeat)) return { ok: false, stop: true, detail: `--heartbeat takes an https URL to ping every minute (got ${x.heartbeat})` };
+          x.mac.heartbeat = { url: x.heartbeat };
+        }
+        if ((x.notify || x.heartbeat) && !x.dryRun) x.deps.saveMac((m) => { if (x.mac.notify) m.notify = x.mac.notify; if (x.mac.heartbeat) m.heartbeat = x.mac.heartbeat; });
+        const dms = x.mac.heartbeat?.url ? `; it pings ${new URL(x.mac.heartbeat.url).host} every minute, which tells you if the KVM itself goes quiet` : '; for word when the KVM itself dies, add --heartbeat <a healthchecks.io ping URL>';
+        const n = x.mac.notify;
+        if (!n?.url) return { ok: false, decision: true, detail: `nowhere yet, so it can fix things but can't tell you when it can't. Run adopt again with --notify ntfy (a private ntfy.sh topic for your phone) or --notify <webhook URL>${dms}` };
+        return { ok: true, detail: `${n.kind === 'ntfy' ? `ntfy: subscribe to ${n.url.replace(/^https:\/\//, '')} in the ntfy app (the topic's name is its only lock, so keep it to yourself)` : `webhook: ${new URL(n.url).host}`}${dms}` };
+      },
+    },
+    {
       id: 'sitter', title: 'Install the sitter on the KVM',
       async run(x) {
         if (x.dryRun) return { ok: true, detail: 'would install sitter.py and its service (systemd or BusyBox init, whichever the KVM runs)' };
@@ -229,7 +248,7 @@ export function steps() {
           r = await x.deps.ssh('cat > /etc/init.d/S99housesitter && chmod 755 /etc/init.d/S99housesitter', x.deps.readDevice('S99housesitter'));
         }
         if (r.status !== 0) return { ok: false, stop: true, detail: `service install failed: ${String(r.stderr || r.stdout).slice(0, 200)}` };
-        return { ok: true, detail: `${init === 'systemd' ? 'systemd unit' : 'BusyBox init script'}; watching ${net.ips.length ? net.ips.join(', ') : 'by picture and plug (run adopt on the Mac itself with --this-mac to watch its network too)'}` };
+        return { ok: true, detail: `${init === 'systemd' ? 'systemd unit' : 'BusyBox init script'}; watching the screen${net.ips.length ? `, ${net.ips.join(', ')}` : ''}${x.mac.power ? ' and the plug' : ''}${net.ips.length ? '' : ' (run adopt on the Mac itself with --this-mac to watch its network too)'}${x.mac.power ? '' : '; no smart plug, so a hang gets a message, not a power cycle'}` };
       },
     },
     {
@@ -263,7 +282,12 @@ export function steps() {
         const lines = String(r.stdout).trim().split('\n');
         let sec = {}, first = {};
         try { sec = JSON.parse(lines[0]); first = JSON.parse(lines.at(-1)); } catch { /* shown below */ }
-        return { ok: Boolean(sec.kvmd) && (Boolean(sec.mac) || x.mac.unlock === false), detail: `secrets ${Object.entries(sec).map(([k, v]) => `${k} ${v ? '✓' : '✗'}`).join(', ')}; first look: ${first.state || '?'}; it can ${Object.entries(first.can || {}).filter(([, v]) => v).map(([k]) => k).join(', ') || '?'}` };
+        let hello = '';
+        if (x.mac.notify?.url) {
+          const h = await x.deps.ssh(`python3 ${DIR}/sitter.py hello`);
+          hello = h.status === 0 ? '; sent you a hello, so check your phone' : `; the hello didn't arrive (${String(h.stdout || h.stderr).trim().slice(0, 120)}): check the --notify address`;
+        }
+        return { ok: Boolean(sec.kvmd) && (Boolean(sec.mac) || x.mac.unlock === false), detail: `secrets ${Object.entries(sec).map(([k, v]) => `${k} ${v ? '✓' : '✗'}`).join(', ')}; first look: ${first.state || '?'}; it can ${Object.entries(first.can || {}).filter(([, v]) => v).map(([k]) => k).join(', ') || '?'}${hello}` };
       },
     },
     {
@@ -313,7 +337,7 @@ export async function adopt(x) {
 
 // ---------- the worlds ----------
 
-export function fakeDeps({ apiClosed = false } = {}) {
+export function fakeDeps({ apiClosed = true } = {}) {
   const w = fakeWorld({ apiClosed, inited: false });
   const vault = { 'keychain:housesitter/studio-mac-password': 'correct horse' };
   const s = { ssh: [], files: {}, secretsOnKvm: {}, rootKeys: [], init: 'busybox', saved: {}, firstRun: 0 };
@@ -327,7 +351,10 @@ export function fakeDeps({ apiClosed = false } = {}) {
       sleep: async () => {},
       readDevice: (f) => `# ${f}\n`,
       sshPublicKey: () => 'ecdsa-sha2-nistp256 AAAAfake housesitter studio',
-      async firstRunPerson(x, pw) { s.firstRun++; w.st.adminPassword = pw; w.st.inited = true; return true; },
+      async firstRunPerson(x, pw) {
+        x.say(`    Next, its admin password. The KVM's first-run page would open now. You'd paste (Cmd+V) into both password fields and save: the password is on the clipboard and stored at ${x.refs.admin}. (Rehearsal: pasted for you.)`);
+        s.firstRun++; w.st.adminPassword = pw; w.st.inited = true; return true;
+      },
       async sshPassword(x, cmd, input) {
         if (!w.st.adminPassword || vault[x.refs.admin] !== w.st.adminPassword) return { status: 255, stdout: '', stderr: 'Permission denied' };
         if (input && cmd.includes('authorized_keys')) s.rootKeys.push(input.trim());
@@ -343,7 +370,11 @@ export function fakeDeps({ apiClosed = false } = {}) {
         if (cmd.startsWith('if test -d /run/systemd/system; then echo')) return { status: 0, stdout: `${s.init}\n`, stderr: '' };
         const f = cmd.match(/cat > (\S+)/);
         if (f) { s.files[f[1]] = input; return { status: 0, stdout: '', stderr: '' }; }
-        if (cmd.includes('sitter.py secrets')) return { status: 0, stdout: `${JSON.stringify({ mac: Boolean(s.secretsOnKvm.mac), kvmd: Boolean(s.secretsOnKvm.kvmd), outbox: Boolean(s.secretsOnKvm.outbox) })}\n${JSON.stringify({ state: 'healthy', can: { unlock: Boolean(s.secretsOnKvm.mac), plug: false, notify: true } })}\n`, stderr: '' };
+        if (cmd.includes('sitter.py secrets')) {
+          const cfg = JSON.parse(Object.entries(s.files).find(([f]) => f.endsWith('/config.json'))?.[1] || '{}');
+          return { status: 0, stdout: `${JSON.stringify({ mac: Boolean(s.secretsOnKvm.mac), kvmd: Boolean(s.secretsOnKvm.kvmd), outbox: Boolean(s.secretsOnKvm.outbox) })}\n${JSON.stringify({ state: 'healthy', can: { unlock: Boolean(s.secretsOnKvm.mac), plug: Boolean(cfg.power), notify: Boolean(cfg.notify?.url) } })}\n`, stderr: '' };
+        }
+        if (cmd.includes('sitter.py hello')) { s.hello = (s.hello || 0) + 1; return { status: 0, stdout: '{"sent": "posted 200"}\n', stderr: '' }; }
         return { status: 0, stdout: '', stderr: '' };
       },
       createGists: async () => ({ gist: 'fake0utb0x', inbox: 'fake1nb0x' }),
@@ -402,7 +433,7 @@ export function realDeps(name, { secrets, saveMac }) {
     async firstRunPerson(x, pw) {
       sh('/usr/bin/pbcopy', [], { input: pw });
       sh('/usr/bin/open', [`https://${x.address}/`]);
-      x.say(`    The KVM's first-run page is open. Paste (Cmd+V) into both password fields and save: the password is on the clipboard and stored at ${x.refs.admin}. Waiting up to 5 minutes…`);
+      x.say(`    Next, its admin password. The KVM's first-run page is open. Paste (Cmd+V) into both password fields and save: the password is on the clipboard and stored at ${x.refs.admin}. Waiting up to 5 minutes…`);
       for (let i = 0; i < 30; i++) {
         if ((await this.sshPassword(x, 'true')).status === 0) { sh('/usr/bin/pbcopy', [], { input: '' }); return true; }
         await new Promise((r) => setTimeout(r, 10000));

@@ -395,6 +395,11 @@ class Notify(unittest.TestCase):
         self.assertEqual(json.loads(reqs[1].data)["subject"], "s")
         self.assertIn("no notify target", W.notify({}, "s", "b", opener=op))
 
+    def test_it_only_claims_it_can_tell_you_when_it_has_somewhere_to_say_it(self):
+        self.assertFalse(W.caps_of({}, None)["notify"])
+        self.assertFalse(W.caps_of({"notify": {"kind": "ntfy"}}, None)["notify"])
+        self.assertTrue(W.caps_of({"notify": {"kind": "ntfy", "url": "https://ntfy.sh/t"}}, None)["notify"])
+
 
 class Heartbeat(unittest.TestCase):
     def test_pings_and_fails(self):
