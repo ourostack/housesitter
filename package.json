@@ -1,0 +1,27 @@
+{
+  "name": "@ouro.bot/housesitter",
+  "version": "0.1.0",
+  "description": "Your agents' Mac, looked after while you're away: a cheap IP-KVM unlocks FileVault after a panic, power-cycles a hang, gives agents eyes and hands before login, and tells you only when it can't.",
+  "type": "module",
+  "bin": { "housesitter": "bin/housesitter.mjs" },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./watchdog": "./src/watchdog.mjs",
+    "./hands": "./src/hands.mjs",
+    "./kvmd": "./src/kvmd.mjs",
+    "./screen": "./src/screen.mjs",
+    "./fake": "./src/fake.mjs"
+  },
+  "files": ["bin", "src", "device", "spec", "docs/tailnet-policy.hujson", "README.md", "LICENSE", "llms.txt"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs && python3 -m unittest discover -s test -p 'test_*.py'",
+    "demo": "node bin/housesitter.mjs demo"
+  },
+  "keywords": ["mac", "mac-mini", "kvm", "ip-kvm", "pikvm", "glkvm", "filevault", "watchdog", "agents", "computer-use", "tailscale", "homelab"],
+  "homepage": "https://ouroboros.bot/housesitter/",
+  "repository": { "type": "git", "url": "git+https://github.com/ourostack/housesitter.git" },
+  "bugs": "https://github.com/ourostack/housesitter/issues",
+  "license": "MIT",
+  "author": "Ari Mendelow"
+}

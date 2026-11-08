@@ -1,0 +1,15 @@
+# housesitter's sitter on a systemd KVM (PiKVM, some GLKVM builds). Installed by `housesitter adopt`.
+[Unit]
+Description=housesitter: watch the Mac this KVM is plugged into; unlock FileVault, power-cycle a hang, tell you when stuck
+After=kvmd.service network-online.target
+Wants=kvmd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /etc/kvmd/user/housesitter/sitter.py run
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

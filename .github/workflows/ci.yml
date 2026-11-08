@@ -1,0 +1,51 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  node:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: node --test test/*.test.mjs
+      - run: node bin/housesitter.mjs demo
+  sitter:
+    name: sitter on python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        # GLKVM ships 3.12; older PiKVM images have 3.9. The sitter is standard library only.
+        python: ['3.9', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -W error::SyntaxWarning -m unittest discover -s test -p 'test_*.py' -v
+  ci:
+    name: ci
+    if: always()
+    needs: [node, sitter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: test "${{ needs.node.result }}" = success && test "${{ needs.sitter.result }}" = success

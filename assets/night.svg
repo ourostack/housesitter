@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 470" width="1200" height="470" role="img" aria-labelledby="t d">
+  <title id="t">One bad night, and the sitter's answer to each part of it</title>
+  <desc id="d">A timeline from 2 a.m. to 6:30 a.m. that turns from night to dawn. At 3:12 the Mac kernel-panics and restarts to the FileVault screen; the sitter on the KVM reads the password prompt and types its sealed copy of the password, and the Mac is back by itself 4 minutes after it went down. At 4:31 the Mac freezes solid; after 5 minutes the sitter switches the smart plug off and on, unlocks FileVault, and the Mac is back 10 minutes after it froze. At 5:41 the Mac panics again, but its password was changed the day before, so the sitter tries twice, stops, and sends one message to your phone. This is the rehearsal that housesitter demo prints, not a recording.</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#151a33"/>
+      <stop offset="0.45" stop-color="#3a3560"/>
+      <stop offset="0.75" stop-color="#c98a86"/>
+      <stop offset="1" stop-color="#ffd8a8"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff4d6"/>
+      <stop offset="0.5" stop-color="#ffd27a" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#ffb35c" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0b0d1c" flood-opacity="0.28"/>
+    </filter>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .tick { fill: #e9e4f5; font-size: 16px; font-weight: 500; }
+      .tickd { fill: #5d4636; font-size: 16px; font-weight: 500; }
+      .when { font-size: 15px; font-weight: 700; letter-spacing: .04em; fill: #8a5a3c; }
+      .what { font-size: 22px; font-weight: 750; fill: #23202b; }
+      .how { font-size: 17px; fill: #4c4756; }
+      .ok { font-size: 17px; font-weight: 700; fill: #23874f; }
+      .ask { font-size: 17px; font-weight: 700; fill: #b4532a; }
+      .label { font-size: 14px; font-weight: 600; fill: #d9d2ef; letter-spacing: .08em; }
+      .legend { font-size: 15px; fill: #e9e4f5; }
+      .legendd { font-size: 15px; fill: #5d4636; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="470" rx="22" fill="url(#sky)"/>
+  <g fill="#fff">
+    <circle cx="60" cy="74" r="1.6" opacity=".9"/><circle cx="132" cy="96" r="1.2" opacity=".7"/><circle cx="250" cy="70" r="1.8" opacity=".9"/>
+    <circle cx="330" cy="86" r="1.1" opacity=".6"/><circle cx="420" cy="62" r="1.4" opacity=".7"/><circle cx="500" cy="90" r="1" opacity=".5"/>
+    <circle cx="600" cy="66" r="1.1" opacity=".4"/><circle cx="690" cy="84" r=".9" opacity=".3"/>
+  </g>
+  <circle cx="1140" cy="392" r="130" fill="url(#sun)"/>
+  <text x="40" y="44" class="label">ONE NIGHT, REHEARSED BY HOUSESITTER DEMO</text>
+
+  <rect x="60" y="356" width="1080" height="12" rx="6" fill="#ffffff" opacity=".14"/>
+  <rect x="60" y="356" width="288" height="12" rx="6" fill="#46c27f"/>
+  <rect x="348" y="356" width="16" height="12" fill="#f3a64b"/>
+  <rect x="364" y="356" width="300" height="12" fill="#46c27f"/>
+  <rect x="664" y="356" width="40" height="12" fill="#f3a64b"/>
+  <rect x="704" y="356" width="240" height="12" fill="#46c27f"/>
+  <rect x="944" y="356" width="196" height="12" rx="6" fill="#e9725a"/>
+  <g text-anchor="middle">
+    <text x="60" y="396" class="tick" text-anchor="start">2 a.m.</text>
+    <text x="300" y="396" class="tick">3 a.m.</text>
+    <text x="540" y="396" class="tick">4 a.m.</text>
+    <text x="780" y="396" class="tick">5 a.m.</text>
+    <text x="1020" y="396" class="tickd">6 a.m.</text>
+  </g>
+  <g>
+    <rect x="60" y="428" width="22" height="10" rx="5" fill="#46c27f"/><text x="90" y="438" class="legend">up</text>
+    <rect x="140" y="428" width="22" height="10" rx="5" fill="#f3a64b"/><text x="170" y="438" class="legend">down, being fixed by the sitter</text>
+    <rect x="430" y="428" width="22" height="10" rx="5" fill="#e9725a"/><text x="460" y="438" class="legend">down, needs you</text>
+  </g>
+
+  <line x1="348" y1="318" x2="348" y2="352" stroke="#f3a64b" stroke-width="2" stroke-dasharray="3 4"/>
+  <circle cx="348" cy="362" r="8" fill="#f3a64b" stroke="#fff" stroke-width="2.5"/>
+  <g filter="url(#soft)"><rect x="96" y="112" width="344" height="206" rx="18" fill="#fffaf3"/></g>
+  <text x="122" y="146" class="when">3:12 A.M.</text>
+  <text x="122" y="178" class="what">Kernel panic</text>
+  <text x="122" y="210" class="how">It restarts to the FileVault screen.</text>
+  <text x="122" y="234" class="how">The sitter reads "Enter Password"</text>
+  <text x="122" y="258" class="how">and types its own sealed copy.</text>
+  <text x="122" y="296" class="ok">✓ Back by itself in 4 min</text>
+
+  <line x1="664" y1="318" x2="664" y2="352" stroke="#f3a64b" stroke-width="2" stroke-dasharray="3 4"/>
+  <circle cx="664" cy="362" r="8" fill="#f3a64b" stroke="#fff" stroke-width="2.5"/>
+  <g filter="url(#soft)"><rect x="466" y="112" width="344" height="206" rx="18" fill="#fffaf3"/></g>
+  <text x="492" y="146" class="when">4:31 A.M.</text>
+  <text x="492" y="178" class="what">Frozen solid, no panic</text>
+  <text x="492" y="210" class="how">The clock stops. After 5 minutes</text>
+  <text x="492" y="234" class="how">the smart plug goes off, then on</text>
+  <text x="492" y="258" class="how">by itself. FileVault, unlocked.</text>
+  <text x="492" y="296" class="ok">✓ Back by itself in 10 min</text>
+
+  <line x1="944" y1="318" x2="944" y2="352" stroke="#e9725a" stroke-width="2" stroke-dasharray="3 4"/>
+  <circle cx="944" cy="362" r="8" fill="#e9725a" stroke="#fff" stroke-width="2.5"/>
+  <g filter="url(#soft)"><rect x="836" y="112" width="340" height="206" rx="18" fill="#fffaf3"/></g>
+  <text x="862" y="146" class="when">5:41 A.M.</text>
+  <text x="862" y="178" class="what">Panic, password changed</text>
+  <text x="862" y="210" class="how">Two careful tries, then it stops</text>
+  <text x="862" y="234" class="how">(it never guesses) and tells you</text>
+  <text x="862" y="258" class="how">exactly what to fix.</text>
+  <text x="862" y="296" class="ask">One message to your phone</text>
+</svg>

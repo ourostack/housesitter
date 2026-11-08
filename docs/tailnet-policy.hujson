@@ -1,0 +1,23 @@
+// A Tailscale policy for a tailnet with housesitter KVMs in it (https://github.com/ourostack/housesitter).
+// Paste the three parts into your policy file (admin console > Access controls), merging with what's there.
+//
+//   - Your own devices keep reaching everything, including each KVM on 443 (its web UI and API) and 22 (SSH).
+//   - A KVM (tag:kvm) reaches nothing on the tailnet: no rule has tag:kvm or "*" as a source. It still reaches the
+//     internet (GitHub for the outbox, your notify URL) outside the tailnet.
+//   - Only an admin can hand out tag:kvm, so only a key you made can join as a KVM.
+// The tests fail the save if a later edit lets a KVM reach your devices. Replace 100.64.0.1 with one of yours.
+{
+  "tagOwners": {
+    "tag:kvm": ["autogroup:admin"],
+  },
+
+  "grants": [
+    // Members' devices, to everything (the default allow-all, narrowed to members so tagged devices are left out).
+    {"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+  ],
+
+  "tests": [
+    {"src": "100.64.0.1", "accept": ["tag:kvm:443", "tag:kvm:22"]},
+    {"src": "tag:kvm", "deny": ["100.64.0.1:22", "100.64.0.1:443"]},
+  ],
+}

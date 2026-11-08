@@ -1,0 +1,29 @@
+#!/bin/sh
+# housesitter's sitter on a KVM that boots with BusyBox init (/etc/init.d/S??*, as GLKVM firmware does). Installed
+# by `housesitter adopt`, which picks this or housesitter.service by what the KVM runs. A small supervisor loop
+# restarts the sitter if it ever exits; stop ends the whole process group by its PID file.
+DIR=/etc/kvmd/user/housesitter
+PIDF=/var/run/housesitter.pid
+
+running() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
+
+case "$1" in
+  start)
+    running && exit 0
+    setsid sh -c "while true; do nice -n 10 python3 $DIR/sitter.py run >>$DIR/stdout.log 2>&1; sleep 10; done" </dev/null >/dev/null 2>&1 &
+    echo $! > "$PIDF"
+    ;;
+  stop)
+    if running; then kill -TERM -"$(cat "$PIDF")" 2>/dev/null || kill -TERM "$(cat "$PIDF")"; fi
+    : > "$PIDF"
+    ;;
+  restart)
+    "$0" stop; sleep 1; "$0" start
+    ;;
+  status)
+    if running; then echo "housesitter running (pid $(cat "$PIDF"))"; else echo "housesitter stopped"; exit 3; fi
+    ;;
+  *)
+    echo "usage: $0 start|stop|restart|status"; exit 2
+    ;;
+esac

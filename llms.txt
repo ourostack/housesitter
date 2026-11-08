@@ -1,0 +1,28 @@
+# housesitter
+
+> Keeps an always-on Mac that hosts AI agents alive and drivable, hands-off, through a cheap IP-KVM (GL.iNet Comet / any PiKVM-API KVM). A sitter on the KVM unlocks FileVault after a panic (typing a sealed copy of the password only at the prompt), power-cycles a hang through a smart plug, and messages you once when stuck. Agents get screenshot/click/type/key on the Mac from before login, in Anthropic computer-use shape, over Tailscale, LAN or a GitHub gist outbox.
+
+## Start
+- [README](README.md): what it does, quickstart, status
+- `housesitter demo`: a rehearsed night, no hardware
+- `housesitter adopt <mac> --fake`: arrival day, rehearsed
+
+## For agents driving a Mac
+- `housesitter ls <mac>` then `housesitter do <mac> <action> '<json>'` (Ouro Reins shape; refusals action-unavailable / input-invalid / action-failed; exit 0 ok, 2 refused, 1 failed)
+- `housesitter computer <mac> '{"action":"left_click","coordinate":[x,y]}'` (Anthropic computer-use input as-is)
+- Library: `import { open } from '@ouro.bot/housesitter'` → `screenshot/click/type/key/scroll/computer`
+- Coordinates are in the last screenshot's pixels.
+- Never type a password; `type` refuses anything that looks like one. Ask the sitter: `housesitter unlock <mac>`.
+
+## Docs
+- [Hardware](docs/hardware.md): wiring, display settings, KVM quirks, power adapters
+- [Security](docs/security.md): the password rules and their limits
+- [Tailscale](docs/tailscale.md): tag:kvm that reaches nothing
+- [Proof](docs/proof.md): record a real restart
+- [Prior art](docs/prior-art.md)
+
+## Code
+- src/watchdog.mjs and device/sitter.py: the same rules, both tested against spec/watchdog-cases.json
+- src/hands.mjs: the pixel driver and transports
+- src/adopt.mjs: arrival day
+- device/sitter.py: the always-on watcher on the KVM (Python 3 standard library only)

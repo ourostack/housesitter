@@ -1,0 +1,815 @@
+{
+  "_why": "Shared scenarios for the watchdog's rules. The tests run them against src/watchdog.mjs (Node, on agent hosts) and device/sitter.py (Python, on the KVM), so every watcher decides alike. Each step: minutes since start, what the watcher sees, then the state and the actions (kinds) it must choose. The runner performs every action except wait, appending {at, kind, state} to the ledger.",
+  "scenarios": [
+    {
+      "name": "healthy Mac: nothing to do",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": true,
+            "beat_min": 1,
+            "presence": true
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 1,
+          "obs": {
+            "answers": true,
+            "beat_min": 1,
+            "presence": true,
+            "screen": "desktop",
+            "video": true
+          },
+          "state": "healthy",
+          "actions": []
+        }
+      ]
+    },
+    {
+      "name": "panic: reboots to FileVault, the sitter unlocks it with its own sealed copy of the password, the Mac comes back",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": true,
+            "beat_min": 0,
+            "presence": true
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 1,
+          "obs": {
+            "answers": false,
+            "beat_min": 1,
+            "presence": false,
+            "screen": "blank",
+            "video": false
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 3,
+          "obs": {
+            "answers": false,
+            "beat_min": 3,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 4,
+          "obs": {
+            "answers": false,
+            "beat_min": 4,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "wait"
+          ]
+        },
+        {
+          "t": 5,
+          "obs": {
+            "answers": true,
+            "beat_min": 0,
+            "presence": true,
+            "screen": "desktop",
+            "video": true
+          },
+          "state": "healthy",
+          "actions": []
+        }
+      ]
+    },
+    {
+      "name": "FileVault seen by a watcher that cannot unlock (an agent host): leave it to the sitter for 10 min, then tell you once",
+      "caps": {
+        "unlock": false,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "screen": "filevault",
+            "video": true,
+            "arp": false,
+            "watts": 9
+          },
+          "state": "filevault",
+          "actions": []
+        },
+        {
+          "t": 5,
+          "obs": {
+            "screen": "filevault",
+            "video": true,
+            "arp": false,
+            "watts": 9
+          },
+          "state": "filevault",
+          "actions": []
+        },
+        {
+          "t": 10,
+          "obs": {
+            "screen": "filevault",
+            "video": true,
+            "arp": false,
+            "watts": 9
+          },
+          "state": "filevault",
+          "actions": [
+            "notify"
+          ]
+        },
+        {
+          "t": 15,
+          "obs": {
+            "screen": "filevault",
+            "video": true,
+            "arp": false,
+            "watts": 9
+          },
+          "state": "filevault",
+          "actions": []
+        },
+        {
+          "t": 400,
+          "obs": {
+            "screen": "filevault",
+            "video": true,
+            "arp": false,
+            "watts": 9
+          },
+          "state": "filevault",
+          "actions": [
+            "notify"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "wrong password on the sitter: two unlocks, then stop and tell you",
+      "caps": {
+        "unlock": true,
+        "plug": false,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 5,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 10,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "notify"
+          ]
+        },
+        {
+          "t": 15,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": []
+        }
+      ]
+    },
+    {
+      "name": "hang: powered, frozen desktop, no answer for 5 min: power cycle, lands on FileVault, unlock",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "beat_min": 4,
+            "presence": false,
+            "screen": "desktop",
+            "clock_ticking": false,
+            "video": true,
+            "watts": 14
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 3,
+          "obs": {
+            "answers": false,
+            "beat_min": 7,
+            "presence": false,
+            "screen": "desktop",
+            "clock_ticking": false,
+            "video": true,
+            "watts": 14
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 5,
+          "obs": {
+            "answers": false,
+            "beat_min": 9,
+            "presence": false,
+            "screen": "desktop",
+            "clock_ticking": false,
+            "video": true,
+            "watts": 14
+          },
+          "state": "hung",
+          "actions": [
+            "power_cycle"
+          ]
+        },
+        {
+          "t": 6,
+          "obs": {
+            "answers": false,
+            "beat_min": 10,
+            "presence": false,
+            "screen": "blank",
+            "video": false,
+            "watts": 6
+          },
+          "state": "hung",
+          "actions": [
+            "wait"
+          ]
+        },
+        {
+          "t": 7,
+          "obs": {
+            "answers": false,
+            "beat_min": 11,
+            "presence": false,
+            "screen": "filevault",
+            "video": true,
+            "watts": 8
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 9,
+          "obs": {
+            "answers": true,
+            "beat_min": 0,
+            "presence": true,
+            "screen": "desktop",
+            "clock_ticking": true,
+            "video": true,
+            "watts": 12
+          },
+          "state": "healthy",
+          "actions": []
+        }
+      ]
+    },
+    {
+      "name": "UI alive but agents' path down (clock ticking): never power-cycle",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "beat_min": 20,
+            "presence": false,
+            "screen": "desktop",
+            "clock_ticking": true,
+            "video": true,
+            "watts": 12
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 30,
+          "obs": {
+            "answers": false,
+            "beat_min": 50,
+            "presence": false,
+            "screen": "desktop",
+            "clock_ticking": true,
+            "video": true,
+            "watts": 12
+          },
+          "state": "degraded",
+          "actions": []
+        }
+      ]
+    },
+    {
+      "name": "hang that power cycles don't fix: two cycles, then tell you",
+      "caps": {
+        "unlock": false,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "arp": false,
+            "screen": "blank",
+            "video": true,
+            "watts": 14
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 5,
+          "obs": {
+            "arp": false,
+            "screen": "blank",
+            "video": true,
+            "watts": 14,
+            "answers": false
+          },
+          "state": "hung",
+          "actions": [
+            "power_cycle"
+          ]
+        },
+        {
+          "t": 40,
+          "obs": {
+            "arp": false,
+            "screen": "blank",
+            "video": true,
+            "watts": 14,
+            "answers": false
+          },
+          "state": "hung",
+          "actions": [
+            "power_cycle"
+          ]
+        },
+        {
+          "t": 80,
+          "obs": {
+            "arp": false,
+            "screen": "blank",
+            "video": true,
+            "watts": 14,
+            "answers": false
+          },
+          "state": "hung",
+          "actions": [
+            "notify"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hang with no plug or Fingerbot: tell you",
+      "caps": {
+        "unlock": true,
+        "plug": false,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "blank",
+            "video": true
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 6,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "blank",
+            "video": true
+          },
+          "state": "hung",
+          "actions": [
+            "notify"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "power outage then power back: the plug reads 0 W, then the Mac boots to FileVault",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "video": false,
+            "watts": 0,
+            "plug_on": true
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 3,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "video": false,
+            "watts": 0,
+            "plug_on": true
+          },
+          "state": "off",
+          "actions": [
+            "power_on"
+          ]
+        },
+        {
+          "t": 5,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true,
+            "watts": 8,
+            "plug_on": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "watcher with no KVM: down for 10 min, tell you",
+      "caps": {
+        "unlock": true,
+        "plug": false,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "beat_min": 5,
+            "presence": false
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 11,
+          "obs": {
+            "answers": false,
+            "beat_min": 16,
+            "presence": false
+          },
+          "state": "down",
+          "actions": [
+            "notify"
+          ]
+        },
+        {
+          "t": 12,
+          "obs": {
+            "answers": true,
+            "beat_min": 0,
+            "presence": true
+          },
+          "state": "healthy",
+          "actions": [
+            "notify"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "keeps falling back to FileVault: three unlocks an hour at most, then tell you",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 2,
+          "obs": {
+            "answers": true,
+            "beat_min": 0,
+            "presence": true,
+            "screen": "desktop",
+            "video": true
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 10,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 12,
+          "obs": {
+            "answers": true,
+            "beat_min": 0,
+            "presence": true,
+            "screen": "desktop",
+            "video": true
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 20,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 22,
+          "obs": {
+            "answers": true,
+            "beat_min": 0,
+            "presence": true,
+            "screen": "desktop",
+            "video": true
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 30,
+          "obs": {
+            "answers": false,
+            "presence": false,
+            "screen": "filevault",
+            "video": true
+          },
+          "state": "filevault",
+          "actions": [
+            "notify"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "an unlock from an earlier incident is never counted as a failure of the next one",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "answers": false,
+            "video": true,
+            "screen": "filevault"
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 2,
+          "obs": {
+            "answers": true,
+            "video": true,
+            "screen": "desktop"
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 70,
+          "obs": {
+            "answers": false,
+            "video": true,
+            "screen": "filevault"
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 74,
+          "obs": {
+            "answers": false,
+            "video": true,
+            "screen": "filevault"
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 78,
+          "obs": {
+            "answers": false,
+            "video": true,
+            "screen": "filevault"
+          },
+          "state": "filevault",
+          "actions": [
+            "notify"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "powered, but no picture and no answer (FileVault on another display, or the display slept): tell you, never power-cycle",
+      "caps": {
+        "unlock": true,
+        "plug": true,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "video": false,
+            "screen": "blank",
+            "watts": 15,
+            "plug_on": true
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 9,
+          "obs": {
+            "video": false,
+            "screen": "blank",
+            "watts": 15,
+            "plug_on": true
+          },
+          "state": "degraded",
+          "actions": []
+        },
+        {
+          "t": 10,
+          "obs": {
+            "video": false,
+            "screen": "blank",
+            "watts": 15,
+            "plug_on": true
+          },
+          "state": "down",
+          "actions": [
+            "notify"
+          ]
+        },
+        {
+          "t": 30,
+          "obs": {
+            "video": false,
+            "screen": "blank",
+            "watts": 15,
+            "plug_on": true
+          },
+          "state": "down",
+          "actions": []
+        },
+        {
+          "t": 31,
+          "obs": {
+            "answers": true,
+            "video": true,
+            "screen": "desktop",
+            "watts": 15,
+            "plug_on": true
+          },
+          "state": "healthy",
+          "actions": [
+            "notify"
+          ]
+        }
+      ]
+    }
+  ]
+}
