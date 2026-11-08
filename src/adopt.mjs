@@ -77,7 +77,9 @@ export function steps() {
             else if (r.status !== 200) continue;
             if (!x.apiClosed && x.inited == null) x.inited = Boolean(JSON.parse(r.body.toString('utf8')).result?.is_inited);
             x.address = a; x.fingerprint = r.fingerprint;
-            return { ok: true, detail: `KVM at ${a} (${x.apiClosed ? 'its REST API is off, as GL.iNet ships it' : x.inited ? 'already set up' : 'new, not set up yet'}); certificate ${x.fingerprint.slice(0, 23)}…` };
+            const want = x.expectFingerprint && x.expectFingerprint.toUpperCase().replace(/[^0-9A-F]/g, '');
+            if (want && want !== x.fingerprint.replace(/:/g, '')) return { ok: false, stop: true, detail: `the KVM at ${a} shows certificate ${x.fingerprint}, not the one you read on the KVM itself (--fingerprint). Stopping: something else may be answering` };
+            return { ok: true, detail: `KVM at ${a} (${x.apiClosed ? 'its REST API is off, as GL.iNet ships it' : x.inited ? 'already set up' : 'new, not set up yet'}); certificate ${x.fingerprint}${want ? ', the one you read on the KVM itself' : ' (trusted on first use: adopt on a network you trust, or pass --fingerprint with the one the KVM shows itself; docs/security.md)'}` };
           } catch { /* next */ }
         }
         return { ok: false, stop: true, detail: `no KVM answered (${cands.length} candidate${cands.length === 1 ? '' : 's'}: ${cands.join(', ') || 'none'}). Check its Ethernet and power lights, or pass --address <ip> from your router's client list.` };
@@ -234,9 +236,11 @@ export function steps() {
           if (!r.ok) return { ok: false, stop: true, detail: r.detail };
         }
         const net = parseIfconfig(x.macIfconfig || '');
+        if (x.location && !['home', 'away'].includes(x.location)) return { ok: false, stop: true, detail: `--location is home (the LAN may reach the KVM) or away (only the tailnet may); got ${x.location}` };
+        if (x.location) x.deps.saveMac((m) => { m.location = x.location; });
         const config = {
           name: x.name, interval_sec: 60, kvmd_user: 'admin', user_names: x.mac.user_names || [], mac_ips: net.ips, mac_macs: net.macs,
-          unlock: x.mac.unlock === true, power: x.mac.power || null, notify: x.mac.notify || null, health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
+          unlock: x.mac.unlock !== false, location: x.location || x.mac.location || 'home', power: x.mac.power || null, notify: x.mac.notify || null, health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
           outbox: x.mac.outbox?.gist ? { gist: x.mac.outbox.gist, inbox: x.mac.outbox.inbox, poll_sec: 2, beat_min: 10 } : null,
         };
         let r = await x.deps.ssh(`mkdir -p ${DIR} && chmod 700 ${DIR} && cat > ${DIR}/sitter.py`, x.deps.readDevice('sitter.py'));
@@ -281,7 +285,12 @@ export function steps() {
       id: 'start', title: 'Start the sitter and take one look',
       async run(x) {
         if (x.dryRun) return { ok: true, detail: 'would start the sitter and run one look' };
-        const r = await x.deps.ssh(`${RESTART} && sleep 2 && python3 ${DIR}/sitter.py secrets && (python3 ${DIR}/sitter.py harden >&2 || true) && python3 ${DIR}/sitter.py once`);
+        // The KVM reads its own certificate: a second look at the fingerprint, over SSH rather than TLS.
+        const fp = await x.deps.ssh(`python3 ${DIR}/sitter.py fingerprint`);
+        let own = {};
+        try { own = JSON.parse(String(fp.stdout).trim()); } catch { /* reported below */ }
+        if (own.sha256 && x.fingerprint && own.sha256 !== x.fingerprint) return { ok: false, stop: true, detail: `the KVM's own certificate (${own.sha256}) isn't the one pinned over HTTPS (${x.fingerprint}). Stopping: something sits between you and the KVM` };
+        const r = await x.deps.ssh(`${RESTART} && sleep 2 && python3 ${DIR}/sitter.py secrets && python3 ${DIR}/sitter.py once`);
         if (r.status !== 0) return { ok: false, detail: `did not start: ${String(r.stderr || r.stdout).slice(0, 200)}` };
         const lines = String(r.stdout).trim().split('\n');
         let sec = {}, first = {};
@@ -323,6 +332,18 @@ export function steps() {
         if (!(j.Self?.Tags || []).includes(t.tag)) return { ok: false, detail: `joined as ${dns} but without ${t.tag}: the auth key must be tagged` };
         x.deps.saveMac((m) => { const e = { label: 'tailnet', url: `https://${dns}` }; m.kvm.endpoints = [e, ...(m.kvm.endpoints || []).filter((v) => v.url !== e.url)]; });
         return { ok: true, detail: `${dns} (${(j.Self?.TailscaleIPs || []).join(', ')}), ${t.tag}; recorded as the first endpoint` };
+      },
+    },
+    {
+      // After the tailnet step: away from home, the KVM may only be reached over the tailnet, so it must have joined it.
+      id: 'harden', title: "Harden the KVM: GL.iNet's cloud off (read back), and SSH and HTTPS only from where they should come",
+      async run(x) {
+        if (x.dryRun) return { ok: true, detail: `would turn GL.iNet's cloud binding off and check it, then allow SSH and HTTPS from ${(x.location || x.mac.location || 'home') === 'home' ? 'the LAN and the tailnet' : 'the tailnet only'}` };
+        const hd = await x.deps.ssh(`python3 ${DIR}/sitter.py harden`);
+        if (hd.status !== 0) return { ok: false, stop: true, detail: `not hardened: ${String(hd.stderr || hd.stdout).trim().slice(0, 200)}` };
+        let j = {};
+        try { j = JSON.parse(String(hd.stdout).trim().split('\n').at(-1)); } catch { /* shown raw */ }
+        return { ok: true, detail: j.gl_cloud ? `GL cloud ${j.gl_cloud}; ${j.ingress}` : String(hd.stdout).trim().slice(0, 200) };
       },
     },
     {
@@ -385,7 +406,14 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
         if (f) { s.files[f[1]] = input; return { status: 0, stdout: '', stderr: '' }; }
         if (cmd.includes('sitter.py secrets')) {
           const cfg = JSON.parse(Object.entries(s.files).find(([f]) => f.endsWith('/config.json'))?.[1] || '{}');
-          return { status: 0, stdout: `${JSON.stringify({ mac: Boolean(s.secretsOnKvm.mac), kvmd: Boolean(s.secretsOnKvm.kvmd), outbox: Boolean(s.secretsOnKvm.outbox) })}\n${JSON.stringify({ state: 'healthy', can: { unlock: cfg.unlock === true && Boolean(s.secretsOnKvm.mac), plug: Boolean(cfg.power), notify: Boolean(cfg.notify?.url) } })}\n`, stderr: '' };
+          return { status: 0, stdout: `${JSON.stringify({ mac: Boolean(s.secretsOnKvm.mac), kvmd: Boolean(s.secretsOnKvm.kvmd), outbox: Boolean(s.secretsOnKvm.outbox) })}\n${JSON.stringify({ state: 'healthy', can: { unlock: false, plug: Boolean(cfg.power), notify: Boolean(cfg.notify?.url) } })}\n`, stderr: '' };
+        }
+        if (cmd.includes('sitter.py fingerprint')) return { status: 0, stdout: `${JSON.stringify({ path: '/etc/kvmd/nginx/ssl/server.crt', sha256: w.pin })}\n`, stderr: '' };
+        if (cmd.includes('sitter.py harden')) {
+          const away = JSON.parse(Object.entries(s.files).find(([f]) => f.endsWith('/config.json'))?.[1] || '{}').location === 'away';
+          if (s.hardenFails) return { status: 1, stdout: '', stderr: "harden: GL.iNet's cloud binding did not read back as disabled" };
+          if (away && !s.ssh.some((c) => c.startsWith('tailscale up'))) return { status: 1, stdout: '', stderr: "harden: refusing tailnet-only SSH and HTTPS: this KVM hasn't joined a running tailnet, so nothing could reach it" };
+          return { status: 0, stdout: `{"gl_cloud": "off (read back)", "ingress": "SSH and HTTPS from ${away ? 'the tailnet only (tailscale0)' : 'the LAN and the tailnet'}"}\n`, stderr: '' };
         }
         if (cmd.includes('sitter.py eyes')) return { status: 0, stdout: `${JSON.stringify({ mode: [2560, 1440], ocr: null, frame: 'desktop', size: [2560, 1440] })}\n`, stderr: '' };
         if (cmd.includes('sitter.py hello')) { s.hello = (s.hello || 0) + 1; return { status: 0, stdout: '{"sent": "posted 200"}\n', stderr: '' }; }

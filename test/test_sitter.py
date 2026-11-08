@@ -1,4 +1,6 @@
 """The sitter (device/sitter.py): the same scenarios as src/watchdog.mjs, plus its own I/O, with fakes."""
+import base64
+import hashlib
 import json
 import os
 import sys
@@ -9,6 +11,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, os.path.join(ROOT, "device"))
 import sitter as W  # noqa: E402
+
+W.SLEEP = lambda sec: None  # the guard waits minutes between looks on a real KVM; tests never wait
 
 SCRATCH = os.path.join(ROOT, ".scratch")
 
@@ -178,14 +182,16 @@ class Io(unittest.TestCase):
             self.assertEqual(st["state"], "filevault")
             self.assertEqual(st["actions"], [], "disarmed by default: a stored password is never typed")
             self.assertFalse(any(p[0].startswith("/hid/print") for p in kvmd.posts))
-            st = W.once({"name": "studio", "unlock": True}, kvmd, None, self.logs.append, now=60000)
+            W.set_password_trust("verified", "test")
+            st = W.once({"name": "studio"}, kvmd, None, self.logs.append, now=60000)
             self.assertEqual([a["kind"] for a in st["actions"]], ["unlock"])
             self.assertIn("typed the password", st["actions"][0]["result"])
-            self.assertEqual(kvmd.posts[-1], ("/hid/print?limit=0&slow=1", b"fake-filevault-password\n"))
+            self.assertIn(("/hid/print?limit=0&slow=1", b"fake-filevault-password"), kvmd.posts)
+            self.assertEqual(kvmd.posts[-1][0], "/hid/events/send_key?key=Enter")
             self.assertNotIn("fake-filevault-password", " ".join(self.logs) + json.dumps(st))
             # The same request at the desktop is refused: it never types into an app.
             kvmd2 = FakeKvmd(online=True)
-            self.assertIn("refused", W.unlock({}, kvmd2, secret=lambda n: "pw"))
+            self.assertIn("refused", W.unlock({}, kvmd2, {"ledger": []}, 120000, secret=lambda n: "pw"))
             self.assertFalse(any(p[0].startswith("/hid/print") for p in kvmd2.posts))
         finally:
             W.load_secret = orig
@@ -453,8 +459,8 @@ class Do(unittest.TestCase):
                 P.n += 1
                 return "ok"
         p = P()
-        self.assertTrue(W.handle({"op": "power_cycle"}, cfg, None, p, print, now, st)["ok"])
-        r = W.handle({"op": "power_cycle"}, cfg, None, p, print, now + 60000, st)
+        self.assertTrue(W.handle({"op": "power_cycle", "args": {"attended": True}}, cfg, None, p, print, now, st)["ok"])
+        r = W.handle({"op": "power_cycle", "args": {"attended": True}}, cfg, None, p, print, now + 60000, st)
         self.assertEqual(r["code"], "action-failed")
         self.assertEqual(P.n, 1)
 
@@ -478,33 +484,23 @@ FRAMES = json.load(open(os.path.join(HERE, "fixtures", "comet-frames-20261108.js
 
 
 class BootWatch(unittest.TestCase):
-    """No OCR on a real Comet at 2K: the post-boot password prompt is known by the boot and a steady screen with no menu
-    bar. The frames are features of real frames from a GL-RM1PE (V1.7.1) on a Mac mini, 2026-11-08."""
+    """The boot watch only decides when to look closely. It asks to type only where the password field is visible on
+    the KVM's own picture; a settled screen without it is "blind": reported, never typed into. The frames are features
+    of real frames from a GL-RM1PE (V1.7.1) on a Mac mini, 2026-11-08."""
 
-    def run_boot(self, frames, typed_effect=None, ledger=None, start_usb=16.8, kvm_up=1200):
-        bw, ledger = None, ledger if ledger is not None else []
-        now, usb = 1_000_000, start_usb
-        log = []
-        bw, act, note = W.boot_tick(bw, ledger, now, {"usb": usb, "mode": (2560, 1440), "frame": None}, W.BOOT, kvm_up)
+    def run_boot(self, frames, visible, kvm_up=1200):
+        now, usb = 1_000_000, 16.8
+        bw, act, note = W.boot_tick(None, now, {"usb": usb, "mode": (2560, 1440), "frame": None}, W.BOOT, kvm_up)
         self.assertIsNone(bw.get("boot_at"), "a running KVM does not count its own boot enumeration as the Mac's")
         now += 2000
-        bw, act, note = W.boot_tick(bw, ledger, now, {"usb": usb + 900, "mode": None, "frame": None}, W.BOOT, kvm_up)
+        bw, act, note = W.boot_tick(bw, now, {"usb": usb + 900, "mode": None, "frame": None}, W.BOOT, kvm_up)
         self.assertTrue(bw.get("pending"), "a boot is pending until a desktop shows")
-        queue = list(frames)
-        while queue:
-            f = queue.pop(0)
+        log = []
+        for f in frames:
             now += 3000
-            bw, act, note = W.boot_tick(bw, ledger, now, {"usb": usb + 900, "mode": (2560, 1440), "frame": f}, W.BOOT, kvm_up)
+            bw, act, note = W.boot_tick(bw, now, {"usb": usb + 900, "mode": (2560, 1440), "frame": f, "prompt_visible": visible}, W.BOOT, kvm_up)
             log.append((act, note))
-            if act == "type":
-                ledger.append({"at": now, "kind": "unlock"})
-                bw["typed"] = (bw.get("typed") or []) + [now]
-                bw["stable"] = 0
-                if typed_effect:
-                    queue = list(typed_effect)
-            if act in ("verified", "stuck"):
-                break
-        return bw, ledger, log
+        return bw, log
 
     def test_real_frames_classify(self):
         self.assertEqual(W.classify_frame(FRAMES["desktop-2560"]), "desktop")
@@ -513,48 +509,42 @@ class BootWatch(unittest.TestCase):
         self.assertLess(W.thumb_diff(FRAMES["lock-2560-after-edid-restore"]["thumb"], FRAMES["lock-2560-later"]["thumb"]), W.BOOT["same_diff"])
         self.assertGreater(W.thumb_diff(FRAMES["desktop-2560"]["thumb"], FRAMES["lock-2560-later"]["thumb"]), W.BOOT["same_diff"])
 
-    def test_boot_to_prompt_types_once_after_it_settles_then_sees_the_desktop(self):
-        lock, desk = FRAMES["lock-2560-later"], FRAMES["desktop-2560"]
-        bw, ledger, log = self.run_boot([lock] * 12, typed_effect=[desk])
+    def test_a_boot_and_no_menu_bar_never_types_without_the_field(self):
+        bw, log = self.run_boot([FRAMES["lock-2560-later"]] * 30, visible=False)
         acts = [a for a, _ in log]
-        self.assertEqual(acts.count("type"), 1)
-        self.assertGreaterEqual((acts.index("type") + 1) * 3, W.BOOT["settle_sec"], "waits for the boot to settle")
-        self.assertEqual(acts[-1], "verified")
+        self.assertNotIn("type", acts)
+        self.assertEqual(acts.count("blind"), 1, "blind is reported once a boot, never typed into")
+        self.assertIn("blind unlock is unsupported", bw["stuck"])
+
+    def test_the_visible_field_after_a_settled_boot_asks_to_type(self):
+        bw, log = self.run_boot([FRAMES["lock-2560-later"]] * 12, visible=True)
+        acts = [a for a, _ in log]
+        first = acts.index("type")
+        self.assertGreaterEqual((first + 1) * 3, W.BOOT["settle_sec"], "waits for the boot to settle")
+
+    def test_the_desktop_ends_the_boot(self):
+        bw, log = self.run_boot([FRAMES["lock-2560-later"]] * 3 + [FRAMES["desktop-2560"]], visible=True)
+        self.assertEqual(log[-1][0], "desktop")
         self.assertIsNone(bw.get("pending"))
-        self.assertEqual([e["kind"] for e in ledger], ["unlock"])
-
-    def test_wrong_password_retries_once_then_stops_and_says_how_to_fix_it(self):
-        bw, ledger, log = self.run_boot([FRAMES["lock-2560-later"]] * 60)
-        acts = [a for a, _ in log]
-        self.assertEqual(acts.count("type"), W.BOOT["per_boot"])
-        self.assertEqual(acts[-1], "stuck")
-        self.assertIn("housesitter secret <mac> mac-password", bw["stuck"])
-        self.assertTrue(bw.get("pending"))
-
-    def test_hourly_budget_is_shared_with_earlier_unlocks(self):
-        earlier = [{"at": 1_000_000 - 60000 * k, "kind": "unlock"} for k in (5, 10, 15)]
-        bw, ledger, log = self.run_boot([FRAMES["lock-2560-later"]] * 20, ledger=earlier)
-        self.assertNotIn("type", [a for a, _ in log])
-        self.assertIn("budget", log[-1][1])
 
     def test_no_boot_no_typing(self):
         bw = None
         for k in range(30):
-            bw, act, _ = W.boot_tick(bw, [], 1_000_000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"]}, W.BOOT, 1200)
+            bw, act, _ = W.boot_tick(bw, 1_000_000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"], "prompt_visible": True}, W.BOOT, 1200)
             self.assertNotEqual(act, "type")
 
     def test_hdmi_back_alone_is_not_a_boot(self):
-        bw, _, _ = W.boot_tick(None, [], 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 1200)
-        bw, _, _ = W.boot_tick(bw, [], 2000, {"usb": 16.8, "mode": None, "frame": None}, W.BOOT, 1200)
-        bw, act, note = W.boot_tick(bw, [], 9000, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 1200)
+        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 1200)
+        bw, _, _ = W.boot_tick(bw, 2000, {"usb": 16.8, "mode": None, "frame": None}, W.BOOT, 1200)
+        bw, act, note = W.boot_tick(bw, 9000, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 1200)
         self.assertIn("not a boot", note)
         self.assertIsNone(bw.get("boot_at"))
         for k in range(30):
-            bw, act, _ = W.boot_tick(bw, [], 12000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"]}, W.BOOT, 1200)
+            bw, act, _ = W.boot_tick(bw, 12000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"], "prompt_visible": True}, W.BOOT, 1200)
             self.assertNotEqual(act, "type")
 
     def test_a_kvm_that_booted_with_the_mac_counts_that_enumeration(self):
-        bw, _, _ = W.boot_tick(None, [], 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 40)
+        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 40)
         self.assertEqual(bw["boot_at"], 0)
 
     def test_usb_and_hdmi_readers(self):
@@ -665,3 +655,367 @@ class EyesWithoutOcr(unittest.TestCase):
             self.assertFalse(any("hid/print" in c for c in k.calls), "the rules never type without OCR")
         finally:
             W.HOME = old
+
+
+class OcrlessKvmd:
+    """A real Comet at 2K: OCR answers 500, so every look is a frame decoded on the KVM (stubbed below)."""
+
+    def __init__(self):
+        self.posts, self.gets = [], []
+
+    def json(self, path):
+        if "snapshot" in path:
+            raise RuntimeError("kvmd GET /streamer/snapshot -> HTTP 500")
+        return {"streamer": {"source": {"online": True, "resolution": {"width": 2560, "height": 1440}}}}
+
+    def get(self, path, timeout=15):
+        self.gets.append(path)
+        return b'{"ok":true}'
+
+    def post(self, path, body=None, timeout=60):
+        self.posts.append((path, body))
+        return b'{"ok":true}'
+
+    def typed(self):
+        return [b for p, b in self.posts if p.startswith("/hid/print")]
+
+
+class Safety(unittest.TestCase):
+    """The independent safety review, 2026-11-08: no blind typing, a password gate, a guarded power cycle, write-ahead
+    entries, limits that survive a KVM reboot, no reshaping, and a hardened KVM."""
+
+    def setUp(self):
+        self.dir = scratch()
+        W.HOME = self.dir
+        self.saved = (W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.kvm_uptime_s, W.load_secret, W.arp_alive, W.tcp_answers)
+        self.usb, self.frame, self.logs = 16.8, FRAMES["lock-2560-later"], []
+        W.usb_last_enum = lambda run=None: self.usb
+        W.hdmi_mode = lambda read=None, kvmd=None: (2560, 1440)
+        W.frame_raw = lambda kvmd, run=None: (b"", 2560, 1440)
+        W.frame_features = lambda y, w, h: self.frame
+        W.kvm_uptime_s = lambda read=None: 5000.0
+        W.load_secret = lambda name, key=None: "pw-from-keychain" if name == "mac" else None
+        self.kvmd = OcrlessKvmd()
+
+    def tearDown(self):
+        (W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.kvm_uptime_s, W.load_secret, W.arp_alive, W.tcp_answers) = self.saved
+
+    def teach(self):
+        W.learn_prompt(FRAMES["lock-2560-later"], "an operator saw the FileVault field on the KVM's picture")
+
+    def boot(self, cfg=None, start=1_000_000, ticks=20):
+        cfg = cfg or {"name": "studio"}
+        W.boot_watch(cfg, self.kvmd, self.logs.append, now=start)
+        self.usb += 900
+        t = start
+        for k in range(1, ticks):
+            t = start + k * 3000
+            W.boot_watch(cfg, self.kvmd, self.logs.append, now=t)
+        return t
+
+    # 1. blind typing
+    def test_blind_multi_display_is_refused_and_reported_even_when_verified(self):
+        W.set_password_trust("verified", "test")
+        self.boot()  # no taught prompt: the field is not on the KVM's picture
+        self.assertEqual(self.kvmd.typed(), [])
+        st = W.load("state.json", {})
+        self.assertIn("blind unlock is unsupported", st["boot"]["stuck"])
+        self.assertTrue(any("blind unlock is unsupported" in l for l in self.logs))
+
+    def test_an_inbox_unlock_refuses_without_a_visible_field(self):
+        W.set_password_trust("verified", "test")
+        r = W.handle({"op": "unlock"}, {"name": "studio"}, self.kvmd, None, self.logs.append, 10**6, {"ledger": []})
+        self.assertFalse(r["ok"])
+        self.assertIn("no password field visible", r["result"])
+        self.assertEqual(self.kvmd.typed(), [])
+
+    def test_learn_prompt_takes_only_a_prompt_like_frame(self):
+        with self.assertRaises(ValueError):
+            W.learn_prompt(FRAMES["desktop-2560"], "x")
+        self.assertFalse(W.prompt_visible(FRAMES["lock-2560-later"]))
+        self.teach()
+        self.assertTrue(W.prompt_visible(FRAMES["lock-2560-later"]))
+        self.assertFalse(W.prompt_visible(FRAMES["desktop-2560"]))
+
+    # 2. the password gate
+    def test_unverified_by_default_never_types_even_at_a_visible_field(self):
+        self.teach()
+        self.assertEqual(W.password_gate()["trust"], "unverified")
+        self.boot()
+        self.assertEqual(self.kvmd.typed(), [])
+        self.assertIn("unverified", W.load("state.json", {})["boot"]["stuck"])
+
+    def test_one_armed_trial_types_once_then_the_desktop_verifies_it(self):
+        self.teach()
+        W.set_password_trust("trial", "armed")
+        t = self.boot(ticks=12)
+        self.assertEqual(self.kvmd.typed(), [b"pw-from-keychain"])
+        self.assertEqual(W.password_gate()["trust"], "trial")
+        self.frame = FRAMES["desktop-2560"]
+        W.boot_watch({"name": "studio"}, self.kvmd, self.logs.append, now=t + 3000)
+        self.assertEqual(W.password_gate()["trust"], "verified")
+
+    def test_a_trial_that_never_reaches_the_desktop_goes_back_to_unverified_and_types_no_more(self):
+        self.teach()
+        W.set_password_trust("trial", "armed")
+        self.boot(ticks=80)
+        self.assertEqual(len(self.kvmd.typed()), 1, "one try on trial")
+        self.assertEqual(W.password_gate()["trust"], "unverified")
+
+    def test_a_desktop_without_our_try_never_verifies(self):
+        self.teach()
+        W.set_password_trust("trial", "armed")
+        self.frame = FRAMES["desktop-2560"]
+        self.boot(ticks=5)
+        self.assertEqual(self.kvmd.typed(), [])
+        self.assertEqual(W.password_gate()["trust"], "trial")
+        W.set_password_trust("unverified", "test")
+        self.boot(ticks=5)
+        self.assertEqual(W.password_gate()["trust"], "unverified")
+
+    def test_a_new_password_resets_the_gate(self):
+        W.set_password_trust("verified", "test")
+        old = W.load_secret
+        W.load_secret = self.saved[5]
+        orig_stdin, orig_store = sys.stdin, W.store_secret
+        try:
+            import io
+            sys.stdin = io.StringIO("new-password\n")
+            W.store_secret = (lambda f: (lambda name, value, key=None: f(name, value, key=b"k" * 32)))(W.store_secret)
+            self.assertEqual(W.main(["store-secret", "mac"]), 0)
+        finally:
+            sys.stdin, W.store_secret = orig_stdin, orig_store
+            W.load_secret = old
+        self.assertEqual(W.password_gate()["trust"], "unverified")
+
+    def test_trial_is_only_armed_by_an_operator_command_never_from_the_inbox(self):
+        self.assertNotIn("password_trial", W.OPS)
+        r = W.handle({"op": "password_trial"}, {"name": "studio"}, self.kvmd, None, print, 0, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable")
+
+    # limits survive a KVM reboot; write-ahead entries count
+    def test_per_boot_and_hourly_limits_survive_a_kvm_reboot(self):
+        self.teach()
+        W.set_password_trust("verified", "test")
+        self.boot(ticks=60)
+        self.assertEqual(len(self.kvmd.typed()), W.BOOT["per_boot"])
+        # The KVM reboots: its boot-watch memory comes back with it, but say it lost everything except the ledger.
+        st = W.load("state.json", {})
+        st.pop("boot", None)
+        W.save("state.json", st)
+        W.kvm_uptime_s = lambda read=None: 30.0
+        self.boot(start=1_400_000, ticks=40)
+        self.assertEqual(len(self.kvmd.typed()), W.BOOT["per_boot"], "no fresh tries after the KVM's own reboot")
+
+    def test_a_started_entry_left_by_a_crash_counts(self):
+        st = {"ledger": []}
+        W.write_ahead(st, {"at": 1000, "kind": "unlock"})
+        W.write_ahead(st, {"at": 50000, "kind": "unlock"})
+        disk = W.load("state.json", {})
+        self.assertEqual([e["result"] for e in disk["ledger"]], ["started", "started"])
+        self.assertIn("tries since the Mac was last at its desktop", W.typing_budget(disk, 200000))
+        W.write_ahead(st, {"at": 60000, "kind": "power_cycle"})
+        self.assertEqual(len(W._recent(W.load("state.json", {})["ledger"], "power_cycle", 70000, 30)), 1)
+
+    def test_a_request_is_written_ahead_before_the_plug_moves(self):
+        seen = []
+
+        class P:
+            def cycle(self, s=10):
+                seen.append([e["result"] for e in W.load("state.json", {}).get("ledger", []) if e["kind"] == "power_cycle"])
+                return "ok"
+        r = W.handle({"op": "power_cycle", "args": {"attended": True}}, {"name": "studio"}, self.kvmd, P(), print, 10**6, {"ledger": []})
+        self.assertTrue(r["ok"])
+        self.assertEqual(seen, [["started"]])
+        self.assertEqual([e["result"] for e in W.load("state.json", {})["ledger"]], ["plug: ok"])
+
+    def test_merge_never_loses_another_writer_s_entry(self):
+        W.save("state.json", {"ledger": [{"id": "a", "at": 1, "kind": "unlock", "result": "started"}]})
+        mine = {"ledger": [{"id": "a", "at": 1, "kind": "unlock", "result": "typed"}, {"id": "b", "at": 2, "kind": "notify", "result": "x"}]}
+        W.save_state(mine)
+        self.assertEqual([(e["id"], e["result"]) for e in W.load("state.json", {})["ledger"]], [("a", "typed"), ("b", "x")])
+
+    # 3. the power-cycle guard
+    def guard(self, frames, answers=False, arp=False, cfg=None, now=10**9):
+        it = iter(frames)
+        W.frame_features = lambda y, w, h: next(it)
+        W.tcp_answers = lambda health, connect=None: answers
+        W.arp_alive = lambda ips, macs, **k: arp
+        return W.cycle_guard(cfg or {"name": "studio", "mac_ips": ["10.0.0.5"]}, self.kvmd, now)
+
+    def frozen(self):
+        y = bytearray(bytes([90]) * (320 * 180))
+        for row in range(4, 20):
+            for x in range(0, 320, 4):
+                y[row * 320 + x] = 230
+        return bytes(y)
+
+    def test_guard_allows_only_a_frozen_desktop_with_failing_probes(self):
+        y = self.frozen()
+        W.frame_raw = lambda kvmd, run=None: (y, 320, 180)
+        real = self.saved[3]
+        W.frame_features = real
+        W.tcp_answers = lambda health, connect=None: False
+        W.arp_alive = lambda ips, macs, **k: False
+        self.assertIsNone(W.cycle_guard({"name": "studio", "mac_ips": ["10.0.0.5"]}, self.kvmd, 10**9))
+
+    def test_guard_refuses_boot_filevault_login_black_unknown_and_live_clocks(self):
+        for f in (FRAMES["lock-2560-later"], {"mean": 3, "top_edges": 0, "thumb": [3] * 576, "size": [2560, 1440]}):
+            self.assertIn("only a frozen desktop", self.guard([f] * 3))
+        W.save("state.json", {"boot": {"pending": 1}})
+        self.assertEqual(self.guard([FRAMES["desktop-2560"]] * 3), "the Mac is booting")
+        W.save("state.json", {})
+        ticks = iter([(bytes([1]) * 10, 320, 180), (bytes([2]) * 10, 320, 180), (bytes([3]) * 10, 320, 180)])
+        W.frame_raw = lambda kvmd, run=None: next(ticks)
+        W.clock_sig = (lambda f: (lambda y, w, h: y[:1].hex()))(W.clock_sig)
+        try:
+            self.assertIn("still moving", self.guard([FRAMES["desktop-2560"]] * 3))
+        finally:
+            W.clock_sig = self.__class__.real_clock_sig
+
+    def test_guard_refuses_when_the_mac_still_answers_or_nothing_can_tell(self):
+        y = self.frozen()
+        W.frame_raw = lambda kvmd, run=None: (y, 320, 180)
+        self.assertEqual(self.guard([FRAMES["desktop-2560"]] * 3, answers=True), "it still answers on the network")
+        self.assertIn("nothing confirms the hang", self.guard([FRAMES["desktop-2560"]] * 3, answers=None, arp=None))
+
+    def test_the_rules_never_cut_power_on_a_screen_that_isnt_a_frozen_desktop(self):
+        plug = FakePlug(on=True, watts=14)
+        W.arp_alive = lambda ips, macs, **k: False
+        W.tcp_answers = lambda health, connect=None: False
+        cfg = {"name": "studio", "mac_ips": ["10.0.0.5"], "notify": {"kind": "webhook", "url": "https://example.invalid/h"}}
+        sent = []
+        orig = W.notify
+        W.notify = lambda cfg, s, b, opener=None: sent.append((s, b)) or "posted 200"
+        try:
+            for t in range(0, 12):
+                W.once(cfg, self.kvmd, plug, self.logs.append, now=10**9 + t * 60000)
+        finally:
+            W.notify = orig
+        self.assertEqual(plug.calls, [])
+        self.assertTrue(any("won't power cycle" in b for _, b in sent), sent)
+
+    def test_attended_is_an_explicit_override_but_budgets_still_hold(self):
+        class P:
+            n = 0
+            def cycle(self, s=10):
+                P.n += 1
+                return "ok"
+        st = {"ledger": []}
+        self.assertFalse(W.handle({"op": "power_cycle"}, {"name": "studio"}, self.kvmd, P(), print, 10**9, st)["ok"])
+        self.assertTrue(W.handle({"op": "power_cycle", "args": {"attended": True}}, {"name": "studio"}, self.kvmd, P(), print, 10**9, st)["ok"])
+        self.assertFalse(W.handle({"op": "power_cycle", "args": {"attended": True}}, {"name": "studio"}, self.kvmd, P(), print, 10**9 + 60000, st)["ok"])
+        self.assertEqual(P.n, 1)
+
+    # 4. no reshaping, below every call
+    def test_refuse_reshape_at_the_lowest_level(self):
+        for method, path in (("POST", "/upgrade/edid"), ("POST", "/api/upgrade/edid?x=1"), ("GET", "/upgrade/reset_default"), ("POST", "/system/factory_reset"), ("POST", "/upgrade/firmware")):
+            self.assertIsNotNone(W.refuse_reshape(method, path), path)
+            with self.assertRaises(RuntimeError):
+                W.Kvmd("/nonexistent.sock").request(method, path)
+        self.assertIsNone(W.refuse_reshape("GET", "/upgrade/edid"))
+        self.assertIsNone(W.refuse_reshape("POST", "/hid/events/send_key?key=ShiftLeft"))
+
+    # 5. harden
+    def test_harden_fails_unless_the_cloud_reads_back_disabled(self):
+        class K:
+            def __init__(self, status):
+                self.status = status
+            def get(self, p, timeout=15):
+                return b"{}"
+            def json(self, p):
+                if isinstance(self.status, Exception):
+                    raise self.status
+                return self.status
+        ok = lambda cmd, **k: type("R", (), {"returncode": 0, "stderr": ""})()  # noqa: E731
+        self.assertEqual(W.harden(K({"enabled": False}), {}, run=ok, gl=True)["gl_cloud"], "off (read back)")
+        for bad in ({"enabled": True}, {}, RuntimeError("HTTP 500")):
+            with self.assertRaises(Exception):
+                W.harden(K(bad), {}, run=ok, gl=True)
+
+    def test_ingress_is_lan_at_home_and_tailnet_only_elsewhere(self):
+        self.assertEqual(W.ingress_mode({}), "lan")
+        self.assertEqual(W.ingress_mode({"location": "home"}), "lan")
+        self.assertEqual(W.ingress_mode({"location": "office"}), "tailnet")
+        home = W.ingress_rules("lan")
+        self.assertFalse(any("DROP" in c for c in home))
+        away = W.ingress_rules("tailnet")
+        for t in ("iptables", "ip6tables"):
+            self.assertIn([t, "-A", W.CHAIN, "-i", "tailscale0", "-j", "RETURN"], away)
+            for p in ("22", "443"):
+                self.assertIn([t, "-A", W.CHAIN, "-p", "tcp", "--dport", p, "-j", "DROP"], away)
+        with self.assertRaises(RuntimeError):
+            W.apply_ingress("tailnet", run=lambda c, **k: None, iface_up=lambda i: False)
+
+    def test_the_kvm_reads_its_own_certificate_fingerprint(self):
+        der = b"0\x82fake-der"
+        pem = "-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n" % base64.b64encode(der).decode()
+        fp = W.cert_fingerprint(paths=("/x",), read=lambda p: pem)
+        h = hashlib.sha256(der).hexdigest().upper()
+        self.assertEqual(fp["sha256"], ":".join(h[i:i + 2] for i in range(0, len(h), 2)))
+
+
+Safety.real_clock_sig = W.clock_sig
+
+
+class ReviewFixes(unittest.TestCase):
+    """Found by the independent code review of the safety change, 2026-11-08."""
+
+    def setUp(self):
+        self.dir = scratch()
+        W.HOME = self.dir
+
+    def test_judging_survives_a_save_so_one_failure_counts_once(self):
+        mem = {"state": "hung", "since": 0, "incident": {"started": 0, "failed": {}}}
+        st = {"ledger": []}
+        W.write_ahead(st, {"at": 60000, "kind": "power_cycle", "state": "hung"})
+        W.finish(st, st["ledger"][-1], "plug: ok")
+        for t in (20, 21, 22):
+            st = W.load("state.json", {})
+            mem, _ = W.judge(mem, st["ledger"], t * 60000)
+            W.save_state(st)
+        self.assertEqual(mem["incident"]["failed"].get("power_cycle", 0), 1)
+
+    def test_a_slow_writer_never_rolls_back_another_s_fields(self):
+        W.save("state.json", {"ledger": [], "seen_ids": ["old"], "inbox_etag": "e1"})
+        slow = W.load("state.json", {})
+        W.save("state.json", {"ledger": [], "seen_ids": ["old", "new"], "inbox_etag": "e2"})
+        W.write_ahead(slow, {"at": 1, "kind": "power_cycle"})
+        disk = W.load("state.json", {})
+        self.assertEqual(disk["seen_ids"], ["old", "new"])
+        self.assertEqual(disk["inbox_etag"], "e2")
+        self.assertEqual(len(disk["ledger"]), 1)
+
+    def test_away_needs_a_running_tailnet_not_just_an_interface(self):
+        with self.assertRaises(RuntimeError):
+            W.apply_ingress("tailnet", run=lambda c, **k: None, iface_up=lambda i: True, joined=False)
+        ok = lambda c, **k: type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()  # noqa: E731
+        self.assertIn("tailnet only", W.apply_ingress("tailnet", run=ok, iface_up=lambda i: True, joined=True))
+        self.assertIn(["iptables", "-A", W.CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"], W.ingress_rules("tailnet"))
+        status = lambda c, **k: type("R", (), {"returncode": 0, "stdout": json.dumps({"BackendState": "NeedsLogin"})})()  # noqa: E731
+        self.assertFalse(W.tailnet_running(run=status))
+
+    def test_a_fingerbot_never_presses_a_running_mac_and_a_cycle_is_its_long_press(self):
+        class K(OcrlessKvmd):
+            def __init__(self, online):
+                OcrlessKvmd.__init__(self)
+                self.online = online
+            def json(self, path):
+                return {"streamer": {"source": {"online": self.online}}}
+        cfg = {"name": "studio", "power": {"kind": "fingerbot"}}
+        orig = (W.arp_alive, W.tcp_answers)
+        W.arp_alive, W.tcp_answers = (lambda ips, macs, **k: None), (lambda h, connect=None: None)
+        try:
+            k = K(True)
+            r = W.handle({"op": "power_on"}, cfg, k, None, print, 10**9, {"ledger": []})
+            self.assertFalse(r["ok"])
+            self.assertEqual(k.gets, [])
+            k = K(False)
+            self.assertTrue(W.handle({"op": "power_on"}, cfg, k, None, print, 10**9, {"ledger": []})["ok"])
+            k = K(False)
+            r = W.handle({"op": "power_cycle", "args": {"attended": True}}, cfg, k, None, print, 10**9, {"ledger": []})
+            self.assertTrue(r["ok"])
+            self.assertIn("press_time=10000", k.gets[0], "a long press, not a tap")
+            self.assertEqual(W.load("state.json", {})["ledger"][-1]["kind"], "press_power")
+        finally:
+            W.arp_alive, W.tcp_answers = orig

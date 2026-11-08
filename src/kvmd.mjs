@@ -9,8 +9,20 @@ import tls from 'node:tls';
 
 export const fingerprint = (der) => crypto.createHash('sha256').update(der).digest('hex').toUpperCase().match(/.{2}/g).join(':');
 
+// Never reshape what the Mac sees: no EDID writes, no factory reset, no firmware upgrade. An EDID change on a live Mac
+// mini froze it (2026-11-08). Checked in httpsRequest and again in every client call (which may be handed another
+// request function), so no entry point, raw included, gets round it.
+export function refuseReshape(method, url) {
+  const q = String(url).replace(/^https?:\/\/[^/]+/, '').split('?')[0].toLowerCase();
+  if (q.includes('edid') && method !== 'GET') return `refused: ${q} changes the display the Mac sees; never reshape a live Mac's displays`;
+  if (/reset_default|factory/.test(q) || (/\/upgrade(\/|$)/.test(q) && method !== 'GET')) return `refused: ${q} resets or reflashes the KVM, EDID included; never from housesitter`;
+  return null;
+}
+
 // pin=null only for first contact (adopt), which records the fingerprint it saw.
 export function httpsRequest({ url, method = 'GET', headers = {}, body = null, pin = null, timeoutMs = 8000 }) {
+  const refused = refuseReshape(method, url);
+  if (refused) return Promise.reject(new Error(`kvmd: ${refused}`));
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const req = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method, headers, rejectUnauthorized: false, timeout: timeoutMs }, (res) => {
@@ -31,6 +43,8 @@ export function makeClient({ base, pin, user = 'admin', password, request = http
   let cookie = null;
   const pw = typeof password === 'function' ? password : () => password;
   const call = async (method, p, { body = null, type = null, timeoutMs } = {}) => {
+    const refused = refuseReshape(method, p);
+    if (refused) throw new Error(`kvmd: ${refused}`);
     const headers = cookie ? { Cookie: cookie } : { 'X-KVMD-User': user, 'X-KVMD-Passwd': pw() };
     if (type) headers['Content-Type'] = type;
     let r = await request({ url: base + p, method, headers, body, pin, timeoutMs });

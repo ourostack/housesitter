@@ -114,3 +114,18 @@ test('stream warm-up: a WebSocket upgrade over pinned TLS, held open until close
   assert.equal(hasPicture({ online: true, captured_fps: 0 }), false, 'online with no frames is no picture');
   assert.equal(hasPicture({ online: true, captured_fps: 30 }), true);
 });
+
+test('refuseReshape sits below every entry point, raw included: no EDID writes, no factory reset, no firmware', async () => {
+  const { refuseReshape, httpsRequest, makeClient } = await import('../src/kvmd.mjs');
+  for (const [m, u] of [['POST', '/api/upgrade/edid'], ['PUT', 'https://kvm.local/api/edid?x=1'], ['GET', '/api/upgrade/reset_default'], ['POST', '/api/system/factory_reset'], ['POST', '/api/upgrade/firmware']]) {
+    assert.ok(refuseReshape(m, u), `${m} ${u}`);
+  }
+  assert.equal(refuseReshape('GET', '/api/upgrade/edid'), null);
+  assert.equal(refuseReshape('POST', '/api/hid/print?limit=0'), null);
+  await assert.rejects(httpsRequest({ url: 'https://192.0.2.1/api/upgrade/edid', method: 'POST' }), /refused/);
+  let calls = 0;
+  const c = makeClient({ base: 'https://kvm.fake', pin: 'x', password: 'p', request: async () => { calls++; return { status: 200, headers: {}, body: Buffer.from('{}') }; }, warm: false });
+  await assert.rejects(c.raw('POST', '/api/upgrade/edid', { body: 'x' }), /refused/);
+  await assert.rejects(c.raw('GET', '/api/upgrade/reset_default'), /refused/);
+  assert.equal(calls, 0, 'the request never left');
+});
