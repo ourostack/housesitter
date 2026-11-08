@@ -19,7 +19,7 @@ export const SCREENS = {
   blank: '',
 };
 
-export function fakeWorld({ apiClosed = false, inited = true, adminPassword = 'Fake-admin-pw-1', macPassword = 'correct horse', screen = 'desktop', resolution = [1920, 1080] } = {}) {
+export function fakeWorld({ apiClosed = false, inited = true, adminPassword = 'Fake-admin-pw-1', macPassword = 'correct horse', screen = 'desktop', resolution = [1920, 1080], ocr = true } = {}) {
   const st = {
     apiClosed, inited, adminPassword: inited ? adminPassword : null, macPassword, screen, resolution, keyboard: true, video: true,
     otg: { start_cdrom: true, start_flash: false }, typed: [], keys: [], clicks: [], wheel: [], pointer: null, unlocked: 0, rootKeys: [],
@@ -47,7 +47,8 @@ export function fakeWorld({ apiClosed = false, inited = true, adminPassword = 'F
     if (p === '/api/hid') return ok({ keyboard: { online: st.keyboard }, mouse: { online: st.keyboard } });
     if (p === '/api/streamer') return ok({ streamer: { source: { online: st.video, resolution: { width: st.resolution[0], height: st.resolution[1] } } } });
     if (p === '/api/streamer/snapshot') {
-      if (q.ocr) return ok(st.video ? SCREENS[st.screen] : '');
+      // A real GL-RM1PE (V1.7.1) at 2560x1440 answers OCR with HTTP 500: `ocr: false` plays that KVM.
+      if (q.ocr) return ocr ? ok(st.video ? SCREENS[st.screen] : '') : no(500);
       const w = q.preview_max_width ? Math.min(Number(q.preview_max_width), st.resolution[0]) : st.resolution[0];
       return raw(fakeJpeg(w, Math.round((w * st.resolution[1]) / st.resolution[0])));
     }

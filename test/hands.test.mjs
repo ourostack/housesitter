@@ -86,6 +86,19 @@ test('a GLKVM 503 snapshot falls back to asking the sitter for the picture', asy
   assert.deepEqual([s.width, s.real.width], [1280, 1920]);
 });
 
+test('a Comet at 2K hands back raw H.264 with a 200: the picture comes from the sitter, decoded on the KVM', async () => {
+  const w = fakeWorld({ resolution: [2560, 1440] });
+  const nal = Buffer.from([0, 0, 0, 1, 0x67, 0x64, 0, 0x33]);
+  const req = async (o) => (o.url.includes('/snapshot') ? { status: 200, headers: {}, body: nal, fingerprint: w.pin } : w.request(o));
+  const mac = { name: 'studio', kvm: { endpoints: [{ url: w.url }], tls_sha256: w.pin, user: 'admin' } };
+  const sitter = { op: async () => ({ ok: true, result: { real: { width: 2560, height: 1440 } }, files: { 'studio.screen.jpg.b64': fakeJpeg(2560, 1440).toString('base64') } }) };
+  const d = await open('studio', { transport: 'direct', deps: { mac, request: req, password: () => w.st.adminPassword, sitter, warm: false } });
+  const s = await d.screenshot({ maxWidth: 1280 });
+  assert.deepEqual([s.width, s.real.width], [2560, 2560]);
+  await d.click(1280, 720);
+  assert.ok(w.st.pointer.every((v) => Math.abs(v) < 40), `the middle of a 2560x1440 picture is the middle of the screen (${w.st.pointer})`);
+});
+
 test('stream warm-up: a WebSocket upgrade over pinned TLS, held open until close()', async () => {
   const { streamWarm, withWarm, hasPicture } = await import('../src/kvmd.mjs');
   const { EventEmitter } = await import('node:events');
