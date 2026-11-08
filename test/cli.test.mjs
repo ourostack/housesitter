@@ -11,7 +11,9 @@ import { parseRef, secretStore, macConfig } from '../src/config.mjs';
 import { sitterClient, describeStatus } from '../src/sitter.mjs';
 
 const BIN = fileURLToPath(new URL('../bin/housesitter.mjs', import.meta.url));
-const scratch = fs.mkdtempSync(path.join(fileURLToPath(new URL('..', import.meta.url)), '.scratch', 'cli-'));
+const scratchRoot = path.join(fileURLToPath(new URL('..', import.meta.url)), '.scratch');
+fs.mkdirSync(scratchRoot, { recursive: true });
+const scratch = fs.mkdtempSync(path.join(scratchRoot, 'cli-'));
 const cli = (args, env = {}) => spawnSync(process.execPath, [BIN, ...args], { encoding: 'utf8', env: { ...process.env, HOUSESITTER_CONFIG: path.join(scratch, 'config.json'), ...env } });
 
 test('demo: two incidents fixed by itself, one message for the one it could not fix', async () => {
