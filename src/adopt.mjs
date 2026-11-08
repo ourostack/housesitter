@@ -236,7 +236,7 @@ export function steps() {
         const net = parseIfconfig(x.macIfconfig || '');
         const config = {
           name: x.name, interval_sec: 60, kvmd_user: 'admin', user_names: x.mac.user_names || [], mac_ips: net.ips, mac_macs: net.macs,
-          unlock: x.mac.unlock !== false, power: x.mac.power || null, notify: x.mac.notify || null, health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
+          unlock: x.mac.unlock === true, power: x.mac.power || null, notify: x.mac.notify || null, health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
           outbox: x.mac.outbox?.gist ? { gist: x.mac.outbox.gist, inbox: x.mac.outbox.inbox, poll_sec: 2, beat_min: 10 } : null,
         };
         let r = await x.deps.ssh(`mkdir -p ${DIR} && chmod 700 ${DIR} && cat > ${DIR}/sitter.py`, x.deps.readDevice('sitter.py'));
@@ -263,7 +263,7 @@ export function steps() {
         if (!x.deps.secrets.has(ref)) return { ok: false, decision: true, detail: `no Mac password stored at ${ref}. Store it with: housesitter secret ${x.name} mac-password, then run adopt again` };
         if (x.dryRun) return { ok: true, detail: `would copy ${ref} to the sitter over SSH stdin (sealed, root-only)` };
         const r = await storeSecret(x, 'mac', x.deps.secrets.get(ref));
-        return r.ok ? { ok: true, detail: `stored, sealed to the KVM's ${r.bound_to} ids, root-only; never in argv or logs` } : { ok: false, detail: r.detail };
+        return r.ok ? { ok: true, detail: `stored, sealed to the KVM's ${r.bound_to} ids, root-only; never in argv or logs. Typing stays disarmed until one supervised trial works: housesitter unlock ${x.name} --trial` } : { ok: false, detail: r.detail };
       },
     },
     {
@@ -385,7 +385,7 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
         if (f) { s.files[f[1]] = input; return { status: 0, stdout: '', stderr: '' }; }
         if (cmd.includes('sitter.py secrets')) {
           const cfg = JSON.parse(Object.entries(s.files).find(([f]) => f.endsWith('/config.json'))?.[1] || '{}');
-          return { status: 0, stdout: `${JSON.stringify({ mac: Boolean(s.secretsOnKvm.mac), kvmd: Boolean(s.secretsOnKvm.kvmd), outbox: Boolean(s.secretsOnKvm.outbox) })}\n${JSON.stringify({ state: 'healthy', can: { unlock: Boolean(s.secretsOnKvm.mac), plug: Boolean(cfg.power), notify: Boolean(cfg.notify?.url) } })}\n`, stderr: '' };
+          return { status: 0, stdout: `${JSON.stringify({ mac: Boolean(s.secretsOnKvm.mac), kvmd: Boolean(s.secretsOnKvm.kvmd), outbox: Boolean(s.secretsOnKvm.outbox) })}\n${JSON.stringify({ state: 'healthy', can: { unlock: cfg.unlock === true && Boolean(s.secretsOnKvm.mac), plug: Boolean(cfg.power), notify: Boolean(cfg.notify?.url) } })}\n`, stderr: '' };
         }
         if (cmd.includes('sitter.py eyes')) return { status: 0, stdout: `${JSON.stringify({ mode: [2560, 1440], ocr: null, frame: 'desktop', size: [2560, 1440] })}\n`, stderr: '' };
         if (cmd.includes('sitter.py hello')) { s.hello = (s.hello || 0) + 1; return { status: 0, stdout: '{"sent": "posted 200"}\n', stderr: '' }; }

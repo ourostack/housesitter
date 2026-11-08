@@ -36,14 +36,16 @@ macOS sees the KVM as one more display (the Comet shows up as "GLKVM", at 2560x1
 | A new unit's admin password is set on its first-run web page when the API is off | `adopt` makes the password, keeps it in your Keychain, puts it on the clipboard and opens the page: the one paste you do. |
 | The video encoder runs only while a viewer is connected, so a headless snapshot answers 503 | Every snapshot and OCR holds a stream open first, on the KVM and over HTTPS. |
 | At high resolutions a "JPEG" snapshot can be an H.264 frame | The sitter checks and tries MJPEG. On firmware V1.7.1 at 2560x1440 that changes nothing, so it puts the encoder back and decodes one keyframe on the KVM itself with its own `ffmpeg` (about 2 s). |
-| On firmware V1.7.1 at 2560x1440, kvmd's OCR answers HTTP 500 (no tesseract on the device) | The sitter reads its own decoded frames instead: a menu bar means a desktop (and the clock at its right end must keep changing), and a steady screen with no menu bar **right after the Mac booted** is the FileVault prompt (the boot watch, below). |
-| A Mac boot re-enumerates the KVM's USB keyboard; HDMI coming back alone does not | That is how the boot watch knows a boot from a display that woke up. |
+| On firmware V1.7.1 at 2560x1440, kvmd's OCR answers HTTP 500 (no tesseract on the device) | The sitter reads its own decoded frames instead: a menu bar means a desktop (and the clock at its right end must keep changing). It types only where it can match the password field itself on that frame. |
+| A Mac boot re-enumerates the KVM's USB keyboard; HDMI coming back alone does not | The boot watch uses that to know when to look closely. A boot alone never authorises typing. |
 | Its dropbear SSH server (2019.78 on firmware V1.7.1) refuses ed25519 keys | housesitter uses an ECDSA key. |
 | kvmd can say "online" with a placeholder resolution and no frames | A picture counts only with frames coming in. |
 
 The first four rows are [kvm-pilot](https://github.com/DustinTrap/kvm-pilot)'s findings from real units; the rest are ours, from a Comet on firmware V1.7.1 (kvmd 4.82) next to a Mac mini on 2026-11-08.
 
 ### The boot watch: knowing the FileVault screen without OCR
+
+**Changed:** a boot plus a steady screen with no menu bar no longer authorises typing. The sitter types only where the password field itself is visible on the KVM's picture, and only once the password is verified. A Mac that draws its FileVault screen on another display gets a message, never a blind unlock. What follows is how the boot watch finds the moment to look.
 
 Every 2 seconds the sitter checks two things it can read for free: when the Mac last enumerated the KVM's keyboard (`dmesg`), and whether HDMI has a signal. A new enumeration means the Mac booted. For the next 15 minutes, it decodes a frame every 3 seconds. The frame counts as the password prompt when it has no menu bar, has settled for at least 20 seconds after the boot, and stays the same across two frames. Then the sitter types the password and Return. If it sees no desktop 40 seconds later, it tries once more, and after that it stops and messages you. That is at most two tries a boot and three an hour, shared with every other unlock. HDMI coming back without a boot never arms it, so a display waking up or a full-screen app never gets the password. The recogniser was built and tested on real frames from that Comet and Mac mini (`test/fixtures/comet-frames-20261108.json`: brightness, edge counts and 32x18 thumbnails, never full pictures). It hasn't yet unlocked a real FileVault screen.
 

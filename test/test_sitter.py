@@ -176,6 +176,9 @@ class Io(unittest.TestCase):
             W.arp_alive = lambda ips, macs: None
             st = W.once({"name": "studio"}, kvmd, None, self.logs.append, now=0)
             self.assertEqual(st["state"], "filevault")
+            self.assertEqual(st["actions"], [], "disarmed by default: a stored password is never typed")
+            self.assertFalse(any(p[0].startswith("/hid/print") for p in kvmd.posts))
+            st = W.once({"name": "studio", "unlock": True}, kvmd, None, self.logs.append, now=60000)
             self.assertEqual([a["kind"] for a in st["actions"]], ["unlock"])
             self.assertIn("typed the password", st["actions"][0]["result"])
             self.assertEqual(kvmd.posts[-1], ("/hid/print?limit=0&slow=1", b"fake-filevault-password\n"))

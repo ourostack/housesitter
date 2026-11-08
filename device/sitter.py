@@ -917,6 +917,12 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
         log("boot-watch: %s" % note)
         b2["last_note"] = note
     if act == "type":
+        # A boot plus a screen with no menu bar is not enough to type a password: the field may be on another display.
+        # Blind unlock is refused; tell the rules it's stuck so you get a message.
+        b2["stuck"] = "no password field visible on the KVM's own picture after the boot; blind unlock is unsupported"
+        log("boot-watch: refused to type blind (%s)" % note)
+        act = "refused"
+    if act == "type":
         pw = (secret or load_secret)("mac")
         if not pw or cfg.get("unlock", True) is False or cfg.get("dry_run"):
             log("boot-watch: at the prompt, not typing (%s)" % ("dry run" if cfg.get("dry_run") else "unlock is off" if cfg.get("unlock", True) is False else "no password on the sitter"))
@@ -1221,7 +1227,8 @@ def save(name, value):
 
 def caps_of(cfg, power):
     fingerbot = (cfg.get("power") or {}).get("kind") == "fingerbot"
-    return {"unlock": cfg.get("unlock", True) is not False and has_secret("mac"), "plug": bool(power), "fingerbot": fingerbot, "notify": bool((cfg.get("notify") or {}).get("url"))}
+    # Typing is disarmed unless the config arms it explicitly: a default never types a password.
+    return {"unlock": cfg.get("unlock") is True and has_secret("mac"), "plug": bool(power), "fingerbot": fingerbot, "notify": bool((cfg.get("notify") or {}).get("url"))}
 
 
 def once(cfg, kvmd, power, log, now=None, gh=None):
