@@ -10,9 +10,11 @@
 
 **The Mac and its KVM watch each other.** The KVM watches the Mac; the Mac checks on the KVM every minute. If either goes quiet, you hear once, and once more when it's back. No outside service.
 
+**The KVM's own NPU reads your Mac's clock.** A 414,690-weight model on the Comet's neural processor reads the time in the menu bar in about 1.4 ms, and the big clock on the lock screen and FileVault, so a clock that stops reads as stopped. Live on our mini: 120 reads out of 120 right. A real freeze is next.
+
 **Status:** experimental. Hands-off on our Mac mini: 70 seconds from Restart to desktop. The smart plug and a real freeze are next.
 
-[Set it up](#three-cables-then-one-restart) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [Who watches the KVM](#who-watches-the-kvm) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
+[Set it up](#three-cables-then-one-restart) · [The NPU](#the-kvms-npu-reads-the-clock) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [Who watches the KVM](#who-watches-the-kvm) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
 
 ```sh
 npx github:ourostack/housesitter demo         # the day it was built for, real frames
@@ -22,6 +24,40 @@ npx github:ourostack/housesitter demo night   # a rehearsed bad night, all fakes
 <p align="center"><img src="docs/img/restart.gif" alt="A recording from the KVM's own picture of our Mac mini, with a caption bar under each frame. 22:55:58: the Golden Gate wallpaper, logging out 3 seconds after Restart, which our agent pressed: the only touch. 22:56:01: shutting down, the Apple logo. 22:56:24: boot seen, the Mac found the KVM's keyboard again; the FileVault screen, its clock at 10:56. 22:56:44: FileVault, the screen it was taught, steady, so it may type; the prompt zoomed twice: the avatar, Ari Mendelow, an empty Enter Password field. 22:56:51: typed once, by itself; the zoomed field is blurred. 22:56:57: logging in; the zoom shows a progress bar. Then a card: 70 s from Restart to desktop, nobody at the Mac, housesitter 0.2 on the KVM beside it, 8 November 2026, 22:57:06 PT, desktop not shown." width="100%"></p>
 
 *Our Mac mini at 22:55 on 8 November, filmed by the KVM through the Mac's own HDMI port. An agent pressed Restart through the KVM; nothing touched the Mac after that. housesitter 0.2 saw the boot, recognised the FileVault prompt it had been taught the restart before, and typed once: 70 seconds from Restart to desktop. In the KVM's own access log for those minutes, the only key and click events are the Restart clicks and the sitter's three keys (the rest are video sessions; [what that log can and can't show](docs/proof/2026-11-09-v0.2/)). The password field is blurred, because its dots would give away the password's length. Only the shutdown, boot and FileVault frames are shown; [the frames, the sitter's log and the KVM's log](docs/proof/2026-11-09-v0.2/).*
+
+## The KVM's NPU reads the clock
+
+<p align="center"><img src="docs/img/npu-clock.gif" alt="Ten real looks by our GL.iNet Comet at our Mac mini, 15 seconds apart, from 9:26:09 to 9:28:24 AM on 9 November. Each row shows the right end of the menu bar as the KVM saw it, Mon Nov 9 9:26 AM and so on; what the NPU read, the same text, in green when the minute changes; how long the NPU took, 1.37 to 2.15 ms; and the pixel fingerprint housesitter used to compare before, which changes on 8 of the 9 steps while the minute changes only twice. Below: live for the 30 minutes before this, 120 of 120 reads right, and within a minute the time never changed, 0 of 89 pairs; the pixel fingerprint changed in 74 of those 89 pairs, while the clock it covers stood still." width="100%"></p>
+
+*Ten real looks at our mini, 15 seconds apart, on 9 November, taken just after the 30-minute sample below (so one read took 2.15 ms). The amber fingerprint is what housesitter compared before; the green line is the minute changing.*
+
+A frozen Mac and a busy one look alike from outside: both stop answering. What tells them apart is the clock. If it still moves, macOS is drawing, and a power cycle would only hurt. If it stopped minutes ago, a power cycle is the fix.
+
+housesitter used to compare a fingerprint of the clock's pixels from one look to the next. The KVM decodes H.264 video, and its noise moves those pixels even when the clock doesn't: in 30 minutes of live looks the fingerprint changed in 74 of 89 pairs taken within the same minute, and in 91 of 97 such pairs on our recorded restart frames. A stopped clock would almost always have looked alive.
+
+Now, on a KVM with an NPU, the sitter reads the time itself and compares minutes. Measured on our GL.iNet Comet (RV1126B) against our Mac mini on 9 November:
+
+| | |
+| --- | --- |
+| Time per read on the NPU | median **1.42 ms** (1.29 to 2.10) over 120 live looks; 4.7 ms for the whole round trip from the sitter |
+| Menu-bar clock, live | **120 of 120** right over 30 minutes; within a minute the time never changed (0 of 89 pairs), and it changed at every minute (30 of 30) |
+| Lock-screen and FileVault clock | **66 of 66** right, by a second model, on real lock-screen, login-window and FileVault frames from our evidence (30 different times, at 960, 1280 and 2560 wide), median 0.95 ms a read. 157 frames with no such clock (desktops, boots, wallpaper) gave no time. These are recorded frames, and we watched them during training (fixed epochs, nothing chosen by them); a live lock screen is next |
+| Frames with no menu bar | 45 looks at a full-screen app gave no read at all, so no false time |
+| Memory | the NPU worker, holding both models, uses about 37 MB of the Comet's 987 MB and 2.2 MB of its 48 MB of contiguous memory (1.1 MB with the menu-bar model alone); it starts in 0.68 s, and a fresh one replaces it every 720 reads |
+| kvmd and the video | untouched: no restarts, and no NPU errors in the kernel log since the sitter got its NPU |
+
+**It only feeds the frozen-clock test.** It never decides what is on the screen and never leads to typing; the prompt you taught is still the only gate for the password. At a lock screen or FileVault the clock is read for the record and for messages only. If the NPU fails or hangs, one 8-second budget covers the read, the NPU is turned off for an hour, and the sitter falls back to the fingerprint. Set `"npu": false` in the KVM's config to turn it off.
+
+**Why it took a trick.** GL.iNet ships the NPU's IOMMU turned off, so the NPU can only use physically contiguous memory. Rockchip's runtime allocates from a heap that isn't, and every job we sent timed out. The sitter's NPU worker runs in a mount namespace of its own and binds Rockchip's contiguous-memory heap over the path the runtime opens. Nothing outside the worker sees the change, and the memory goes back when it exits.
+
+**Limits, measured.**
+
+- The models learned from synthetic menu bars and lock screens drawn with open fonts, so nobody's screen is in them ([how they're built](npu/README.md), [the model cards](device/npu/README.md)). They read English macOS clock formats.
+- A read the crop cuts badly gives no time, and the sitter falls back to the fingerprint for that look. We saw it once in spot checks after the sample, at 9:59.
+- On old 960-wide recordings scaled up 2.67×, the menu-bar model read 69 of 113 clocks exactly, 10 not at all and 34 wrong. There the text is about 7 pixels tall; the live sitter reads full 2560×1440 frames, where it is three times taller. So that number is the floor for a small picture, not the live path.
+- No real freeze has happened yet, so the NPU has only ever seen a moving clock live.
+- All of this is one Comet and one Mac.
+- We also tried PP-OCRv4 for full-screen text. Its detector alone needs 22.6 of the 48 MB of contiguous memory, and it read only the big lock-screen clock, so it isn't shipped ([the spike](https://github.com/ourostack/housesitter/tree/npu-spike/npu)).
 
 ## Why I built it
 
@@ -35,9 +71,9 @@ So housesitter types only where it sees the password prompt on its own picture, 
 
 ## housesitter doctor
 
-<p align="center"><img src="docs/img/doctor.png" alt="housesitter doctor mini --private, a real run at 01:23 on 9 November against our mini and its Comet, with the gradient pixel wordmark. The picture is hidden; it reads as a desktop from a decoded frame, the taught prompt not on the picture, the clock moving, looked 66 seconds ago, and it answers: the Mac's own heartbeat is 1 minute old. The Mac is up at its desktop for at least 2 hours 26 minutes (since 22:57). The KVM is a GL.iNet Comet on kvmd 4.82 over the LAN, keyboard online, HDMI 2560 by 1440. The password is verified; it has been taught FileVault, the lock screen and the list of users; the lock screen is unlocked when an agent asks. Budgets: 2 of 2 tries left before it stops, 3 of 3 this hour; no plug, so a frozen Mac is reported, never cycled, an open dot. Last incident 22:56: a restart's FileVault, unlocked by the sitter, nobody woken. Recent, newest first: 01:19, TEST from the Mac's watch: mini's KVM is back, emailed; 01:18, TEST from the Mac's watch: mini's KVM is silent, emailed; 23:30, a TEST alert, posted and emailed. Alerts go to ntfy and by email, the address shortened to its first letter; and the KVM is watched by the Mac itself, aris-mac-mini, last check 82 seconds ago." width="100%"></p>
+<p align="center"><img src="docs/img/doctor.png" alt="housesitter doctor mini --private, a real run at 09:32 on 9 November against our mini and its Comet, with the gradient pixel wordmark. The picture is hidden; it reads as a desktop from a decoded frame, the taught prompt not on the picture, and the clock moving: it reads 9:32 AM, on the KVM's NPU in 1.39 ms. Looked 20 seconds ago, next look in 39 seconds, and it answers: the Mac's own heartbeat is 1.2 minutes old. The Mac is up at its desktop for at least 10 hours (since 22:57). The KVM is a GL.iNet Comet on kvmd 4.82 over the LAN, keyboard online, HDMI 2560 by 1440 read by the sitter with no viewer open. The password is verified; it has been taught FileVault, the lock screen and the list of users; the lock screen is unlocked when an agent asks. Budgets: 2 of 2 tries left before it stops, 3 of 3 this hour; no plug, so a frozen Mac is reported, never cycled, an open dot. Last incident 22:56: a restart's FileVault, unlocked by the sitter, nobody woken. Recent: 01:19 and 01:18, the Mac's TEST messages that its KVM went silent and came back, emailed; 23:30, a TEST alert, posted and emailed. Alerts go to ntfy and by email, the address shortened to its first letter; and the KVM is watched by the Mac itself, aris-mac-mini, last check 70 seconds ago." width="100%"></p>
 
-*The real `housesitter doctor` of our mini and its Comet at 01:23 on 9 November, drawn with `--private` so my desktop and my email address stay out. Its last incident is the 70-second restart it unlocked at 22:56, by itself. The two newest lines are the other half of the watch: we stopped the sitter, and the Mac told us the KVM had gone silent, then that it was back. The one open dot is true: no plug yet.*
+*The real `housesitter doctor` of our mini and its Comet at 09:32 on 9 November, drawn with `--private`, so my desktop stays out and my email address is cut to its first letter. The clock line is the new part: the KVM's NPU read 9:32 AM off the menu bar in 1.39 ms. Its last incident is still the 70-second restart it unlocked at 22:56, by itself; the one open dot is true: no plug yet.*
 
 One screen: a glimpse of what the KVM sees (40 by 22 pixels of its own picture, too small to read anything on), what that reads as, when it last looked and when it looks next; the Mac; the KVM; the password gate; what's left of each budget; the last bad stretch; where it tells you; and the command for anything missing. It exits 3 when it can't reach the KVM or the sitter.
 
@@ -224,7 +260,7 @@ A stale heartbeat only ever counts against the Mac alongside a stopped clock: a 
 
 ## What's verified
 
-housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our watchdog" is the private code in our own setup that housesitter was generalised from; it runs the same rules.
+housesitter is experimental (0.3). Honest status, as of 9 November 2026. "Our watchdog" is the private code in our own setup that housesitter was generalised from; it runs the same rules.
 
 | Part | Status |
 | --- | --- |
@@ -235,11 +271,12 @@ housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our wa
 | Learning the prompt without OCR | **Real frames, in tests**: taught at the FileVault screen of that restart, it matches every FileVault frame at 100% and the lock screen, a desktop and the morning's no-field wallpaper at under 10%. Taught at the lock screen, it matches the lock screen at 100% and 93% with an aerial wallpaper moving, and FileVault not at all, which is why setup teaches it at FileVault. Taught at the list of users, it matches every list-of-users frame and none of the lock-screen or login-window frames |
 | `doctor`, `look`, `status` | **Run on real hardware**, read-only, against our Comet. That run found a real bug (pinned TLS failing when requests ran in parallel), now fixed with a test |
 | GL-RM1PE quirks (API off, idle encoder, H.264 snapshots, no OCR at 2K, ECDSA) | **Seen on real units** by [kvm-pilot](https://github.com/DustinTrap/kvm-pilot) and on our Comet (firmware V1.7.1, kvmd 4.82), and handled |
-| A frozen Mac and the smart plug | **Not yet.** The plug arrives 9 November; `housesitter plug adopt` and `prove` are tested with fakes only. Without OCR the frozen-clock check reads decoded H.264 frames, where encoder noise may make a frozen clock look alive (that fails safe: no cycle). The "freeze" we thought we had on 8 November was a crashed login window, by the Mac's own logs |
+| Reading the clock on the KVM's NPU | **Done on real hardware, by housesitter 0.3** on 9 November: 120 of 120 live menu-bar reads right over 30 minutes, median 1.42 ms on the NPU; and 66 of 66 lock-screen and FileVault clocks on recorded frames, by a second model (0.3.1) ([the numbers](#the-kvms-npu-reads-the-clock)) |
+| A frozen Mac and the smart plug | **Not yet.** The plug arrives 9 November; `housesitter plug adopt` and `prove` are tested with fakes only. On a KVM with an NPU the frozen-clock check now compares the time it reads; without one, it compares a pixel fingerprint that H.264 noise changes even when the clock doesn't (that fails safe: no cycle). The "freeze" we thought we had on 8 November was a crashed login window, by the Mac's own logs |
 | A macOS update | **Not yet tried.** An update can restart more than once; each restart is its own boot with its own two tries, and all of them share three unlocks an hour |
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
-| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 260 tests in Node and Python on every push |
+| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 263 tests in Node and Python on every push |
 | The Mac watching its KVM | **Done on real hardware, by housesitter 0.2.4** on 9 November: our mini's LaunchAgent, with its own watch-only key and its own ntfy token. We stopped only the sitter on the Comet at 01:13:32 PT (kvmd, the Comet and the mini untouched). With `--test --silent-min 2` (the quiet limit cut from 5 minutes to 2 for the test), the mini sent "TEST: mini's KVM is silent" at 01:18:16, 4 min 44 s later, and it reached the owner's HEY Imbox at 01:18:18. We started the sitter at 01:18:44; "TEST: mini's KVM is back" went at 01:19:18 and reached HEY at 01:19:20. Both are in the sitter's ledger, counted against the shared email cap ([the log](https://github.com/ourostack/housesitter/blob/proof/2026-11-09-hardware/docs/proof/2026-11-09-v0.2/watch-kvm-024.txt)). Then reinstalled without `--test` |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 

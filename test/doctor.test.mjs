@@ -156,4 +156,6 @@ test('doctor says when the NPU read the clock, and how fast', () => {
   assert.match(out, /clock\s+moving: reads 8:05 AM, on the KVM's NPU in 1\.07 ms/);
   const old = plain(buildDoctor({ name: 'mini', mac: {}, kvm: KVM, sit: { status: status({ obs: { screen: 'desktop', eyes: 'frame', clock_ticking: true } }) }, now: NOW }));
   assert.match(old, /clock\s+moving\n/);
+  const lock = plain(buildDoctor({ name: 'mini', mac: {}, kvm: KVM, sit: { status: status({ obs: { screen: 'login', eyes: 'frame', lock_clock_ticking: false, clock: { text: '10:56', on: 'npu', ms: 1.4, where: 'lock' } } }) }, now: NOW }));
+  assert.match(lock, /clock\s+NOT moving: reads 10:56 on the lock screen, on the KVM's NPU in 1\.4 ms/);
 });

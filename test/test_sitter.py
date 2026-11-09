@@ -695,14 +695,17 @@ import json, struct, sys
 mode = sys.argv[1]
 if mode == "slow-start":
     import time; time.sleep(0.7)
-print(json.dumps({"ready": True, "classes": 66, "steps": 96}), flush=True)
+print(json.dumps({"ready": True, "models": 2}), flush=True)
 reads = sys.argv[2:]
 k = 0
 while True:
-    h = sys.stdin.buffer.read(4)
-    if len(h) < 4:
+    h = sys.stdin.buffer.read(5)
+    if len(h) < 5:
         break
-    sys.stdin.buffer.read(struct.unpack("<I", h)[0])
+    which, n = struct.unpack("<BI", h)
+    sys.stdin.buffer.read(n)
+    if which == 1:
+        print(json.dumps({"text": "10:56", "ms": 0.95, "model": 1}), flush=True); continue
     if mode in ("hang", "slow-start"):
         import time; time.sleep(30)
     if mode == "error":
@@ -712,10 +715,16 @@ while True:
 """
 
 
-def fake_npu(mode="ok", reads=("Mon Nov 9 8:05 AM",), timeout=2.0):
+def fake_npu(mode="ok", reads=("Mon Nov 9 8:05 AM",), timeout=2.0, lock_model=True):
+    started = []
+
     def popen(args, **kw):
+        started.append(args[3:])
         return subprocess.Popen([sys.executable, "-c", FAKE_WORKER, mode, *reads], **kw)
-    return W.NpuClock(model="/fake/clock.rknn", timeout=timeout, popen=popen, exists=lambda p: True)
+    npu = W.NpuClock(model="/fake/clock.rknn", lock_model="/fake/lock-clock.rknn", timeout=timeout, popen=popen,
+                     exists=lambda p: lock_model or "lock-clock" not in p)
+    npu.started = started
+    return npu
 
 
 def desktop_frame(w=640, h=360):
@@ -812,6 +821,17 @@ class NpuClockReading(unittest.TestCase):
         self.assertLess(time.monotonic() - t, 1.6, "a slow start and a hung job share one timeout")
         self.assertIn("didn't answer", W.NPU.why)
 
+    def test_the_worker_is_recycled_after_its_reads(self):
+        W.NPU = fake_npu(reads=("8:05 AM",))
+        W.NPU.RECYCLE_READS = 2
+        self.assertEqual(W.NPU.read(b"\x00" * 6144), "8:05 AM")
+        first = W.NPU.proc
+        self.assertEqual(W.NPU.read(b"\x00" * 6144), "8:05 AM")
+        self.assertIsNone(W.NPU.proc, "recycled after two reads")
+        self.assertIsNotNone(first.poll(), "the old worker exited on end of input")
+        self.assertEqual(W.NPU.read(b"\x00" * 6144), "8:05 AM", "and a fresh one starts on the next read")
+        self.assertIsNone(W.NPU.why)
+
     def test_a_failed_job_is_turned_off_too(self):
         W.NPU = fake_npu(mode="error")
         self.assertIsNone(W.NPU.read(b"\x00" * 6144))
@@ -834,6 +854,39 @@ class NpuClockReading(unittest.TestCase):
         out = W.eyes_without_ocr({}, {}, dark, None)
         self.assertEqual(calls, [], "a non-desktop frame never reaches the NPU")
         self.assertNotIn("clock", out)
+
+    def test_the_lock_screen_clock_is_read_and_never_changes_the_state(self):
+        W.NPU = fake_npu(reads=("Mon Nov 9 8:05 AM",))
+        crops = []
+        real = W.clock_input
+        W.clock_input = lambda y, w, h, crop=W.CLOCK_CROP, size=W.CLOCK_IN: crops.append(crop) or real(y, w, h, crop, size)
+        saved = W.prompt_seen
+        try:
+            W.prompt_seen = lambda f: (True, 1.0, None, "lock")
+            w, h = 640, 360
+            frame = (b"\x80" * (w * h), w, h)
+            mem = {}
+            outs = [W.eyes_without_ocr({}, mem, frame, None) for _ in range(3)]
+        finally:
+            W.clock_input, W.prompt_seen = real, saved
+        self.assertEqual(crops, [W.LOCK_CROP] * 3, "the big clock's crop, not the menu bar's")
+        self.assertEqual(outs[0]["screen"], "login")
+        self.assertEqual(outs[0]["clock"], {"text": "10:56", "on": "npu", "ms": 0.95, "where": "lock"}, "read by the lock-screen model")
+        self.assertEqual(W.NPU.started, [["/fake/clock.rknn", "/fake/lock-clock.rknn"]], "one worker holds both models")
+        self.assertIs(outs[2]["lock_clock_ticking"], False, "three looks at the same time: stopped")
+        self.assertNotIn("clock_ticking", outs[2], "its own key: the rules never see it, even if the lock watch then reaches the desktop")
+        self.assertNotIn("clock_seen", mem, "and its own memory, apart from the menu bar's")
+        for probe in ({"answers": None}, {"answers": False}):
+            obs = dict(outs[2], beat_min=None, presence=None, video=True, arp=True, **probe)
+            self.assertEqual(W.raw_state(dict(obs, screen="desktop")), W.raw_state({k: v for k, v in obs.items() if k not in ("clock", "lock_clock_ticking")} | {"screen": "desktop"}))
+        self.assertIn("its lock-screen clock has stopped", W.plain_signs(outs[2]))
+
+    def test_no_lock_model_means_no_lock_read_and_the_menu_bar_still_works(self):
+        W.NPU = fake_npu(lock_model=False)
+        self.assertIsNone(W.NPU.read(b"\x00" * 6144, lock=True))
+        self.assertIsNone(W.NPU.why, "a missing lock model isn't a failure")
+        self.assertEqual(W.NPU.read(b"\x00" * 6144), "Mon Nov 9 8:05 AM")
+        self.assertEqual(W.NPU.started, [["/fake/clock.rknn"]])
 
     def test_signs_say_what_the_clock_reads(self):
         self.assertIn("its clock reads Mon Nov 9 8:05 AM", W.plain_signs({"clock": {"text": "Mon Nov 9 8:05 AM", "on": "npu"}}))

@@ -276,11 +276,13 @@ export function steps() {
         }
         if (r.status !== 0) return { ok: false, stop: true, detail: `service install failed: ${String(r.stderr || r.stdout).slice(0, 200)}` };
         // The clock reader for a KVM with an NPU (the Comet's RV1126B): the sitter uses it when /dev/rknpu is there.
-        const model = x.deps.readDeviceB64?.('npu/clock.rknn');
+        // Two models: the menu bar's clock, and the big time on the lock screen and FileVault.
         let npu = '';
-        if (model) {
-          const m = await x.deps.ssh(`[ -e /dev/rknpu ] && [ -e /usr/lib/librknnrt.so ] && mkdir -p ${DIR}/npu && python3 -c "import sys,base64; open('${DIR}/npu/clock.rknn','wb').write(base64.b64decode(sys.stdin.read()))" && echo npu`, model);
-          npu = String(m.stdout).includes('npu') ? '; reads the Mac\'s clock on the KVM\'s NPU' : '';
+        for (const f of ['npu/clock.rknn', 'npu/lock-clock.rknn']) {
+          const model = x.deps.readDeviceB64?.(f);
+          if (!model) continue;
+          const m = await x.deps.ssh(`[ -e /dev/rknpu ] && [ -e /usr/lib/librknnrt.so ] && mkdir -p ${DIR}/npu && python3 -c "import sys,base64; open('${DIR}/${f}','wb').write(base64.b64decode(sys.stdin.read()))" && echo npu`, model);
+          if (String(m.stdout).includes('npu')) npu = '; reads the Mac\'s clock on the KVM\'s NPU';
         }
         return { ok: true, detail: `${init === 'systemd' ? 'systemd unit' : 'BusyBox init script'}${npu}; watching the screen${net.ips.length ? `, ${net.ips.join(', ')}${net.kept ? ' (kept from its config)' : ''}` : ''}${x.mac.power ? ' and the plug' : ''}${net.ips.length ? '' : ' (run adopt on the Mac itself with --this-mac to watch its network too)'}${x.mac.power ? '' : '; no smart plug, so a hang gets a message, not a power cycle'}` };
       },
@@ -469,7 +471,7 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
         if (cmd.includes('sitter.py eyes')) return { status: 0, stdout: `${JSON.stringify({ mode: [2560, 1440], ocr: null, frame: 'desktop', size: [2560, 1440] })}\n`, stderr: '' };
         if (cmd.includes('/dev/rknpu')) {
           if (!comet) return { status: 1, stdout: '', stderr: '' };
-          s.files['npu/clock.rknn'] = Buffer.from(input, 'base64').toString();
+          s.files[cmd.match(/\/(npu\/[\w-]+\.rknn)'/)[1]] = Buffer.from(input, 'base64').toString();
           return { status: 0, stdout: 'npu\n', stderr: '' };
         }
         if (cmd.includes('sitter.py hello')) { s.hello = (s.hello || 0) + 1; return { status: 0, stdout: '{"sent": "posted 200"}\n', stderr: '' }; }

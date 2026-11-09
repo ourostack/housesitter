@@ -27,6 +27,7 @@ test('a new KVM: password set, API checked, sitter installed, secrets sealed on 
 test('a KVM with an NPU gets the clock reader; one without gets nothing extra', async () => {
   const comet = await run({ apiClosed: false });
   assert.equal(comet.f.s.files['npu/clock.rknn'], 'model npu/clock.rknn');
+  assert.equal(comet.f.s.files['npu/lock-clock.rknn'], 'model npu/lock-clock.rknn');
   assert.match(comet.results.find((r) => r.detail?.includes('BusyBox')).detail, /reads the Mac's clock on the KVM's NPU/);
   const pikvm = await run({ apiClosed: false, comet: false });
   assert.equal(pikvm.f.s.files['npu/clock.rknn'], undefined);
