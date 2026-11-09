@@ -46,7 +46,9 @@ One screen: a glimpse of what the KVM sees (40 by 22 pixels of its own picture, 
 
 `housesitter demo` replays that Sunday in your terminal: real frames from our KVM, read again just now by the rules the sitter runs, then the restart from the KVM's own log. The two desktops are numbers only, no picture. Nothing leaves your computer.
 
-<p align="center"><img src="docs/img/evening.png" alt="housesitter demo, 8 November 2026 replayed. 10:32: a wallpaper and no password field; it won't type, and tells you once. 17:59: a desktop, not shown; nothing to do. 18:07: the lock screen, the taught prompt at 100 percent, then 93 percent as the wallpaper moved; a plain lock screen is your lock, so it waits until you ask. 18:15: a desktop, not shown; asked once, it typed, so the password is verified. 18:31 to 18:32:56, from the KVM's log: dark, then the keyboard again, FileVault, the field on its picture, typed once, the desktop." width="72%"></p>
+<p align="center"><img src="docs/img/demo.gif" alt="A terminal recording. housesitter demo draws the day down the screen: pixel glimpses of real KVM frames on the left, and beside each what the sitter sees and does. 10:32, no password field: it won't type, and tells you once. 17:59 and 18:15, desktops, not shown. 18:07, the taught lock-screen prompt at 100 then 93 percent: it waits until you ask. 18:31 to 18:32:56, from the KVM's log: dark, keyboard back, FileVault, the field on its picture, typed once, the desktop. Then housesitter look reads a real frame of our lock screen: it sees the prompt it was taught, 100 percent, and may type once its password is verified." width="100%"></p>
+
+*Recorded by [vhs](https://github.com/charmbracelet/vhs) in CI from [`docs/tapes/demo.tape`](docs/tapes/demo.tape), never by hand: `housesitter demo`, then `housesitter look` on a real frame of our lock screen.*
 
 ## Why not just…
 
