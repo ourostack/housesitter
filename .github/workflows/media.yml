@@ -4,7 +4,7 @@ name: media
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['docs/tapes/**', 'src/evening.mjs', 'src/paint.mjs', 'assets/evening.json']
+    paths: ['docs/tapes/**', 'src/**', 'bin/**', 'assets/evening.json', 'device/sitter.py']
 permissions:
   contents: read
 jobs:
