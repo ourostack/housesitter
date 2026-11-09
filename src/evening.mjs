@@ -27,7 +27,7 @@ const STORY = {
   unlocked: { before: [['18:15', 'We asked it to unlock, once. It typed the password at the prompt on its picture.']], did: 'the desktop followed, so the password is verified.' },
   restart: {
     before: [['18:31', 'Then the real test: we restarted the mini with nobody at it. From the KVM\'s own log:']],
-    log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault: not a screen it was taught, so it waits'], ['18:32:18', 'an agent teaches it this screen from three frames, once'], ['18:32:35', 'the password field is on its picture, steady'], ['18:32:37', 'typed the password, once, by itself'], ['18:32:56', 'the desktop is up. Nobody at the Mac.']],
+    log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault: not a screen it was taught, so it waits'], ['18:32:18', 'an agent teaches it this screen, once'], ['18:32:35', 'the prompt it was taught is on its picture'], ['18:32:37', 'typed the password, once, by itself'], ['18:32:56', 'the desktop is up. Nobody at the Mac.']],
   },
 };
 

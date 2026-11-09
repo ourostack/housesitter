@@ -41,7 +41,7 @@ So housesitter types only where it sees the password prompt on its own picture, 
 
 One screen: a glimpse of what the KVM sees (40 by 22 pixels of its own picture, too small to read anything on), what that reads as, when it last looked and when it looks next; the Mac; the KVM; the password gate; what's left of each budget; the last bad stretch; where it tells you; and the command for anything missing. It exits 3 when it can't reach the KVM or the sitter.
 
-<p align="center"><img src="docs/img/look.png" alt="housesitter look --picture lock-screen.png: a pixel glimpse of the Golden Gate lock screen with the user's avatar. It sees the password prompt it was taught, at 100 percent. May type: yes, once its password is verified, by itself right after a boot, or when you ask. Pressed nothing, typed nothing, changed nothing." width="100%"></p>
+<p align="center"><img src="docs/img/look.png" alt="housesitter look --picture lock-screen.jpg: a pixel glimpse of the Golden Gate lock screen with the user's avatar. It sees the lock screen it was taught, at 100 percent. May type: only when you ask, over SSH; a lock screen is your lock. From lock-screen.jpg; pressed nothing, typed nothing, changed nothing." width="100%"></p>
 
 *`housesitter look` on a real frame of our lock screen: the glimpse, and what the sitter makes of it. Live, `housesitter look <mac>` asks the KVM; it presses nothing.*
 

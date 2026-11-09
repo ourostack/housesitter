@@ -80,8 +80,8 @@ function showLook(l) {
   const p = painter(useColor());
   const seen = l.prompt?.visible;
   const sees = l.reads_as === 'desktop' ? 'a desktop: a menu bar, top left' : l.reads_as === 'black' ? 'black: asleep, off, or no picture' : l.reads_as === 'none' ? `nothing (${l.why || 'no frame'})`
-    : seen ? `the ${l.prompt.kind === 'boot' ? 'FileVault prompt it was taught at a boot' : 'password prompt it was taught'} (${Math.round(l.prompt.match * 100)}%)` : l.prompt?.taught ? 'no menu bar, and not the prompt it was taught' : 'no menu bar (no prompt taught yet)';
-  const may = l.reads_as === 'desktop' ? ['never: a desktop'] : seen ? ['yes, once its password is verified:', 'by itself right after a boot, or when you ask'] : ['no: no password field it knows on the picture'];
+    : seen ? `the ${l.prompt.kind === 'boot' ? 'FileVault prompt it was taught at a boot' : 'lock screen it was taught'} (${Math.round(l.prompt.match * 100)}%)` : l.prompt?.taught ? 'no menu bar, and not the prompt it was taught' : 'no menu bar (no prompt taught yet)';
+  const may = l.reads_as === 'desktop' ? ['never: a desktop'] : seen && l.prompt.kind === 'boot' ? ['yes, once its password is verified:', 'by itself after a boot, or when you ask'] : seen ? ['only when you ask, over SSH:', 'a lock screen is your lock'] : ['no: no password prompt it knows on the picture'];
   const right = ['', `${p.label('IT SEES  ')}${sees}`, ...may.map((m, i) => `${i ? '         ' : p.label('MAY TYPE ')}${seen ? p.fg([158, 206, 106], m) : m}`), ''];
   if (l.prompt && !l.prompt.taught) right.push(p.dim('teach it: housesitter learn-prompt <mac> --i-see-the-field [--filevault at FileVault]'));
   right.push(p.dim(l.from === 'kvm' ? `from the KVM${l.mode ? `, HDMI ${l.mode.join('×')}` : ''}` : `from ${l.from}`));
