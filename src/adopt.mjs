@@ -28,7 +28,12 @@ export const KEYGEN = ['-t', 'ecdsa', '-b', '256', '-N', ''];
 const SYSTEMD = 'test -d /run/systemd/system';
 const RESTART = `if ${SYSTEMD}; then systemctl restart housesitter; else /etc/init.d/S99housesitter restart; fi`;
 
-export const defaultRefs = (name) => ({ admin: `keychain:housesitter/${name}-kvm-admin`, mac: `keychain:housesitter/${name}-mac-password`, outbox: `keychain:housesitter/${name}-outbox-token` });
+export const defaultRefs = (name) => ({ admin: `keychain:housesitter/${name}-kvm-admin`, mac: `keychain:housesitter/${name}-mac-password`, outbox: `keychain:housesitter/${name}-outbox-token`, ntfy: `keychain:housesitter/${name}-ntfy-token` });
+
+export const ONE_ADDRESS = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
+
+// What the sitter's config carries of notify: never the client's keychain reference.
+const sitterNotify = (n) => (n?.url ? { kind: n.kind, url: n.url, ...(n.email ? { email: n.email } : {}), ...(n.email_per_day ? { email_per_day: n.email_per_day } : {}) } : null);
 
 export function newPassword(rand = crypto.randomBytes) {
   // GLKVM wants 10-63 characters with at least two of upper/lower/digit/symbol; give it all four.
@@ -214,17 +219,23 @@ export function steps() {
         if (x.notify) {
           const url = x.notify === 'ntfy' ? `https://ntfy.sh/housesitter-${x.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${crypto.randomBytes(9).toString('hex')}` : x.notify;
           if (!/^https:\/\/\S+$/.test(url)) return { ok: false, stop: true, detail: `--notify takes ntfy (a private ntfy.sh topic made for you) or an https URL (got ${x.notify})` };
-          x.mac.notify = { kind: /^https:\/\/ntfy\./.test(url) ? 'ntfy' : 'webhook', url };
+          x.mac.notify = { ...(x.mac.notify?.url === url ? x.mac.notify : {}), kind: /^https:\/\/ntfy\./.test(url) ? 'ntfy' : 'webhook', url };
+        }
+        if (x.email) {
+          if (!ONE_ADDRESS.test(x.email)) return { ok: false, stop: true, detail: `--email takes one address (ntfy forwards to one), got ${x.email}` };
+          if (x.mac.notify?.kind !== 'ntfy') return { ok: false, stop: true, detail: '--email works through ntfy (it forwards each message as an email): add --notify ntfy' };
+          x.mac.notify = { ...x.mac.notify, email: x.email };
         }
         if (x.heartbeat) {
           if (!/^https:\/\/\S+$/.test(x.heartbeat)) return { ok: false, stop: true, detail: `--heartbeat takes an https URL to ping every minute (got ${x.heartbeat})` };
           x.mac.heartbeat = { url: x.heartbeat };
         }
-        if ((x.notify || x.heartbeat) && !x.dryRun) x.deps.saveMac((m) => { if (x.mac.notify) m.notify = x.mac.notify; if (x.mac.heartbeat) m.heartbeat = x.mac.heartbeat; });
+        if ((x.notify || x.email || x.heartbeat) && !x.dryRun) x.deps.saveMac((m) => { if (x.mac.notify) m.notify = x.mac.notify; if (x.mac.heartbeat) m.heartbeat = x.mac.heartbeat; });
         const dms = x.mac.heartbeat?.url ? `; it pings ${new URL(x.mac.heartbeat.url).host} every minute, which tells you if the KVM itself goes quiet` : '; for word when the KVM itself dies, add --heartbeat <a healthchecks.io ping URL>';
         const n = x.mac.notify;
         if (!n?.url) return { ok: false, decision: true, detail: `nowhere yet, so it can fix things but can't tell you when it can't. Run adopt again with --notify ntfy (a private ntfy.sh topic for your phone) or --notify <webhook URL>${dms}` };
-        return { ok: true, detail: `${n.kind === 'ntfy' ? `ntfy: subscribe to ${n.url.replace(/^https:\/\//, '')} in the ntfy app (the topic's name is its only lock, so keep it to yourself)` : `webhook: ${new URL(n.url).host}`}${dms}` };
+        const mail = n.email ? `; and as an email to ${n.email} (at most ${n.email_per_day || 5} a day, from your ntfy.sh account)` : '';
+        return { ok: true, detail: `${n.kind === 'ntfy' ? `ntfy: subscribe to ${n.url.replace(/^https:\/\//, '')} in the ntfy app (the topic's name is its only lock, so keep it to yourself)${mail}` : `webhook: ${new URL(n.url).host}`}${dms}` };
       },
     },
     {
@@ -236,11 +247,17 @@ export function steps() {
           if (!r.ok) return { ok: false, stop: true, detail: r.detail };
         }
         const net = parseIfconfig(x.macIfconfig || '');
+        // Adopt from another machine (no --this-mac) knows none of the Mac's addresses: keep the ones the sitter has.
+        if (!net.ips.length && !x.dryRun) {
+          let had = {};
+          try { had = JSON.parse(String((await x.deps.ssh(`cat ${DIR}/config.json 2>/dev/null || true`)).stdout || '{}')); } catch { /* none yet */ }
+          if (Array.isArray(had.mac_ips) && had.mac_ips.length) { net.ips = had.mac_ips; net.macs = Array.isArray(had.mac_macs) ? had.mac_macs : []; net.kept = true; }
+        }
         if (x.location && !['home', 'away'].includes(x.location)) return { ok: false, stop: true, detail: `--location is home (the LAN may reach the KVM) or away (only the tailnet may); got ${x.location}` };
         if (x.location) x.deps.saveMac((m) => { m.location = x.location; });
         const config = {
           name: x.name, interval_sec: 60, kvmd_user: 'admin', user_names: x.mac.user_names || [], mac_ips: net.ips, mac_macs: net.macs,
-          unlock: x.mac.unlock !== false, unlock_lock_screen: x.mac.unlock_lock_screen === true || x.mac.unlock_lock_screen === 'on_request' ? x.mac.unlock_lock_screen : false, location: x.location || x.mac.location || 'home', power: x.mac.power || null, notify: x.mac.notify || null, health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
+          unlock: x.mac.unlock !== false, unlock_lock_screen: x.mac.unlock_lock_screen === true || x.mac.unlock_lock_screen === 'on_request' ? x.mac.unlock_lock_screen : false, location: x.location || x.mac.location || 'home', power: x.mac.power || null, notify: sitterNotify(x.mac.notify), health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
           outbox: x.mac.outbox?.gist ? { gist: x.mac.outbox.gist, inbox: x.mac.outbox.inbox, poll_sec: 2, beat_min: 10 } : null,
         };
         let r = await x.deps.ssh(`mkdir -p ${DIR} && chmod 700 ${DIR} && cat > ${DIR}/sitter.py`, x.deps.readDevice('sitter.py'));
@@ -256,7 +273,7 @@ export function steps() {
           r = await x.deps.ssh('cat > /etc/init.d/S99housesitter && chmod 755 /etc/init.d/S99housesitter', x.deps.readDevice('S99housesitter'));
         }
         if (r.status !== 0) return { ok: false, stop: true, detail: `service install failed: ${String(r.stderr || r.stdout).slice(0, 200)}` };
-        return { ok: true, detail: `${init === 'systemd' ? 'systemd unit' : 'BusyBox init script'}; watching the screen${net.ips.length ? `, ${net.ips.join(', ')}` : ''}${x.mac.power ? ' and the plug' : ''}${net.ips.length ? '' : ' (run adopt on the Mac itself with --this-mac to watch its network too)'}${x.mac.power ? '' : '; no smart plug, so a hang gets a message, not a power cycle'}` };
+        return { ok: true, detail: `${init === 'systemd' ? 'systemd unit' : 'BusyBox init script'}; watching the screen${net.ips.length ? `, ${net.ips.join(', ')}${net.kept ? ' (kept from its config)' : ''}` : ''}${x.mac.power ? ' and the plug' : ''}${net.ips.length ? '' : ' (run adopt on the Mac itself with --this-mac to watch its network too)'}${x.mac.power ? '' : '; no smart plug, so a hang gets a message, not a power cycle'}` };
       },
     },
     {
@@ -279,6 +296,17 @@ export function steps() {
         if (!x.deps.secrets.has(ref)) return { ok: false, decision: true, detail: `no token at ${ref}. Make a fine-grained or classic token with only the gist scope, store it with: housesitter secret ${x.name} outbox-token, then run adopt again` };
         if (x.dryRun) return { ok: true, detail: 'would copy the token to the sitter (sealed, root-only)' };
         const r = await storeSecret(x, 'outbox', x.deps.secrets.get(ref));
+        return r.ok ? { ok: true, detail: `stored (sealed to the KVM's ${r.bound_to} ids)` } : { ok: false, detail: r.detail };
+      },
+    },
+    {
+      id: 'ntfy-token', title: 'Your ntfy.sh access token onto the sitter, so it can email you',
+      async run(x) {
+        if (!x.mac.notify?.email) return { ok: true, skipped: true, detail: 'skipped (no --email)' };
+        const ref = x.mac.notify.token || x.refs.ntfy;
+        if (!x.deps.secrets.has(ref)) return { ok: false, decision: true, detail: `ntfy.sh emails only for an account that has verified ${x.mac.notify.email}. Sign up at ntfy.sh, verify the address under Account, make an access token, store it with: housesitter secret ${x.name} ntfy-token, then run adopt again. Until then the sitter sends the push alone` };
+        if (x.dryRun) return { ok: true, detail: 'would copy the token to the sitter (sealed, root-only)' };
+        const r = await storeSecret(x, 'ntfy', x.deps.secrets.get(ref));
         return r.ok ? { ok: true, detail: `stored (sealed to the KVM's ${r.bound_to} ids)` } : { ok: false, detail: r.detail };
       },
     },
@@ -412,8 +440,9 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
         if (!s.rootKeys.length) return { status: 255, stdout: '', stderr: 'Permission denied (publickey)' };
         if (cmd.includes('enable-api')) { w.st.apiClosed = false; return { status: 0, stdout: '{"opened_blocks": 1}\n', stderr: '' }; }
         const m = cmd.match(/sitter\.py store-secret (\w+)$/);
-        if (m) { s.secretsOnKvm[m[1]] = input; return { status: 0, stdout: `${JSON.stringify({ stored: m[1], chars: input.length, bound_to: 'hardware' })}\n`, stderr: '' }; }
+        if (m) { s.secretsOnKvm[m[1]] = input; return { status: 0, stdout: `${JSON.stringify({ stored: m[1], bound_to: 'hardware' })}\n`, stderr: '' }; }
         if (cmd.startsWith('if test -d /run/systemd/system; then echo')) return { status: 0, stdout: `${s.init}\n`, stderr: '' };
+        if (cmd.startsWith('cat /etc/kvmd/user/housesitter/config.json') || /^cat \S+\/config\.json 2>/.test(cmd)) return { status: 0, stdout: Object.entries(s.files).find(([f]) => f.endsWith('/config.json'))?.[1] || '', stderr: '' };
         const f = cmd.match(/cat > (\S+)/);
         if (f) { s.files[f[1]] = input; return { status: 0, stdout: '', stderr: '' }; }
         if (cmd.includes('sitter.py secrets')) {

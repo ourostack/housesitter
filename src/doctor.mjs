@@ -101,7 +101,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
 
   // alerts
   const aItems = [];
-  if (mac.notify?.kind) aItems.push({ dot: 'ok', text: `${mac.notify.kind}: it messages you only when it needs you, and when the Mac is back` });
+  if (mac.notify?.kind) aItems.push({ dot: 'ok', text: `${mac.notify.kind}${mac.notify.email ? ` and email to ${mac.notify.email}` : ''}: it messages you only when it needs you, and when the Mac is back` });
   else { aItems.push({ dot: 'warn', text: 'nowhere to tell you' }); todo.push({ cmd: `housesitter adopt ${name} --notify ntfy`, why: 'a phone notification, no account needed' }); }
   if (mac.heartbeat?.url) aItems.push({ dot: 'ok', text: 'a heartbeat every look, so you hear if the KVM itself goes quiet' });
   else { aItems.push({ dot: 'off', text: 'no heartbeat: if the KVM itself dies, nothing tells you' }); todo.push({ cmd: `housesitter adopt ${name} --heartbeat <url>`, why: 'a healthchecks.io ping URL, or any dead man\'s switch' }); }

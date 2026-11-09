@@ -50,7 +50,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -514,7 +514,7 @@ def apply_ingress(mode, run=subprocess.run, iface_up=lambda i: os.path.exists("/
             r = run([cmd[0], "-I", "INPUT", "-j", CHAIN], capture_output=True, text=True, timeout=10)
         if r.returncode != 0 and cmd[1] not in ("-N",):
             if cmd[0] == "ip6tables":
-                why = (r.stderr or "").strip()[:120]
+                why = ((r.stderr or "").strip().splitlines() or [""])[0][:120]
                 if not (v6 if v6 is not None else ipv6_present()):
                     v6note = "IPv6: this kernel has none, so nothing to filter"
                     continue
@@ -860,7 +860,7 @@ def make_power(cfg):
 
 HW_IDS = ("/sys/block/mmcblk0/device/cid", "/sys/block/mmcblk1/device/cid", "/proc/device-tree/serial-number")
 SOFT_IDS = ("/etc/machine-id",)
-SECRET_NAMES = ("mac", "kvmd", "outbox", "plug")
+SECRET_NAMES = ("mac", "kvmd", "outbox", "plug", "ntfy")
 
 
 def device_key(paths=None):
@@ -927,7 +927,8 @@ def store_secret(name, value, key=None):
     os.replace(p + ".new", p)
     if load_secret(name, key) != value:
         raise RuntimeError("stored secret did not read back")
-    return {"stored": name, "chars": len(value), "bound_to": binding}
+    # The receipt says nothing about the value, not even its length.
+    return {"stored": name, "bound_to": binding}
 
 
 def load_secret(name, key=None):
@@ -1792,6 +1793,20 @@ def look(kvmd, src=None, run=subprocess.run, now=None):
     return out
 
 
+def proof_withhold(kind, lesson_visible, boot, now):
+    """Why a proof frame stays off the record, or None to keep it. "No menu bar" doesn't make a frame safe: a desktop
+    that is logging out has lost its menu bar but still shows the Dock and its badges (real, 2026-11-09). So a frame
+    is kept only when it is black, when a taught lesson (FileVault, lock screen, list of users) is on it, or while a
+    boot the boot watch saw is still under way (the Apple logo, FileVault, the login's progress bar)."""
+    if kind in ("black", "none"):
+        return None
+    if kind == "desktop":
+        return "a desktop: not recorded (--all-frames to include)"
+    if lesson_visible or boot_recent(boot, now):
+        return None
+    return "not a taught screen, and no boot under way (a desktop logging out reads like this): not recorded (--all-frames to include)"
+
+
 def proof_frame(kvmd, all_frames=False, run=subprocess.run, now=None):
     """What `housesitter proof` records each tick: what the frame reads as, the lesson match, and a JPEG only when it
     is not a desktop (so a recording never carries your desktop or notifications), unless all_frames. Encoded at full
@@ -1804,10 +1819,12 @@ def proof_frame(kvmd, all_frames=False, run=subprocess.run, now=None):
     kind = classify_frame(f)
     seen = prompt_seen(f)
     out = {"at": now, "reads_as": kind, "hdmi": "%dx%d" % (raw[1], raw[2]), "prompt": {"visible": seen[0], "match": seen[1], "kind": seen[3], "grid": grid_seen(f) is not None}}
-    if kind == "desktop" and not all_frames:
-        out["jpeg"] = None
-        out["withheld"] = "a desktop: not recorded (--all-frames to include)"
-        return out
+    if not all_frames:
+        why = proof_withhold(kind, seen[0] or out["prompt"]["grid"], load("state.json", {}).get("boot"), now)
+        if why:
+            out["jpeg"] = None
+            out["withheld"] = why
+            return out
     yuv, w, h = LAST_FRAME
     jpg = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "%dx%d" % (w, h), "-i", "-",
                "-frames:v", "1", "-c:v", "mjpeg", "-strict", "-1", "-q:v", "5", "-f", "image2pipe", "-"], input=yuv, capture_output=True, timeout=30).stdout
@@ -1950,7 +1967,16 @@ def eyes_without_ocr(cfg, mem, raw, boot):
 
 # ---------- notify: ntfy or any webhook ----------
 
-def notify(cfg, subject, body, opener=urllib.request.urlopen):
+EMAIL_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+# ntfy.sh's free accounts may forward 5 emails a day, and anonymous publishers none at all (it answers 400, code 40053).
+EMAIL_PER_DAY = 5
+
+
+def emails_today(ledger, now):
+    return sum(1 for e in ledger or [] if e.get("kind") == "notify" and now - e.get("at", 0) < 86400000 and "emailed" in str(e.get("result", "")))
+
+
+def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=None):
     n = cfg.get("notify") or {}
     url = n.get("url")
     if not url:
@@ -1958,13 +1984,43 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen):
     if n.get("test"):
         # alert-test: the same message the rules would send, marked in its first words so nobody acts on it.
         subject, body = "TEST: %s" % subject, "TEST (housesitter alert-test; nothing is wrong). %s" % body
-    if n.get("kind") == "ntfy":
-        req = urllib.request.Request(url, data=body.encode("utf-8"), headers={"Title": subject.encode("utf-8"), "Tags": "house"}, method="POST")
-    else:
+    if n.get("kind") != "ntfy":
         data = json.dumps({"subject": subject, "body": body, "text": "%s\n%s" % (subject, body)}).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    with opener(req, timeout=10) as r:
-        return "posted %d" % r.status
+        with opener(req, timeout=10) as r:
+            return "posted %d" % r.status
+    headers = {"Title": subject.encode("utf-8"), "Tags": "house"}
+    token = load_secret("ntfy")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    email, note = n.get("email"), ""
+    if email:
+        now = now if now is not None else int(time.time() * 1000)
+        cap = int(n.get("email_per_day", EMAIL_PER_DAY))
+        used = emails_today(ledger if ledger is not None else load("state.json", {}).get("ledger"), now)
+        if not EMAIL_RE.match(str(email)):
+            email, note = None, " (no email: %r is not one address)" % email
+        elif used >= cap:
+            email, note = None, " (no email: today's %d are used; a push only)" % cap
+        else:
+            headers["Email"] = email
+    req = urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST")
+    try:
+        with opener(req, timeout=10) as r:
+            return "posted %d%s" % (r.status, ", emailed %s" % email if email else note)
+    except urllib.error.HTTPError as e:
+        if not email or not 400 <= e.code < 500:
+            raise
+        # The email is the extra; the push is the message. ntfy refuses the whole post when it won't send the email
+        # (no account, or the day's emails used), so say why and send the push alone.
+        why = ""
+        try:
+            why = json.loads(e.read().decode("utf-8") or "{}").get("error", "")
+        except Exception:  # noqa: BLE001
+            pass
+        del headers["Email"]
+        with opener(urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST"), timeout=10) as r:
+            return "posted %d (ntfy wouldn't email: %s; a push only)" % (r.status, (why or "HTTP %d" % e.code)[:100])
 
 
 # ---------- the outbox: status out, commands in, through two secret gists ----------

@@ -34,6 +34,7 @@ def fixture(name):
 G = fixture("comet-grid-20261109.json")
 FV = fixture("comet-filevault-20261109.json")
 LUM = fixture("comet-lum-20261109.json")
+V02 = fixture("comet-restart-v02-20261109.json")
 TILE = [0.4785, 0.8729]
 
 
@@ -575,9 +576,40 @@ class ProofFrames(unittest.TestCase):
         out = W.proof_frame(Keys(), all_frames=True, run=run, now=5)
         self.assertTrue(out["jpeg"])
         self.fake(FV["filevault-023232"])
+        W.save("state.json", {"boot": {"pending": 6, "boot_at": 6}})
         out = W.proof_frame(Keys(), run=run, now=6)
         self.assertEqual(base64.b64decode(out["jpeg"]), jpeg)
         self.assertNotIn("scale", " ".join(calls[-1]), "the Comet's ffmpeg has no scale filter")
+
+    def test_no_menu_bar_is_not_enough(self):
+        """Fleet-tooling, 2026-11-09: proof kept a logout frame with the Dock and an unread badge, because a frame without
+        a menu bar read as prompt_like. Now a non-desktop frame is kept only at a taught screen or during a boot."""
+        jpeg = b"\xff\xd8" + b"x" * 300 + b"\xff\xd9"
+        run = lambda cmd, **k: type("R", (), {"stdout": jpeg})()  # noqa: E731
+        now = 10 ** 12
+        self.fake(V02["logout"])
+        out = W.proof_frame(Keys(), run=run, now=now)
+        self.assertEqual(out["reads_as"], "prompt_like")
+        self.assertIsNone(out["jpeg"])
+        self.assertIn("no boot under way", out["withheld"])
+        self.assertTrue(W.proof_frame(Keys(), all_frames=True, run=run, now=now)["jpeg"])
+        W.save("state.json", {"boot": {"pending": now - 60000, "boot_at": now - 60000}})
+        self.assertTrue(W.proof_frame(Keys(), run=run, now=now)["jpeg"], "during a boot, the boot's own screens are the proof")
+        W.save("state.json", {"boot": {"pending": now - 16 * 60000, "boot_at": now - 16 * 60000}})
+        self.assertIsNone(W.proof_frame(Keys(), run=run, now=now)["jpeg"], "a stale boot grants nothing")
+
+    def test_a_taught_screen_is_kept_without_a_boot(self):
+        jpeg = b"\xff\xd8" + b"x" * 300 + b"\xff\xd9"
+        run = lambda cmd, **k: type("R", (), {"stdout": jpeg})()  # noqa: E731
+        W.learn_prompt([G["field-a"], G["field-b"], G["field-c"]], "the login window's field form", kind="lock")
+        self.fake(G["field-a"])
+        self.assertTrue(W.proof_frame(Keys(), run=run, now=10 ** 12)["jpeg"])
+
+    def test_withhold_rules(self):
+        self.assertIsNone(W.proof_withhold("black", False, None, 0))
+        self.assertIsNone(W.proof_withhold("none", False, None, 0))
+        self.assertIn("a desktop", W.proof_withhold("desktop", True, {"pending": 0}, 0))
+        self.assertIsNone(W.proof_withhold("prompt_like", True, None, 0))
 
 
 class WaitingToBeTaught(unittest.TestCase):

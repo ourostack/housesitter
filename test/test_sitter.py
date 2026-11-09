@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import urllib.error
 import os
 import sys
 import tempfile
@@ -216,7 +217,7 @@ class Secrets(unittest.TestCase):
     def test_sealed_root_only_and_bound_to_the_device(self):
         a, b = b"a" * 32, b"b" * 32
         r = W.store_secret("mac", "s3cret-Pass_word", key=a)
-        self.assertEqual(r["chars"], 16)
+        self.assertEqual(r, {"stored": "mac", "bound_to": "given"}, "the receipt says nothing about the value, not even its length")
         p = os.path.join(self.dir, "mac.cred")
         self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
         self.assertNotIn("s3cret", open(p).read())
@@ -410,6 +411,86 @@ class Notify(unittest.TestCase):
         self.assertFalse(W.caps_of({}, None)["notify"])
         self.assertFalse(W.caps_of({"notify": {"kind": "ntfy"}}, None)["notify"])
         self.assertTrue(W.caps_of({"notify": {"kind": "ntfy", "url": "https://ntfy.sh/t"}}, None)["notify"])
+
+
+class NotifyEmail(unittest.TestCase):
+    """notify.email: ntfy forwards the message to one address (its Email header), from an account, at most a few a day."""
+
+    def setUp(self):
+        W.HOME = scratch()
+        self.reqs, self.refuse = [], None
+        self.saved = W.load_secret
+        W.load_secret = lambda name, key=None: "tk_fake" if name == "ntfy" else None
+        cfg = {"name": "mini", "notify": {"kind": "ntfy", "url": "https://ntfy.sh/t", "email": "ari@example.com"}}
+        self.cfg = cfg
+
+        class R:
+            status = 200
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+
+        def op(req, timeout=10):
+            self.reqs.append(req)
+            if self.refuse and req.get_header("Email"):
+                import io
+                raise urllib.error.HTTPError(req.full_url, self.refuse[0], "Bad Request", {}, io.BytesIO(json.dumps({"code": self.refuse[1], "error": self.refuse[2]}).encode()))
+            return R()
+        self.op = op
+
+    def tearDown(self):
+        W.load_secret = self.saved
+
+    def test_the_email_header_and_the_account_token(self):
+        r = W.notify(self.cfg, "mini is stuck at FileVault", "body", opener=self.op, now=10 ** 12, ledger=[])
+        self.assertEqual(r, "posted 200, emailed ari@example.com")
+        self.assertEqual(self.reqs[0].get_header("Email"), "ari@example.com")
+        self.assertEqual(self.reqs[0].get_header("Authorization"), "Bearer tk_fake")
+
+    def test_no_email_without_the_option(self):
+        cfg = {"notify": {"kind": "ntfy", "url": "https://ntfy.sh/t"}}
+        self.assertEqual(W.notify(cfg, "s", "b", opener=self.op, now=1, ledger=[]), "posted 200")
+        self.assertIsNone(self.reqs[0].get_header("Email"))
+
+    def test_one_address_only(self):
+        cfg = {"notify": dict(self.cfg["notify"], email="a@example.com, b@example.com")}
+        r = W.notify(cfg, "s", "b", opener=self.op, now=1, ledger=[])
+        self.assertIn("no email", r)
+        self.assertIsNone(self.reqs[0].get_header("Email"))
+
+    def test_the_daily_cap_counts_the_ledger(self):
+        now = 10 ** 12
+        ledger = [{"at": now - i * 3600000, "kind": "notify", "result": "posted 200, emailed ari@example.com"} for i in range(5)]
+        r = W.notify(self.cfg, "s", "b", opener=self.op, now=now, ledger=ledger)
+        self.assertEqual(r, "posted 200 (no email: today's 5 are used; a push only)")
+        self.assertIsNone(self.reqs[0].get_header("Email"))
+        old = [dict(e, at=now - 25 * 3600000) for e in ledger]
+        self.assertIn("emailed", W.notify(self.cfg, "s", "b", opener=self.op, now=now, ledger=old))
+        cfg = {"notify": dict(self.cfg["notify"], email_per_day=1)}
+        self.assertIn("today's 1 are used", W.notify(cfg, "s", "b", opener=self.op, now=now, ledger=ledger[:1]))
+
+    def test_a_refused_email_still_sends_the_push(self):
+        self.refuse = (400, 40053, "invalid request: anonymous email sending is not allowed")
+        r = W.notify(self.cfg, "s", "b", opener=self.op, now=1, ledger=[])
+        self.assertEqual(r, "posted 200 (ntfy wouldn't email: invalid request: anonymous email sending is not allowed; a push only)")
+        self.assertEqual(len(self.reqs), 2)
+        self.assertIsNone(self.reqs[1].get_header("Email"))
+        self.assertEqual(self.reqs[1].get_header("Authorization"), "Bearer tk_fake")
+
+    def test_a_server_error_is_not_swallowed(self):
+        self.refuse = (502, 0, "bad gateway")
+        with self.assertRaises(urllib.error.HTTPError):
+            W.notify(self.cfg, "s", "b", opener=self.op, now=1, ledger=[])
+
+    def test_alert_test_emails_and_the_ledger_counts_it(self):
+        W.save("state.json", {"mem": {"state": "healthy"}, "ledger": []})
+        r = W.alert_test(self.cfg, None, None, lambda m: None, now=10 ** 12, opener=self.op)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.reqs[0].get_header("Email"), "ari@example.com")
+        self.assertTrue(self.reqs[0].get_header("Title").startswith(b"TEST: "))
+        self.assertEqual(W.emails_today(W.load("state.json", {})["ledger"], 10 ** 12 + 1), 1)
+
+    def test_ntfy_is_a_secret_name(self):
+        self.assertIn("ntfy", W.SECRET_NAMES)
 
 
 class Heartbeat(unittest.TestCase):

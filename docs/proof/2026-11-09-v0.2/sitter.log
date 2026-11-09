@@ -1,0 +1,10 @@
+2026-11-09T06:54:10 start: sitter 0.2.0 watching mini every 60s; unlock ready; outbox off
+2026-11-09T06:54:10 ingress: SSH and HTTPS from the LAN and the tailnet; IPv6: nothing to filter at home (ip6tables unavailable: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T06:56:24 boot-watch: boot seen (a restart, or a wake): the screen went dark, then the Mac enumerated the KVM's keyboard again
+2026-11-09T06:56:44 boot-watch: the Mac booted and the FileVault prompt it was taught is on the KVM's picture (steady for 6 frames)
+2026-11-09T06:56:51 unlock: typed the password at the FileVault prompt it was taught (frame, password verified)
+2026-11-09T06:56:58 boot-watch: HDMI back after 4 s without signal (not a boot by itself)
+2026-11-09T06:57:06 boot-watch: the desktop is up after the boot
+2026-11-09T07:05:20 start: sitter 0.2.0 watching mini every 60s; unlock ready; outbox off
+2026-11-09T07:05:20 ingress: SSH and HTTPS from the LAN and the tailnet; IPv6: nothing to filter at home (ip6tables unavailable: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T07:05:32 alert-test: posted 200 (at the FileVault screen for 10+ min and the sitter has not unlocked it. Look: housesitter status <mac>)

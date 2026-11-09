@@ -1,0 +1,18 @@
+-P INPUT ACCEPT
+-A INPUT -j HOUSESITTER_IN
+-A INPUT -j ts-input
+-A INPUT -j MACW_IN
+
+-N HOUSESITTER_IN
+
+-N MACW_IN
+
+Perhaps ip6tables or your kernel needs to be upgraded.
+
+fd7a115ca1e00000000000006535ec48 04 80 00 80 tailscale0
+fe80000000000000d002f7f4f7a09846 04 40 20 80 tailscale0
+fe800000000000009683c4fffee7efb9 02 40 20 80     eth0
+00000000000000000000000000000001 01 80 10 80       lo
+
+2026-11-09T06:54:10 ingress: SSH and HTTPS from the LAN and the tailnet; IPv6: nothing to filter at home (ip6tables unavailable: modprobe: can't open 'modules.dep': No such file or directory
+{"sitter": "0.2.0"}

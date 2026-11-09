@@ -15,6 +15,7 @@
 - Never type a password; `type` refuses anything that looks like one. Ask the sitter: `housesitter unlock <mac>`.
 - Mac locked and you need its UI? `housesitter want-desktop <mac> [--minutes 10]` (or the Reins action `want_desktop`): the sitter unlocks it through its own gates, only if its config says `"unlock_lock_screen": "on_request"` or `true`; otherwise action-unavailable.
 - Smart plug: `housesitter plug <mac> find|adopt [ip]|status|prove --attended`.
+- Messages: ntfy or a webhook; `adopt --notify ntfy --email <address>` also emails one address through an ntfy.sh account (token: `housesitter secret <mac> ntfy-token`; 5 emails a day on a free account). `housesitter alert-test <mac>` sends one real stuck message marked TEST.
 
 ## Docs
 - [Hardware](docs/hardware.md): wiring, display settings, KVM quirks, power adapters
