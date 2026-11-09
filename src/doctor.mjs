@@ -59,13 +59,13 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   if (b) {
     const [u, uMax] = b.unlock_hour;
     const [ub, ubMax] = b.unlock_since_desktop;
-    bItems.push({ dot: b.blocked ? 'warn' : 'ok', text: `unlock  ${ub} of ${ubMax} since the desktop · ${u} of ${uMax} this hour${b.unlock_hour_frees_at ? ` (frees ${clock(b.unlock_hour_frees_at, now)})` : ''}` });
+    bItems.push({ dot: b.blocked ? 'warn' : 'ok', text: `unlock  ${Math.max(0, ubMax - ub)} of ${ubMax} tries left before it stops (resets at the desktop) · ${Math.max(0, uMax - u)} of ${uMax} left this hour${b.unlock_hour_frees_at ? ` (one back at ${clock(b.unlock_hour_frees_at, now)})` : ''}` });
     if (b.blocked) bItems.push({ dot: 'warn', text: `stopped: ${b.blocked}` });
   }
   if (st) {
     if (can.plug || can.fingerbot) {
       const [c, cMax] = b?.cycles_day || [0, 3];
-      bItems.push({ dot: 'ok', text: `power   ${c} of ${cMax} cycles today · only a desktop frozen across 3 looks while nothing answers` });
+      bItems.push({ dot: 'ok', text: `power   ${Math.max(0, cMax - c)} of ${cMax} cycles left today · only a desktop frozen 5 min, then 3 more looks, while nothing answers` });
     } else bItems.push({ dot: 'off', text: 'power   no plug: a frozen Mac is reported, never cycled' });
   }
   if (bItems.length) sec.push({ label: 'BUDGETS', items: bItems });
@@ -76,7 +76,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   const li = st?.last_incident;
   if (li) hItems.push({ dot: 'ok', text: `${clock(li.started, now)} to ${clock(li.ended, now)}: ${li.actions?.length ? li.actions.map((a) => a.replace(/_/g, ' ')).join(', ') : 'it came back by itself'}${li.told_you ? '; it told you' : '; nobody was woken'}` });
   for (const e of (st?.recent || []).slice(-3).reverse()) if (e.kind !== 'notify' || hItems.length < 2) hItems.push({ dot: null, text: `${clock(e.at, now)}  ${e.kind.replace(/_/g, ' ')}${e.result ? `: ${String(e.result).slice(0, 70)}` : ''}` });
-  if (st && !hItems.length) hItems.push({ dot: 'ok', text: 'none seen yet' });
+  if (st && !hItems.length) hItems.push({ dot: 'ok', text: 'none seen by this sitter yet' });
   if (hItems.length) sec.push({ label: 'LAST INCIDENT', items: hItems });
 
   // alerts
@@ -84,6 +84,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   if (mac.notify?.kind) aItems.push({ dot: 'ok', text: `${mac.notify.kind}: it messages you only when it needs you, and when the Mac is back` });
   else { aItems.push({ dot: 'warn', text: 'nowhere to tell you' }); todo.push({ cmd: `housesitter adopt ${name} --notify ntfy`, why: 'a phone notification, no account needed' }); }
   if (mac.heartbeat?.url) aItems.push({ dot: 'ok', text: 'a heartbeat every look, so you hear if the KVM itself goes quiet' });
+  else { aItems.push({ dot: 'off', text: 'no heartbeat: if the KVM itself dies, nothing tells you' }); todo.push({ cmd: `housesitter adopt ${name} --heartbeat <url>`, why: 'a healthchecks.io ping URL, or any dead man\'s switch' }); }
   sec.push({ label: 'ALERTS', items: aItems });
 
   // the screen, beside the picture
@@ -111,7 +112,8 @@ export function renderDoctor(model, { color = false, now = Date.now(), hidePictu
   out.push(...beside(head.map((l) => `  ${l}`), color ? tag : [`  ${model.name}`], 4), '');
   const right = [];
   for (const [k, v] of model.screen) right.push(k === 'THE SCREEN' ? p.label(k) : `${p.dim(k.padEnd(16))}${p.text(v)}`);
-  out.push(...beside(glimpse(p, hidePicture ? null : model.glimpse, { title: 'what the KVM sees', note: hidePicture ? 'picture hidden (--private)' : '' }).map((l) => `  ${l}`), ['', ...right]), '');
+  if (hidePicture) out.push(...right.map((l, i) => `  ${l}${i === 0 ? p.dim('   (picture hidden: --private)') : ''}`), '');
+  else out.push(...beside(glimpse(p, model.glimpse, { title: 'what the KVM sees' }).map((l) => `  ${l}`), ['', ...right]), '');
   out.push(...rows(p, model.sections, { labelWidth: 16 }).map((l) => `  ${l}`));
   if (model.todo.length) {
     out.push('', `  ${p.label(model.todo.length === 1 ? 'ONE THING TO DO' : `${model.todo.length} THINGS TO DO`)}`);

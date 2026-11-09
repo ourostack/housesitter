@@ -709,6 +709,10 @@ class Safety(unittest.TestCase):
     def boot(self, cfg=None, start=1_000_000, ticks=20):
         cfg = cfg or {"name": "studio"}
         W.boot_watch(cfg, self.kvmd, self.logs.append, now=start)
+        # A restart: HDMI goes dark, then the Mac enumerates the KVM's keyboard again.
+        mode, W.hdmi_mode = W.hdmi_mode, lambda read=None, kvmd=None: None
+        W.boot_watch(cfg, self.kvmd, self.logs.append, now=start + 1000)
+        W.hdmi_mode = mode
         self.usb += 900
         t = start
         for k in range(1, ticks):
@@ -1056,6 +1060,14 @@ class LockScreenIsNotADesktop(unittest.TestCase):
         self.assertEqual(refs, 1)
         self.assertFalse(W.prompt_seen(LUM["desktop"])[0])
 
+    def test_a_plain_bright_or_grey_frame_never_matches(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "test")
+        n = len(LUM["lock-a"]["_lum"])
+        for luma in (255, 200, 128, 3):
+            f = {"mean": luma, "top_edges": 0, "_lum": bytes([luma]) * n}
+            self.assertEqual(W.prompt_seen(f)[1], 0.0, luma)
+            self.assertFalse(W.prompt_seen(f)[0], luma)
+
 
 class Look(unittest.TestCase):
     """`housesitter look` and `doctor`: a read-only look and a tiny colour glimpse of the screen."""
@@ -1119,7 +1131,7 @@ class NeverEscape(unittest.TestCase):
         src = open(os.path.join(HERE, "..", "device", "sitter.py")).read()
         import re
         self.assertEqual(sorted(set(re.findall(r"send_key\?key=(\w+)", src))), ["Enter", "ShiftLeft"])
-        self.assertNotIn("Escape", re.sub(r'"esc(ape)?": "Escape"', "", src.split("def key_names")[0] + src.split("def key_names")[1].split("\n\n\n", 1)[1]))
+        # Its only key of its own besides Return is a lone Shift; an agent's Escape at a login window is refused (LiveFindings).
 
 
 class OnlyAfterABoot(unittest.TestCase):
@@ -1150,3 +1162,45 @@ class OnlyAfterABoot(unittest.TestCase):
             self.assertFalse(st["can"]["unlock"])
         self.assertEqual([p for p in kvmd.posts if "print" in p[0]], [])
         self.assertFalse(any(e.get("kind") == "unlock" for e in W.load("state.json", {}).get("ledger", [])))
+
+
+class LiveFindings(unittest.TestCase):
+    """From the independent review after the real restart (2026-11-08)."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def tick(self, bw, now, usb, mode=(2560, 1440), frame=None, kvm_boot="b1", up=5000):
+        return W.boot_tick(bw, now, {"usb": usb, "mode": mode, "frame": frame, "kvm_boot": kvm_boot}, W.BOOT, up)
+
+    def test_a_usb_reset_without_a_dark_screen_is_not_a_boot(self):
+        bw, _, _ = self.tick(None, 0, 10.0)
+        bw, _, note = self.tick(bw, 3000, 900.0)
+        self.assertIsNone(bw.get("pending"))
+        self.assertIn("not a boot", note)
+        bw, _, _ = self.tick(bw, 6000, 900.0, mode=None)
+        bw, _, note = self.tick(bw, 9000, 1500.0)
+        self.assertTrue(bw.get("pending"))
+        self.assertIn("boot seen", note)
+
+    def test_a_kvm_reboot_during_a_power_cut_still_sees_the_mac_boot(self):
+        bw, _, _ = self.tick(None, 0, 30960.7, up=31000)
+        # Power cut: the KVM reboots too, so its kernel clock restarts from zero and its boot id changes.
+        bw, _, note = self.tick(bw, 60000, 16.9, kvm_boot="b2", up=40)
+        self.assertTrue(bw.get("pending"), note)
+
+    def test_the_outbox_cannot_attend(self):
+        r = W.handle({"op": "power_cycle", "args": {"attended": True}}, {"name": "studio"}, None, None, lambda m: None, 10**6, {"ledger": []}, via="outbox")
+        self.assertFalse(r["ok"])
+        self.assertIn("SSH only", r["result"])
+
+    def test_no_escape_and_no_typing_from_agents_at_a_password_screen(self):
+        W.save("status.json", {"obs": {"screen": "login"}})
+        k = FakeKvmd()
+        r = W.handle({"op": "key", "args": {"combo": "esc"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable")
+        r = W.handle({"op": "type", "args": {"text": "hunter2"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertEqual(k.posts, [])
+        W.save("status.json", {"obs": {"screen": "desktop"}})
+        self.assertTrue(W.handle({"op": "key", "args": {"combo": "esc"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})["ok"])

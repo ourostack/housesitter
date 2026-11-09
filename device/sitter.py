@@ -1133,6 +1133,9 @@ def frame_features(y, w, h):
 PROMPT_REGION = (0.30, 0.70, 0.40, 0.97)
 PROMPT_GRID = (200, 150)
 PROMPT_LEARN_LUMA, PROMPT_SEEN_LUMA, PROMPT_RECALL, PROMPT_MIN_POINTS = 200, 160, 0.9, 20
+# Two-sided: the prompt is a little white on a darker screen. Real lock and FileVault frames have 0.1-1% of the grid
+# that bright; a desktop has 62%. A frame brighter than this nearly everywhere (white, grey, a bright app) never matches.
+PROMPT_MAX_BRIGHT = 0.15
 
 
 def lum_grid(y, w, h, region=PROMPT_REGION, grid=PROMPT_GRID):
@@ -1159,6 +1162,8 @@ def prompt_match(points, f):
     """The share of a taught prompt's points that are bright in this frame (0..1)."""
     lum = (f or {}).get("_lum")
     if not lum or len(points) < PROMPT_MIN_POINTS:
+        return 0.0
+    if sum(1 for v in lum if v >= PROMPT_SEEN_LUMA) > PROMPT_MAX_BRIGHT * len(lum):
         return 0.0
     return sum(1 for i in points if i < len(lum) and lum[i] >= PROMPT_SEEN_LUMA) / len(points)
 
@@ -1234,19 +1239,34 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
     KVM reboot can't reset them (type_at_field)."""
     bw = dict(bw or {})
     note = None
+    if obs.get("kvm_boot") and obs["kvm_boot"] != bw.get("kvm_boot"):
+        # The KVM itself rebooted: kernel time (dmesg) started again from zero, so the old mark means nothing.
+        if bw.get("kvm_boot"):
+            bw["usb_seen"] = None
+        bw["kvm_boot"] = obs["kvm_boot"]
+    f0 = obs.get("frame")
+    if obs.get("mode") is None or (f0 is not None and classify_frame(f0, cfg) == "black"):
+        bw["dark_at"] = now
     if bw.get("usb_seen") is None:
         # A KVM that has just booted itself may have booted with the Mac (powered from the Mac's USB): count it.
         bw["usb_seen"] = 0.0 if (kvm_up_s is not None and kvm_up_s < 180) else obs.get("usb", 0.0)
     if obs.get("usb", 0.0) > bw["usb_seen"]:
-        bw.update(usb_seen=obs["usb"], boot_at=now, pending=now, stable=0, last_thumb=None, stuck=None, blind_noted=None)
-        note = "boot seen: the Mac enumerated the KVM's keyboard again"
+        dark = bw.get("dark_at")
+        fresh = kvm_up_s is not None and kvm_up_s < 180
+        if fresh or (dark is not None and now - dark <= cfg.get("boot_dark_sec", 180) * 1000):
+            bw.update(usb_seen=obs["usb"], boot_at=now, pending=now, stable=0, last_thumb=None, stuck=None, blind_noted=None)
+            note = "boot seen: the screen went dark, then the Mac enumerated the KVM's keyboard again"
+        else:
+            # A wake from sleep or a reseated cable re-enumerates too. A restart always darkens HDMI first.
+            bw["usb_seen"] = obs["usb"]
+            note = "the Mac enumerated the KVM's keyboard again with no dark screen before it (a wake, or a cable?): not a boot"
     if obs.get("mode") is None:
         if bw.get("no_signal_since") is None:
             bw["no_signal_since"] = now
         return bw, None, note
     if bw.get("no_signal_since") is not None:
         # HDMI coming back alone is NOT a boot (display sleep, a cable, a full-screen app).
-        if now - bw["no_signal_since"] >= 3000:
+        if now - bw["no_signal_since"] >= 3000 and not note:
             note = "HDMI back after %d s without signal (not a boot by itself)" % ((now - bw["no_signal_since"]) // 1000)
         bw["no_signal_since"] = None
     f = obs.get("frame")
@@ -1277,6 +1297,13 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
     return bw, "type", "the Mac booted and its password field is on the KVM's picture (steady for %d frames)" % bw["stable"]
 
 
+def kvm_boot_id(read=lambda: open("/proc/sys/kernel/random/boot_id").read()):
+    try:
+        return read().strip() or None
+    except OSError:
+        return None
+
+
 def kvm_uptime_s(read=lambda: open("/proc/uptime").read()):
     try:
         return float(read().split()[0])
@@ -1290,7 +1317,7 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
     bcfg = dict(BOOT, **cfg.get("boot", {}))
     st = load("state.json", {"mem": None, "ledger": []})
     bw = st.get("boot") or {}
-    obs = {"usb": usb_last_enum(run=run), "mode": hdmi_mode(kvmd=kvmd)}
+    obs = {"usb": usb_last_enum(run=run), "mode": hdmi_mode(kvmd=kvmd), "kvm_boot": kvm_boot_id()}
     armed = bool(bw.get("boot_at")) and now - bw["boot_at"] <= bcfg["armed_min"] * 60000
     new_usb = bw.get("usb_seen") is not None and obs["usb"] > bw["usb_seen"]
     obs["frame"] = None
@@ -1552,9 +1579,17 @@ def should_publish(st, status, now, beat_min=10):
 OPS = ("status", "look", "screenshot", "unlock", "power_cycle", "power_on", "click", "type", "key", "scroll")
 
 
-def handle(cmd, cfg, kvmd, power, log, now, st):
-    """One command (from the inbox, or `sitter.py do` over SSH). Every op is bounded and rate-limited like the
-    watchdog's own. Refusals use Ouro Reins' codes: action-unavailable, input-invalid, action-failed."""
+def at_password_screen(st=None):
+    """Does the sitter's last look, or a boot still in progress, say the Mac is at a login, lock or FileVault screen?"""
+    last = (load("status.json", {}) or {}).get("obs") or {}
+    boot = ((st or {}).get("boot") or load("state.json", {}).get("boot") or {})
+    return last.get("screen") in ("filevault", "login") or bool(boot.get("pending"))
+
+
+def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
+    """One command (from the inbox, or `sitter.py do` over SSH). Unlock and power ops keep the sitter's own budgets and
+    checks; screenshot, click, type and key are an agent's hands and pass through, except at a password screen.
+    Refusals use Ouro Reins' codes: action-unavailable, input-invalid, action-failed."""
     op = cmd.get("op")
     name = cfg.get("name", "mac")
     if op not in OPS:
@@ -1592,6 +1627,8 @@ def handle(cmd, cfg, kvmd, power, log, now, st):
         text = a.get("text")
         if not isinstance(text, str) or not text or len(text) > 2000:
             return {"ok": False, "code": "input-invalid", "result": "args.text: 1-2000 characters"}
+        if at_password_screen(st):
+            return {"ok": False, "code": "action-unavailable", "result": "the Mac is at a password screen; only the sitter types there, its own copy, at a field it can see: use unlock"}
         kvmd.post("/hid/print?limit=0&slow=1", body=text.encode("utf-8"), timeout=120)
         return {"ok": True, "result": "typed %d characters" % len(text)}
     if op == "key":
@@ -1599,6 +1636,8 @@ def handle(cmd, cfg, kvmd, power, log, now, st):
             names = key_names(a.get("combo", ""))
         except ValueError as e:
             return {"ok": False, "code": "input-invalid", "result": "args.combo: %s" % e}
+        if "Escape" in names and at_password_screen(st):
+            return {"ok": False, "code": "action-unavailable", "result": "no Escape at a login window: it switches to the list of users, where no password field has focus (2026-11-08)"}
         if len(names) == 1:
             kvmd.post("/hid/events/send_key?key=%s" % names[0])
         else:
@@ -1607,6 +1646,8 @@ def handle(cmd, cfg, kvmd, power, log, now, st):
     if op == "unlock":
         res = type_at_field(cfg, kvmd, st, now, "asked for", "request", log)
         return {"ok": res.startswith("typed"), "code": None if res.startswith("typed") else "action-failed", "result": res}
+    if a.get("attended") is True and via != "ssh":
+        return {"ok": False, "code": "action-unavailable", "result": "attended is an operator's override, over SSH only (housesitter power-cycle <mac> --attended from your own machine), never through the outbox"}
     if not power and (cfg.get("power") or {}).get("kind") != "fingerbot":
         return {"ok": False, "code": "action-unavailable", "result": "no smart plug configured on this sitter"}
     res = power_action(op, cfg, kvmd, power, st, now, "request", attended=a.get("attended") is True, log=log)
@@ -1639,7 +1680,7 @@ def poll_inbox(cfg, gh, kvmd, power, log, now=None):
         return None
     t0 = time.time()
     try:
-        rep = handle(cmd, cfg, kvmd, power, log, now, st)
+        rep = handle(cmd, cfg, kvmd, power, log, now, st, via="outbox")
     except Exception as e:  # noqa: BLE001
         rep = {"ok": False, "code": "action-failed", "result": "failed: %s" % str(e)[:200]}
     if cmd.get("op") in ("unlock", "power_cycle", "power_on"):

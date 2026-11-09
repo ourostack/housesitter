@@ -6,6 +6,8 @@ export const BOOT = { desktop_edges: 40, black_mean: 10 };
 export const PROMPT_SEEN_LUMA = 160;
 export const PROMPT_RECALL = 0.9;
 export const PROMPT_MIN_POINTS = 20;
+// Two-sided: a frame bright nearly everywhere (white, grey, a bright app) never matches. See device/sitter.py.
+export const PROMPT_MAX_BRIGHT = 0.15;
 
 // A frame's features: { mean, top_edges } (and lum, a Buffer of the prompt grid, when there is one).
 export function classifyFrame(f, cfg = BOOT) {
@@ -17,6 +19,9 @@ export function classifyFrame(f, cfg = BOOT) {
 
 export function promptMatch(points, lum) {
   if (!lum || !points || points.length < PROMPT_MIN_POINTS) return 0;
+  let bright = 0;
+  for (const v of lum) if (v >= PROMPT_SEEN_LUMA) bright++;
+  if (bright > PROMPT_MAX_BRIGHT * lum.length) return 0;
   let n = 0;
   for (const i of points) if (i < lum.length && lum[i] >= PROMPT_SEEN_LUMA) n++;
   return n / points.length;
@@ -34,6 +39,6 @@ export function readsAs(kind, seen) {
   if (kind === 'desktop') return 'a desktop: a menu bar, top left';
   if (kind === 'black') return 'black: asleep, off, or no picture';
   if (kind === 'none') return 'nothing: no frame decoded';
-  if (seen?.visible) return 'a password prompt it was taught';
+  if (seen?.visible) return 'the prompt it was taught';
   return seen?.taught ? 'no menu bar, and not the taught prompt' : 'no menu bar (no prompt taught yet)';
 }

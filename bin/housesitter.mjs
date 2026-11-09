@@ -78,12 +78,15 @@ function useColor() { return !flag('--plain') && !process.env.NO_COLOR && (Boole
 function showLook(l) {
   if (json) { emit(l); return 0; }
   const p = painter(useColor());
-  const words = { desktop: 'a desktop: a menu bar, top left', black: 'black: asleep, off, or no picture', none: `nothing (${l.why || 'no frame'})`, prompt_like: 'no menu bar' };
-  const right = ['', `${p.label('IT SEES')}  ${words[l.reads_as] || l.reads_as}`];
-  if (l.prompt) right.push(`${p.label('PROMPT ')}  ${l.prompt.taught ? (l.prompt.visible ? `the taught password prompt (${Math.round(l.prompt.match * 100)}%)` : `not the taught prompt (${Math.round(l.prompt.match * 100)}%)`) : 'none taught yet: housesitter learn-prompt <mac> --i-see-the-field'}`);
-  if (l.size) right.push(`${p.dim('picture  ')}${l.size.join('×')}${l.mode ? ` · HDMI ${l.mode.join('×')}` : ''} · from ${l.from}`);
-  right.push(`${p.dim('pressed  nothing; typed nothing; changed nothing')}`);
-  console.log(['', ...beside(paintGlimpse(p, flag('--private') ? null : l.glimpse, { title: 'what the KVM sees', note: flag('--private') ? 'hidden (--private)' : '' }).map((x) => `  ${x}`), right), ''].join('\n'));
+  const seen = l.prompt?.visible;
+  const sees = l.reads_as === 'desktop' ? 'a desktop: a menu bar, top left' : l.reads_as === 'black' ? 'black: asleep, off, or no picture' : l.reads_as === 'none' ? `nothing (${l.why || 'no frame'})`
+    : seen ? `the password prompt it was taught (${Math.round(l.prompt.match * 100)}%)` : l.prompt?.taught ? 'no menu bar, and not the prompt it was taught' : 'no menu bar (no prompt taught yet)';
+  const may = l.reads_as === 'desktop' ? ['never: a desktop'] : seen ? ['yes, once its password is verified:', 'by itself right after a boot, or when you ask'] : ['no: no password field it knows on the picture'];
+  const right = ['', `${p.label('IT SEES  ')}${sees}`, ...may.map((m, i) => `${i ? '         ' : p.label('MAY TYPE ')}${seen ? p.fg([158, 206, 106], m) : m}`), ''];
+  if (l.prompt && !l.prompt.taught) right.push(p.dim('teach it: housesitter learn-prompt <mac> --i-see-the-field'));
+  right.push(p.dim(l.from === 'kvm' ? `from the KVM${l.mode ? `, HDMI ${l.mode.join('×')}` : ''}` : `from ${l.from}`));
+  right.push(p.dim('pressed nothing, typed nothing, changed nothing'));
+  console.log(['', ...beside(paintGlimpse(p, flag('--private') ? null : l.glimpse, { title: 'what the KVM sees', note: flag('--private') ? 'picture hidden (--private)' : '' }).map((x) => `  ${x}`), right), ''].join('\n'));
   return 0;
 }
 

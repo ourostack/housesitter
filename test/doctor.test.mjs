@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildDoctor, renderDoctor } from '../src/doctor.mjs';
 import { loadEvening, renderEvening, replay } from '../src/evening.mjs';
 import { glimpse, painter, width } from '../src/paint.mjs';
+import { promptMatch } from '../src/frames.mjs';
 
 const NOW = Date.UTC(2026, 10, 9, 2, 31);
 const KVM = { model: 'GL.iNet Comet (GLKVM)', version: '4.82', via: 'home LAN (fallback)', video: { online: true, resolution: '2560x1440' }, hid: { keyboard_online: true } };
@@ -23,19 +24,20 @@ test('doctor: a healthy, set-up Mac has nothing to do', () => {
   assert.equal(m.todo.length, 0);
   assert.doesNotMatch(out, /\x1b\[/);
   assert.match(out, /next look\s+in 51 s/);
-  for (const s of ['THE SCREEN', 'a desktop (from a decoded frame)', 'up, at its desktop for at least 2 min', 'GL.iNet Comet (GLKVM) · kvmd 4.82 · via home LAN', 'verified: our one supervised try reached the desktop', '1 of 3 this hour', '0 of 3 cycles today', 'none seen yet']) assert.ok(out.includes(s), `${s}\n${out}`);
+  for (const s of ['THE SCREEN', 'a desktop (from a decoded frame)', 'up, at its desktop for at least 2 min', 'GL.iNet Comet (GLKVM) · kvmd 4.82 · via home LAN', 'verified: our one supervised try reached the desktop', '2 of 3 left this hour', '2 of 2 tries left before it stops', '3 of 3 cycles left today', 'none seen by this sitter yet']) assert.ok(out.includes(s), `${s}\n${out}`);
   assert.doesNotMatch(out, /fallback/);
 });
 
 test('doctor: says what is missing, and the command that fixes it', () => {
   const m = buildDoctor({ name: 'mini', mac: { kvm: {} }, kvm: KVM, sit: { status: status({ password: 'unverified', secrets: { mac: true }, can: {}, prompt: { taught: 0, match: 0, visible: false } }) }, now: NOW });
   const cmds = m.todo.map((t) => t.cmd);
-  assert.deepEqual(cmds, ['housesitter unlock mini --trial', 'housesitter learn-prompt mini --i-see-the-field', 'housesitter adopt mini --notify ntfy']);
+  assert.deepEqual(cmds, ['housesitter unlock mini --trial', 'housesitter learn-prompt mini --i-see-the-field', 'housesitter adopt mini --notify ntfy', 'housesitter adopt mini --heartbeat <url>']);
   const out = plain(m);
   assert.match(out, /unverified, so never typed/);
   assert.match(out, /no plug: a frozen Mac is reported, never cycled/);
   assert.match(out, /its certificate is not pinned/);
-  assert.match(out, /3 THINGS TO DO/);
+  assert.match(out, /4 THINGS TO DO/);
+  assert.match(out, /no heartbeat: if the KVM itself dies, nothing tells you/);
 });
 
 test('doctor: honest timers and unreachable parts', () => {
@@ -72,9 +74,10 @@ test('demo: the real evening, read by the same rules as the sitter', () => {
   assert.equal(steps[2].seen.match, 1);
   assert.ok(steps[3].seen.match >= 0.9 && steps[3].seen.match < 1);
   const text = renderEvening(steps).flat().join('\n');
-  assert.match(text, /won't type: no password field on its own picture/);
-  assert.match(text, /a password prompt it was taught \(100%\)/);
+  assert.match(text, /won't type: no password field on its[\s\S]{0,80}picture/);
+  assert.match(text, /the prompt it was taught: 100%,[\s\S]{0,80}then 9[0-9]% as the wallpaper moved/);
   assert.match(text, /18:32:37  typed the password, once/);
+  assert.match(text, /a desktop, not shown/);
   assert.doesNotMatch(text, /\x1b\[/);
 });
 
@@ -95,4 +98,10 @@ print(json.dumps(out))`;
   const node = replay(e).map((s) => [s.kind, s.kind === 'prompt_like' ? s.seen.match : 0]);
   const pyOut = JSON.parse(r.stdout).map(([k, m]) => [k, k === 'prompt_like' ? m : 0]);
   assert.deepEqual(node, pyOut);
+});
+
+test('the prompt matcher is two-sided: a frame bright everywhere never matches', () => {
+  const e = loadEvening();
+  const n = e.frames.find((f) => f.lum).lum.length;
+  for (const v of [255, 200, 128]) assert.equal(promptMatch(e.prompt_points, Buffer.alloc(n, v)), 0);
 });
