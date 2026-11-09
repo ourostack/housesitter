@@ -113,3 +113,49 @@ test('location: away makes the sitter tailnet-only; anything but home or away is
   const bad = await run({}, {}, { notify: 'ntfy', location: 'office' });
   assert.equal(bad.results.at(-1).ok, false);
 });
+
+const adoptWith = async (prep, flags = { notify: 'ntfy' }, extra = {}) => {
+  const f = fakeDeps();
+  prep?.(f);
+  const x = { name: 'studio', mac: { name: 'studio', kvm: { endpoints: [] }, user_names: ['Ada'], ...extra }, refs: defaultRefs('studio'), say: () => {}, deps: f.deps, ...flags };
+  return { f, results: await adopt(x) };
+};
+const sitterConfig = (f) => JSON.parse(f.s.files['/etc/kvmd/user/housesitter/config.json']);
+
+test('a re-adopt from another machine keeps the Mac addresses the sitter already has (fleet-tooling, 2026-11-09)', async () => {
+  const { f, results } = await adoptWith((g) => { g.s.files['/etc/kvmd/user/housesitter/config.json'] = JSON.stringify({ mac_ips: ['192.168.50.37'], mac_macs: ['aa:bb:cc:dd:ee:ff'] }); });
+  assert.ok(results.every((r) => r.ok), JSON.stringify(results.filter((r) => !r.ok)));
+  assert.deepEqual(sitterConfig(f).mac_ips, ['192.168.50.37']);
+  assert.deepEqual(sitterConfig(f).mac_macs, ['aa:bb:cc:dd:ee:ff']);
+  assert.match(results.find((r) => r.id === 'sitter').detail, /192\.168\.50\.37 \(kept from its config\)/);
+});
+
+test('--this-mac addresses replace the old ones; a first adopt with none writes none', async () => {
+  const fresh = await adoptWith();
+  assert.deepEqual(sitterConfig(fresh.f).mac_ips, []);
+  const ifc = 'en0: flags=8863<UP>\n\tether 11:22:33:44:55:66\n\tinet 192.168.50.99 netmask 0xffffff00 broadcast 192.168.50.255\n';
+  const { f } = await adoptWith((g) => { g.s.files['/etc/kvmd/user/housesitter/config.json'] = JSON.stringify({ mac_ips: ['192.168.50.37'], mac_macs: [] }); }, { notify: 'ntfy', macIfconfig: ifc });
+  assert.deepEqual(sitterConfig(f).mac_ips, parseIfconfig(ifc).ips);
+});
+
+test('--email: ntfy forwards each message to one address, from an account token sealed on the sitter', async () => {
+  const { f, results } = await adoptWith((g) => g.deps.secrets.set('keychain:housesitter/studio-ntfy-token', 'tk_fake'), { notify: 'ntfy', email: 'ada@example.com' });
+  assert.ok(results.every((r) => r.ok), JSON.stringify(results.filter((r) => !r.ok)));
+  assert.equal(f.s.saved.notify.email, 'ada@example.com');
+  assert.equal(sitterConfig(f).notify.email, 'ada@example.com');
+  assert.equal(sitterConfig(f).notify.token, undefined, 'the keychain reference stays on this machine');
+  assert.equal(f.s.secretsOnKvm.ntfy, 'tk_fake');
+  assert.match(results.find((r) => r.id === 'notify').detail, /email to ada@example\.com \(at most 5 a day/);
+  for (const c of f.s.ssh) assert.ok(!c.includes('tk_fake'), `token in argv: ${c}`);
+});
+
+test('--email without a token says how to get one; two addresses or a webhook are refused', async () => {
+  const none = await adoptWith(null, { notify: 'ntfy', email: 'ada@example.com' });
+  const step = none.results.find((r) => r.id === 'ntfy-token');
+  assert.equal(step.ok, false);
+  assert.match(step.detail, /verified ada@example\.com.*housesitter secret studio ntfy-token/);
+  const two = await adoptWith(null, { notify: 'ntfy', email: 'a@example.com,b@example.com' });
+  assert.match(two.results.at(-1).detail, /one address/);
+  const hook = await adoptWith(null, { notify: 'https://example.com/hook', email: 'a@example.com' });
+  assert.match(hook.results.at(-1).detail, /works through ntfy/);
+});

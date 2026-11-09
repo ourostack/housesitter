@@ -28,9 +28,9 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter demo                         the real evening it was built for, replayed (no hardware)
   housesitter demo night                   one bad night, rehearsed: a panic, a freeze, a changed password
   housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
-      [--notify ntfy|<url>] [--heartbeat <url>] [--location home|away] [--fingerprint <sha256>]
+      [--notify ntfy|<url>] [--email <you@example.com>] [--heartbeat <url>] [--location home|away] [--fingerprint <sha256>]
       [--this-mac] [--outbox] [--dry-run] [--fake]
-  housesitter secret <mac> <mac-password|kvm-admin|outbox-token>   store a secret (read from stdin, no echo)
+  housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token>   store a secret (read from stdin, no echo)
   housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
                                            (desktops are never recorded unless --all-frames)
   housesitter plug <mac> find|adopt [ip]|status   the smart plug on the Mac's cord: set it up safely, read it
@@ -65,7 +65,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--heartbeat', '--location', '--fingerprint', '--every'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--heartbeat', '--location', '--fingerprint', '--every'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -150,7 +150,7 @@ async function main() {
     try { mac = macConfig(name); } catch { mac = { name, kvm: { endpoints: [] } }; }
     const x = {
       name, mac, refs: { ...defaultRefs(name), ...(mac.kvm?.admin_password ? { admin: mac.kvm.admin_password } : {}) }, address: val('--address') || (fake ? null : mac.kvm?.endpoints?.find((e) => e.fallback)?.url?.replace(/^https:\/\//, '') || null),
-      dryRun: flag('--dry-run'), outbox: flag('--outbox'), notify: val('--notify'), heartbeat: val('--heartbeat'), location: val('--location'), expectFingerprint: val('--fingerprint'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
+      dryRun: flag('--dry-run'), outbox: flag('--outbox'), notify: val('--notify'), email: val('--email'), heartbeat: val('--heartbeat'), location: val('--location'), expectFingerprint: val('--fingerprint'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
       deps: fake ? fake.deps : realDeps(name, { secrets: store, saveMac: (fn) => updateMac(name, fn) }), configFile: configPath(),
     };
     if (fake) x.mac = { name, kvm: { endpoints: [] }, user_names: ['Ada'] };
@@ -162,17 +162,17 @@ async function main() {
 
   if (cmd === 'secret') {
     const which = rest[0];
-    need(name && ['mac-password', 'kvm-admin', 'outbox-token'].includes(which), 'housesitter secret <mac> <mac-password|kvm-admin|outbox-token>  (reads the value from stdin)');
+    need(name && ['mac-password', 'kvm-admin', 'outbox-token', 'ntfy-token'].includes(which), 'housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token>  (reads the value from stdin)');
     const refs = defaultRefs(name);
     let m = {};
     try { m = macConfig(name); } catch { /* new */ }
-    const ref = { 'mac-password': m.mac_password || refs.mac, 'kvm-admin': m.kvm?.admin_password || refs.admin, 'outbox-token': m.outbox?.token || refs.outbox }[which];
+    const ref = { 'mac-password': m.mac_password || refs.mac, 'kvm-admin': m.kvm?.admin_password || refs.admin, 'outbox-token': m.outbox?.token || refs.outbox, 'ntfy-token': m.notify?.token || refs.ntfy }[which];
     if (process.stdin.isTTY) { process.stderr.write(`${which} for ${name} (input hidden), then Return: `); spawnStty('-echo'); }
     const value = await new Promise((res) => { let b = ''; process.stdin.on('data', (d) => { b += d; if (process.stdin.isTTY && b.includes('\n')) { process.stdin.pause(); res(b); } }); process.stdin.on('end', () => res(b)); });
     if (process.stdin.isTTY) { spawnStty('echo'); process.stderr.write('\n'); }
     secretStore().set(ref, value.replace(/\r?\n$/, ''));
-    updateMac(name, (c) => { if (which === 'mac-password') c.mac_password = ref; if (which === 'kvm-admin') { c.kvm = c.kvm || {}; c.kvm.admin_password = ref; } if (which === 'outbox-token' && c.outbox) c.outbox.token = ref; });
-    say(`stored at ${ref}${which === 'mac-password' ? `; run housesitter adopt ${name} to put it on the sitter` : ''}`);
+    updateMac(name, (c) => { if (which === 'mac-password') c.mac_password = ref; if (which === 'kvm-admin') { c.kvm = c.kvm || {}; c.kvm.admin_password = ref; } if (which === 'outbox-token' && c.outbox) c.outbox.token = ref; if (which === 'ntfy-token' && c.notify) c.notify.token = ref; });
+    say(`stored at ${ref}${which === 'mac-password' || which === 'ntfy-token' ? `; run housesitter adopt ${name} to put it on the sitter` : ''}`);
     return 0;
   }
 

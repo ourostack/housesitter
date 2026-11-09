@@ -1,0 +1,660 @@
+{
+  "mac": "mini",
+  "recorded_by": "housesitter 0.2.0",
+  "real": true,
+  "desktops": "not recorded",
+  "timeline": [
+    {
+      "at": "2026-11-09T06:55:24.793Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:28.556Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:31.558Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:34.560Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:37.560Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:40.563Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:43.564Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:46.566Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:49.568Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:52.570Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:55:55.572Z",
+      "file": null,
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null,
+      "removed": "logout frame showing the Dock (an unread badge): removed by hand; the sitter read it as prompt_like (no menu bar)"
+    },
+    {
+      "at": "2026-11-09T06:55:58.643Z",
+      "file": "frame-0012.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:01.645Z",
+      "file": "frame-0013.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:22.506Z",
+      "file": "frame-0014.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:25.506Z",
+      "file": "frame-0015.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:28.528Z",
+      "file": "frame-0016.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:31.530Z",
+      "file": "frame-0017.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:34.635Z",
+      "file": "frame-0018.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:37.811Z",
+      "file": "frame-0019.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:40.934Z",
+      "file": "frame-0020.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:44.040Z",
+      "file": "frame-0021.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:47.120Z",
+      "file": "frame-0022.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:50.344Z",
+      "file": "frame-0023.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": true,
+        "match": 1,
+        "kind": "boot",
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:53.349Z",
+      "file": null,
+      "reads_as": "none",
+      "hdmi": null,
+      "prompt": null,
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:56:57.606Z",
+      "file": "frame-0025.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:00.608Z",
+      "file": "frame-0026.jpg",
+      "reads_as": "prompt_like",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0.348,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:03.609Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:06.997Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:10.664Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:13.666Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "unknown",
+      "state": "degraded",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:16.986Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:19.988Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:22.988Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:25.989Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:28.991Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:31.992Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:34.993Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:37.996Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:40.998Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:44.000Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    },
+    {
+      "at": "2026-11-09T06:57:47.002Z",
+      "file": null,
+      "reads_as": "desktop",
+      "hdmi": "2560x1440",
+      "prompt": {
+        "visible": false,
+        "match": 0,
+        "kind": null,
+        "grid": false
+      },
+      "screen": "desktop",
+      "state": "healthy",
+      "actions": null,
+      "error": null
+    }
+  ]
+}
