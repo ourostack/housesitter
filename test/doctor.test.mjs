@@ -31,7 +31,7 @@ test('doctor: a healthy, set-up Mac has nothing to do', () => {
 test('doctor: says what is missing, and the command that fixes it', () => {
   const m = buildDoctor({ name: 'mini', mac: { kvm: {} }, kvm: KVM, sit: { status: status({ password: 'unverified', secrets: { mac: true }, can: {}, prompt: { taught: 0, match: 0, visible: false } }) }, now: NOW });
   const cmds = m.todo.map((t) => t.cmd);
-  assert.deepEqual(cmds, ['housesitter unlock mini --trial', 'housesitter learn-prompt mini --i-see-the-field --filevault', 'housesitter adopt mini --notify ntfy', 'housesitter adopt mini --heartbeat <url>']);
+  assert.deepEqual(cmds, ['housesitter unlock mini --trial', 'housesitter learn-prompt mini --i-see-the-field --filevault', 'housesitter adopt mini --notify ntfy', 'housesitter adopt mini --watched-by <url>']);
   const out = plain(m);
   assert.match(out, /unverified, so never typed/);
   assert.match(out, /no plug: a frozen Mac is reported, never cycled/);

@@ -2561,7 +2561,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "lock_policy": lock_policy(cfg), "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
-              "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "heartbeat": bool((cfg.get("heartbeat") or {}).get("url"))},
+              "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "watched_by": bool((cfg.get("watched_by") or {}).get("url")) or bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
     if gh and o.get("gist"):
@@ -2582,7 +2582,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
 def heartbeat(cfg, status, opener=urllib.request.urlopen):
     """Ping a dead man's switch (healthchecks.io, Uptime Kuma, cronitor…) every look, so that if this KVM, its power or
     its network dies, something else notices and tells you. Healthy pings the URL; anything else pings URL/fail."""
-    url = (cfg.get("heartbeat") or {}).get("url")
+    url = (cfg.get("watched_by") or cfg.get("heartbeat") or {}).get("url")  # "heartbeat" is the 0.2 name
     if not url:
         return None
     u = url if status["state"] in ("healthy", "degraded") else url.rstrip("/") + "/fail"

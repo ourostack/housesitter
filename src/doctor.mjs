@@ -110,8 +110,8 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   const aItems = [];
   if (mac.notify?.kind) aItems.push({ dot: 'ok', text: `${mac.notify.kind}${mac.notify.email ? ` and email to ${mac.notify.email}` : ''}: it messages you only when it needs you, and when the Mac is back` });
   else { aItems.push({ dot: 'warn', text: 'nowhere to tell you' }); todo.push({ cmd: `housesitter adopt ${name} --notify ntfy`, why: 'a phone notification, no account needed' }); }
-  if (mac.heartbeat?.url) aItems.push({ dot: 'ok', text: 'a heartbeat every look, so you hear if the KVM itself goes quiet' });
-  else { aItems.push({ dot: 'off', text: 'nothing outside watches the KVM: if it dies, nobody hears' }); todo.push({ cmd: `housesitter adopt ${name} --heartbeat <url>`, why: 'a URL that alerts you when its pings stop (a dead man\'s switch, such as healthchecks.io)' }); }
+  if ((mac.watched_by || mac.heartbeat)?.url) aItems.push({ dot: 'ok', text: 'watched: it pings a dead man\'s switch every look, so you hear if the KVM itself goes quiet' });
+  else { aItems.push({ dot: 'off', text: 'nothing outside watches the KVM: if it dies, nobody hears' }); todo.push({ cmd: `housesitter adopt ${name} --watched-by <url>`, why: 'a URL that alerts you when its pings stop (a dead man\'s switch, such as healthchecks.io)' }); }
   sec.push({ label: 'ALERTS', items: aItems });
 
   // the screen, beside the picture
@@ -126,7 +126,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     if (st.obs?.screen === 'desktop') scr.push(['clock', st.obs.clock_ticking === false ? 'NOT moving' : st.obs.clock_ticking ? 'moving' : 'not read yet']);
     scr.push(['looked', `${age(ago)} ago${late ? ' (LATE: is the sitter running?)' : ''}`]);
     if (!late) scr.push(['next look', every - ago > 1000 ? `in ${age(every - ago)}` : 'due now']);
-    const probeless = st.probes && !st.probes.health && !st.probes.heartbeat;
+    const probeless = st.probes && !st.probes.health && !st.probes.watched_by && !st.probes.heartbeat;
     const beat = st.obs?.heartbeat_age_min;
     scr.push(['answers', st.obs?.answers === true ? (beat != null ? `yes: its heartbeat is ${beat} min old` : 'yes, on the network') : st.obs?.answers === false ? (beat != null ? `NO: its heartbeat is ${beat} min old` : 'NO') : probeless ? 'no probe set: "up" is a desktop whose clock moves' : 'the probe can\'t tell right now']);
   }
