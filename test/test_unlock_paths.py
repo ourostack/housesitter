@@ -527,6 +527,9 @@ class NoViewer(unittest.TestCase):
         self.assertEqual(obs["hdmi"], "2560x1440")
         self.assertEqual(obs["screen"], "desktop")
         self.assertEqual(obs["eyes"], "frame")
+        self.assertNotIn("ocr_error", obs, "#26: the frame route saw, so OCR's failure is a note, not a fault")
+        self.assertEqual(obs["ocr_note"], "no OCR")
+        self.assertNotIn("no OCR", W.plain_signs(obs), "a note, so never in a message's signs")
 
 
 class IncidentsClose(unittest.TestCase):

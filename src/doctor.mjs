@@ -135,10 +135,11 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     scr.push(['THE SCREEN', '']);
     scr.push(['reads as', `${SCREEN[st.obs?.screen] || 'not read'}${st.obs?.eyes === 'frame' ? ' (from a decoded frame)' : ''}`]);
     if (st.prompt) scr.push(['taught prompt', st.prompt.visible ? `on the picture (${Math.round(st.prompt.match * 100)}%)` : 'not on the picture']);
-    if (st.obs?.screen === 'desktop') {
+    if (st.obs?.screen === 'desktop' || st.obs?.clock?.where === 'lock') {
       const c = st.obs.clock;
-      const read = c?.text ? `: reads ${c.text.replace(/^.*?(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)\s*$/, '$1')}, on the KVM's NPU${c.ms != null ? ` in ${c.ms} ms` : ''}` : '';
-      scr.push(['clock', `${st.obs.clock_ticking === false ? 'NOT moving' : st.obs.clock_ticking ? 'moving' : 'not read yet'}${read}`]);
+      const read = c?.text ? `: reads ${c.text.replace(/^.*?(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)\s*$/, '$1')}${c.where === 'lock' ? ' on the lock screen' : ''}, on the KVM's NPU${c.ms != null ? ` in ${c.ms} ms` : ''}` : '';
+      const ticking = c?.where === 'lock' ? st.obs.lock_clock_ticking : st.obs.clock_ticking;
+      scr.push(['clock', `${ticking === false ? 'NOT moving' : ticking ? 'moving' : 'not read yet'}${read}`]);
     }
     scr.push(['looked', `${age(ago)} ago${late ? ' (LATE: is the sitter running?)' : ''}`]);
     if (!late) scr.push(['next look', every - ago > 1000 ? `in ${age(every - ago)}` : 'due now']);

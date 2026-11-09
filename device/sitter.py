@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -1864,10 +1864,14 @@ def look(kvmd, src=None, run=subprocess.run, now=None):
 # what is on screen and never types. When it can't read a time, the fingerprint is used as before.
 
 NPU_MODEL = os.path.join(HOME, "npu", "clock.rknn")
+NPU_LOCK_MODEL = os.path.join(HOME, "npu", "lock-clock.rknn")  # the big time on the lock screen and FileVault
 CLOCK_CROP = (0.94, 1.0, 0.0, 0.0195)  # the menu bar's right end, where the time is (fractions of the screen)
 CLOCK_IN = (32, 192)
 CLOCK_CHARS = "0123456789:. " + "abcdefghijklmnopqrstuvwxyz" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 CLOCK_TIME = re.compile(r"(\d{1,2}):(\d{2})(?::\d{2})?\s*([AP]M)?")
+
+
+LOCK_CROP = (0.37, 0.63, 0.12, 0.255)  # the big time on the lock screen, the login window and FileVault
 
 
 def clock_input(y, w, h, crop=CLOCK_CROP, size=CLOCK_IN):
@@ -1910,9 +1914,10 @@ def clock_minutes(text):
     return hh * 60 + mm if hh < 24 and mm < 60 else None
 
 
-def npu_worker(model):
-    """`sitter.py npu-worker <model>`: the NPU in a process of its own, so a hung job (the driver gives up after 6 s)
-    or a crash never stalls the sitter. Reads 4-byte-length-prefixed inputs on stdin, writes one JSON line each.
+def npu_worker(*models):
+    """`sitter.py npu-worker <model> [<model>...]`: the NPU in a process of its own, so a hung job (the driver gives up
+    after 6 s) or a crash never stalls the sitter. Each request on stdin is one byte (which model) and four (the input's
+    length), then the input; each answer is one JSON line.
 
     The Comet's device tree leaves the NPU's IOMMU off, so the NPU can only use physically contiguous buffers, and
     Rockchip's runtime allocates from the system DMA heap (scattered pages): every job times out. In this process's own
@@ -1942,22 +1947,30 @@ def npu_worker(model):
     class Out(ctypes.Structure):
         _fields_ = [("want_float", ctypes.c_uint8), ("is_prealloc", ctypes.c_uint8), ("index", ctypes.c_uint32), ("buf", ctypes.c_void_p), ("size", ctypes.c_uint32)]
 
-    data = open(model, "rb").read()
-    blob = ctypes.create_string_buffer(data, len(data))
-    ctx = ctypes.c_uint64(0)
-    if lib.rknn_init(ctypes.byref(ctx), blob, len(data), 0, None) != 0:
-        raise RuntimeError("rknn_init failed")
-    oa = Attr()
-    oa.index = 0
-    lib.rknn_query(ctx, 2, ctypes.byref(oa), ctypes.sizeof(oa))
-    classes, steps = oa.dims[1], oa.dims[3]
-    sys.stdout.write(json.dumps({"ready": True, "classes": classes, "steps": steps}) + "\n")
+    nets = []
+    for model in models:
+        data = open(model, "rb").read()
+        blob = ctypes.create_string_buffer(data, len(data))
+        ctx = ctypes.c_uint64(0)
+        if lib.rknn_init(ctypes.byref(ctx), blob, len(data), 0, None) != 0:
+            raise RuntimeError("rknn_init failed for %s" % os.path.basename(model))
+        oa = Attr()
+        oa.index = 0
+        lib.rknn_query(ctx, 2, ctypes.byref(oa), ctypes.sizeof(oa))
+        nets.append((ctx, oa.dims[1], oa.dims[3]))
+    sys.stdout.write(json.dumps({"ready": True, "models": len(nets)}) + "\n")
     sys.stdout.flush()
     while True:
-        head = sys.stdin.buffer.read(4)
-        if len(head) < 4:
+        head = sys.stdin.buffer.read(5)
+        if len(head) < 5:
             return 0
-        px = sys.stdin.buffer.read(struct.unpack("<I", head)[0])
+        which, n = struct.unpack("<BI", head)
+        px = sys.stdin.buffer.read(n)
+        if which >= len(nets):
+            sys.stdout.write(json.dumps({"error": "no model %d" % which}) + "\n")
+            sys.stdout.flush()
+            continue
+        ctx, classes, steps = nets[which]
         buf = ctypes.create_string_buffer(px, len(px))
         inp = (Inp * 1)()
         inp[0].index, inp[0].buf, inp[0].size, inp[0].pass_through, inp[0].type, inp[0].fmt = 0, ctypes.cast(buf, ctypes.c_void_p), len(px), 0, 3, 1
@@ -1981,9 +1994,32 @@ class NpuClock:
     """The sitter's handle on its NPU worker. Any failure (no NPU, no model, a hung job) turns it off for an hour, and
     the sitter falls back to the clock fingerprint."""
 
-    def __init__(self, model=NPU_MODEL, timeout=8.0, popen=subprocess.Popen, exists=os.path.exists):
-        self.model, self.timeout, self.popen, self.exists = model, timeout, popen, exists
-        self.proc, self.off_until, self.why, self.last = None, 0, None, None
+    RECYCLE_READS, RECYCLE_RSS_KB = 720, 64 * 1024
+
+    def __init__(self, model=NPU_MODEL, timeout=8.0, popen=subprocess.Popen, exists=os.path.exists, lock_model=NPU_LOCK_MODEL):
+        self.model, self.lock_model, self.timeout, self.popen, self.exists = model, lock_model, timeout, popen, exists
+        self.models = []
+        self.proc, self.off_until, self.why, self.last, self.reads = None, 0, None, None, 0
+
+    def rss_kb(self):
+        try:
+            with open("/proc/%d/status" % self.proc.pid) as f:
+                return next(int(ln.split()[1]) for ln in f if ln.startswith("VmRSS:"))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _recycle(self):
+        """A fresh worker every 12 hours of looks, or sooner if it grows past 64 MB: the runtime's own allocations
+        creep a little, and a restart costs about 0.7 s."""
+        try:
+            self.proc.stdin.close()  # the worker exits on end of input, and the kernel frees its NPU memory
+            self.proc.wait(timeout=2)
+        except Exception:  # noqa: BLE001
+            try:
+                self.proc.kill()  # its own PID, from Popen
+            except Exception:  # noqa: BLE001
+                pass
+        self.proc, self.reads = None, 0
 
     def available(self, now=None):
         now = now if now is not None else time.time()
@@ -2010,18 +2046,25 @@ class NpuClock:
             raise RuntimeError("the NPU worker stopped")
         return json.loads(ln)
 
-    def read(self, px, now=None):
-        """The clock text the NPU reads from one clock_input(), or None (and the reason in .why)."""
+    def read(self, px, now=None, lock=False):
+        """The clock text the NPU reads from one clock_input(), or None (and the reason in .why). lock: the lock
+        screen's big time (LOCK_CROP), read by its own model, if this KVM has it."""
         if not self.available(now):
+            return None
+        if lock and not self.exists(self.lock_model):
             return None
         import struct
         deadline = time.monotonic() + self.timeout  # one budget for the whole read, start-up included
         try:
             if not self.proc:
-                self.proc = self.popen([sys.executable, os.path.abspath(__file__), "npu-worker", self.model], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                self.models = [self.model] + ([self.lock_model] if self.exists(self.lock_model) else [])
+                self.proc = self.popen([sys.executable, os.path.abspath(__file__), "npu-worker"] + self.models, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 if not self._line(deadline).get("ready"):
                     raise RuntimeError("the NPU worker didn't start")
-            self.proc.stdin.write(struct.pack("<I", len(px)) + px)
+            which = self.models.index(self.lock_model) if lock and self.lock_model in self.models else 0
+            if lock and not which:
+                return None  # the lock model arrived after this worker started; the next worker loads it
+            self.proc.stdin.write(struct.pack("<BI", which, len(px)) + px)
             self.proc.stdin.flush()
             rep = self._line(deadline)
         except Exception as e:  # noqa: BLE001
@@ -2029,6 +2072,12 @@ class NpuClock:
         if "error" in rep:
             return self._off(rep["error"], now)
         self.why, self.last = None, rep
+        self.reads += 1
+        rss = self.rss_kb()
+        if rss:
+            rep["rss_kb"] = rss
+        if self.reads >= self.RECYCLE_READS or (rss or 0) > self.RECYCLE_RSS_KB:
+            self._recycle()
         return rep["text"]
 
 
@@ -2221,6 +2270,15 @@ def eyes_without_ocr(cfg, mem, raw, boot):
         out["screen"] = "login" if seen[0] and seen[3] != "boot" else "filevault"
         if boot.get("stuck"):
             out["boot"] = boot["stuck"].replace("<mac>", cfg.get("name", "<mac>"))
+    if out["screen"] in ("filevault", "login") and len(y) >= w * h and h >= 64 and cfg.get("npu", True) is not False:
+        # The big time on the lock screen, the login window and FileVault. Read for the record and for messages only
+        # ("stuck at FileVault, and its clock has stopped": frozen, not waiting). It never changes the state, which
+        # the rules take from the screen, and it never gates or triggers typing.
+        read = NPU.read(clock_input(y, w, h, crop=LOCK_CROP), lock=True)
+        at = clock_minutes(read)
+        if at is not None:
+            out["clock"] = {"text": read.strip(), "on": "npu", "ms": (NPU.last or {}).get("ms"), "where": "lock"}
+            out["lock_clock_ticking"] = clock_ticking(mem, "npu:lock:%d" % at, key="lock_clock_seen")
     return out
 
 
@@ -2506,12 +2564,12 @@ def poll_inbox(cfg, gh, kvmd, power, log, now=None):
 
 # ---------- one look ----------
 
-def clock_ticking(mem, clock):
+def clock_ticking(mem, clock, key="clock_seen"):
     """The menu-bar clock, read once a minute: frozen only if the last three reads are the same text."""
     if not clock:
         return None
-    seen = (mem.get("clock_seen") or [])[-2:] + [clock]
-    mem["clock_seen"] = seen
+    seen = (mem.get(key) or [])[-2:] + [clock]
+    mem[key] = seen
     if len(seen) < 3:
         return True if len(set(seen)) > 1 else None
     return len(set(seen)) > 1
@@ -2550,6 +2608,9 @@ def observe(cfg, kvmd, power, mem, now):
             except Exception as e2:  # noqa: BLE001
                 raw, obs["frame_error"] = None, str(e2)[:120]
             obs.update(eyes_without_ocr(cfg, mem, raw, load("state.json", {}).get("boot")))
+            if obs.get("eyes") == "frame":
+                # #26: the frame route saw the screen, so the OCR route's failure is only a note, not a fault.
+                obs["ocr_note"] = obs.pop("ocr_error")
     elif obs.get("video") is False:
         obs["screen"] = "blank"
     if obs.get("screen") == "desktop":
@@ -2631,7 +2692,7 @@ def plain_signs(obs):
     """What the sitter saw, in words a person reads at 3 a.m. (the same words in src/watchdog.mjs)."""
     out = []
     for k, v in sorted(obs.items()):
-        if v is None or k.endswith("_error") or k == "eyes":
+        if v is None or k.endswith("_error") or k in ("eyes", "ocr_note"):
             continue
         if k == "video":
             out.append("picture on HDMI" if v else "no picture on HDMI")
@@ -2643,6 +2704,8 @@ def plain_signs(obs):
             out.append("answers its health check" if v else "doesn't answer its health check")
         elif k == "clock_ticking":
             out.append("its clock is moving" if v else "its clock has stopped")
+        elif k == "lock_clock_ticking":
+            out.append("its lock-screen clock is moving" if v else "its lock-screen clock has stopped")
         elif k == "clock":
             out.append("its clock reads %s" % v.get("text") if isinstance(v, dict) else "clock=%s" % v)
         elif k == "heartbeat_age_min":
@@ -2849,8 +2912,8 @@ def watch_only(command):
 
 
 def main(argv):
-    if argv[:1] == ["npu-worker"] and len(argv) == 2:
-        return npu_worker(argv[1])
+    if argv[:1] == ["npu-worker"] and len(argv) >= 2:
+        return npu_worker(*argv[1:])
     if argv[:1] == ["watch-only"]:
         rest = watch_only(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
         if rest is None:

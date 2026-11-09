@@ -1,5 +1,5 @@
 name: npu-models
-# Builds the clock reader housesitter runs on the KVM's NPU (RV1126B) from npu/clock.onnx. rknn-toolkit2 is
+# Builds the clock readers housesitter runs on the KVM's NPU (RV1126B) from npu/*.onnx. rknn-toolkit2 is
 # Linux-only, so models are converted here, never on the KVM or a Mac. Pinned to 2.3.2, the runtime on the GL.iNet Comet.
 # The PP-OCRv4 conversion from the spike lives on the npu-spike branch, kept for the record.
 on:
@@ -19,19 +19,23 @@ jobs:
         with: { python-version: '3.10' }
       - name: Toolkit
         run: pip install -q rknn-toolkit2==2.3.2 onnx==1.16.1
-      - name: Convert the clock reader for rv1126b
+      - name: Convert the clock readers for rv1126b
         run: |
           python - <<'PY'
+          import glob, os
           from rknn.api import RKNN
-          r = RKNN(verbose=False)
-          r.config(mean_values=[[0]], std_values=[[255]], target_platform="rv1126b")
-          ret = r.load_onnx(model="npu/clock.onnx") or r.build(do_quantization=False) or r.export_rknn("clock.rknn")
-          assert ret == 0, ret
-          r.release()
+          for src in sorted(glob.glob("npu/*.onnx")):
+              r = RKNN(verbose=False)
+              r.config(mean_values=[[0]], std_values=[[255]], target_platform="rv1126b")
+              out = "out/" + os.path.basename(src)[:-5] + ".rknn"
+              os.makedirs("out", exist_ok=True)
+              ret = r.load_onnx(model=src) or r.build(do_quantization=False) or r.export_rknn(out)
+              assert ret == 0, (src, ret)
+              r.release()
           PY
-          sha256sum npu/clock.onnx clock.rknn device/npu/clock.rknn
-          ls -l clock.rknn device/npu/clock.rknn
+          sha256sum npu/*.onnx out/*.rknn device/npu/*.rknn
+          ls -l out device/npu
       - uses: actions/upload-artifact@v4
         with:
           name: clock-rknn
-          path: clock.rknn
+          path: out/*.rknn

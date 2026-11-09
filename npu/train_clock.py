@@ -7,8 +7,13 @@ so every NPU buffer must be physically contiguous, and the sitter runs it from t
 
     python npu/train_clock.py <out dir> <font dir>
 
-The shipped model (device/npu/clock.onnx) was trained with CLOCK_N=40000 CLOCK_EPOCHS=24 CLOCK_DEVICE=mps on a laptop
-GPU; CPU works too, only slower. Conversion to .rknn happens in CI (.github/workflows/npu-models.yml), never on the KVM.
+Two models share this network, trained on a laptop GPU (CPU works, only slower):
+    clock.onnx       the menu bar's right end (CROP): CLOCK_N=40000 CLOCK_EPOCHS=24 CLOCK_DEVICE=mps
+    lock-clock.onnx  the big time on the lock screen, the login window and FileVault (LOCK_CROP), fine-tuned from the
+                     first: CLOCK_N=24000 CLOCK_EPOCHS=8 CLOCK_FROM=<clock.pt> CLOCK_LOCK_FONTS=<dir> (open variable
+                     fonts: Inter, Nunito, Manrope, Figtree)
+They stay separate so teaching one never costs the other: one network trained on both read the lock screen as well
+but lost menu-bar accuracy. Conversion to .rknn happens in CI (.github/workflows/npu-models.yml), never on the KVM.
 """
 import glob
 import io
@@ -84,6 +89,59 @@ def render(r, fonts, sw=2560, sh=1440):
     return img, label
 
 
+LOCK_CROP = (0.37, 0.63, 0.12, 0.255)  # the big time on the lock screen, the login window and FileVault
+
+
+def _font(path, size, r):
+    f = ImageFont.truetype(path, size)
+    try:
+        axes = f.get_variation_axes()
+        f.set_variation_by_axes([r.uniform(max(a["minimum"], 520), min(a["maximum"], 760)) if a.get("name", b"") in (b"Weight", "Weight") else a["default"] for a in axes])
+    except Exception:  # noqa: BLE001
+        pass
+    return f
+
+
+def render_lock(r, fonts, sw=2560, sh=1440):
+    """One crop of the big lock-screen time ("10:56") over a photo-like wallpaper, and its label. About 3% are a
+    wallpaper with no clock (label empty)."""
+    scale = r.choice([1.0, 1.0, 0.5, 0.75, 1.5])
+    sw, sh = int(sw * scale), int(sh * scale)
+    cw, ch = int((LOCK_CROP[1] - LOCK_CROP[0]) * sw), int((LOCK_CROP[3] - LOCK_CROP[2]) * sh)
+    a, b = r.randrange(40, 210), r.randrange(40, 210)
+    img = Image.linear_gradient("L").resize((cw, ch)).point(lambda v: int(a + (b - a) * v / 255))
+    if r.random() < 0.5:
+        img = img.transpose(r.choice([Image.FLIP_TOP_BOTTOM, Image.FLIP_LEFT_RIGHT]))
+    d = ImageDraw.Draw(img)
+    for _ in range(r.randrange(0, 6)):  # hills, bridges, clouds: soft shapes, never digits
+        x0, y0 = r.randrange(-cw // 2, cw), r.randrange(-ch // 2, ch)
+        d.ellipse([x0, y0, x0 + r.randrange(ch // 3, cw), y0 + r.randrange(ch // 4, ch * 2)], fill=r.randrange(30, 220))
+    img = img.filter(ImageFilter.GaussianBlur(r.uniform(2, 12)))
+    dim = r.random() < 0.08  # a dimmed display
+    if r.random() < 0.03:
+        label = ""
+    else:
+        h, m = r.randrange(24), r.randrange(60)
+        label = r.choice([f"{h % 12 or 12}:{m:02d}"] * 3 + [f"{h:02d}:{m:02d}"])
+        size = int(ch * r.uniform(0.78, 0.98))
+        font = _font(r.choice(fonts), size, r)
+        x0, y0, x1, y1 = d.textbbox((0, 0), label, font=font)
+        tx = (cw - (x1 - x0)) // 2 - x0 + r.randrange(-cw // 40, cw // 40 + 1)
+        ty = (ch - (y1 - y0)) // 2 - y0 + r.randrange(-ch // 14, ch // 14 + 1)
+        glass = Image.new("L", (cw, ch), 0)
+        ImageDraw.Draw(glass).text((tx, ty), label, font=font, fill=255)
+        lift = r.randrange(30, 95)
+        top = img.point(lambda v: min(255, max(v + lift, 175 + lift // 3)))
+        img = Image.composite(top, img, glass.filter(ImageFilter.GaussianBlur(r.uniform(0.3, 1.2))))
+    if dim:
+        img = img.point(lambda v: v // r.choice([4, 6]))
+    if r.random() < 0.8:
+        bio = io.BytesIO()
+        img.save(bio, "JPEG", quality=r.randrange(35, 90))
+        img = Image.open(io.BytesIO(bio.getvalue())).convert("L")
+    return img, label
+
+
 def to_input(img):
     """Exactly what the KVM does: nearest-neighbour to 32 rows by aspect, black-padded to 416 columns."""
     cw, ch = img.size
@@ -136,9 +194,10 @@ def batch(r, fonts, n):
 def _render_chunk(args):
     seed, n, fonts = args
     r = random.Random(seed)
+    lock = sorted(glob.glob(os.path.join(os.environ["CLOCK_LOCK_FONTS"], "*.ttf"))) if os.environ.get("CLOCK_LOCK_FONTS") else None
     xs, labels = bytearray(), []
-    for _ in range(n):
-        img, t = render(r, fonts)
+    for k in range(n):
+        img, t = render_lock(r, lock) if lock else render(r, fonts)
         xs += to_input(img).tobytes()
         labels.append(t)
     return bytes(xs), labels
@@ -164,7 +223,10 @@ def main(out, font_dir):
     Y = [torch.tensor(encode(t)) for t in labels]
     print(json.dumps({"rendered": n, "sec": round(time.time() - t0)}), flush=True)
     dev = torch.device(os.environ.get("CLOCK_DEVICE", "cpu"))
-    net = ClockNet().to(dev)
+    net = ClockNet()
+    if os.environ.get("CLOCK_FROM"):  # fine-tune from earlier weights (the shipped model: the menu-bar model, then both)
+        net.load_state_dict(torch.load(os.environ["CLOCK_FROM"], map_location="cpu"))
+    net = net.to(dev)
     budget = float(os.environ.get("CLOCK_BUDGET_SEC", 1200))
     epochs, bs = int(os.environ.get("CLOCK_EPOCHS", 24)), 128
     opt = torch.optim.AdamW(net.parameters(), 2e-3, weight_decay=1e-4)
@@ -203,6 +265,7 @@ def main(out, font_dir):
             p = os.path.join(calib, "%02d.png" % i)
             Image.frombytes("L", (W, H), bytes(Xv[i].view(-1).tolist())).save(p)
             f.write(os.path.abspath(p) + "\n")
+    torch.save(net.state_dict(), os.path.join(out, "clock.pt"))
     torch.onnx.export(net, torch.zeros(1, 1, H, W), os.path.join(out, "clock.onnx"), input_names=["x"], output_names=["logits"], opset_version=12)
     rep = {"params": sum(p.numel() for p in net.parameters()), "epochs": done, "train_sec": round(time.time() - t1), "synthetic_exact": exact(),
            "synthetic_n": len(lv), "fonts": [os.path.basename(f) for f in fonts], "chars": CHARS, "input": [H, W], "crop": CROP}
