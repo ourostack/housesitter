@@ -3,9 +3,9 @@
 Output docs/img/night.gif
 
 Set Shell "bash"
-Set FontSize 14
-Set Width 1400
-Set Height 800
+Set FontSize 17
+Set Width 1280
+Set Height 840
 Set Padding 26
 Set Theme "TokyoNight"
 Set TypingSpeed 45ms

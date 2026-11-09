@@ -57,7 +57,14 @@ export async function night({ name = 'studio', start = 2 * 60 + 58, end = 6 * 60
       if (a.kind === 'notify') {
         const m = W.message(name, mem, a, obs);
         if (open) open.messages++;
-        say(t, a.recovered ? `sitter → your phone: "${m.subject}"` : `sitter → your phone: "${m.subject}: ${a.why.replaceAll('<mac>', name)}"`, 'notify');
+        if (a.recovered) say(t, `sitter → your phone: "${m.subject}"`, 'notify');
+        else {
+          // The message itself, word for word: its title and the two lines that matter at 3 a.m. (the other two are the
+          // time it got stuck and the raw signs).
+          say(t, 'sitter → your phone, once:', 'notify');
+          const keep = m.body.split('\n').filter((l) => /^(Stuck because|Look):/.test(l));
+          for (const l of [m.subject, ...keep]) lines.push({ t, at: '', text: l, tag: l === m.subject ? 'msg-title' : 'msg' });
+        }
         if (mem.incident) mem.incident.notified_at = t * 60000;
       }
     }
@@ -76,13 +83,28 @@ export function defaultEvents() {
   ];
 }
 
+function wrapAt(text, width) {
+  const out = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    if (line && line.length + 1 + word.length > width) { out.push(line); line = word; } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
 export function render({ lines, incidents }, { color = false } = {}) {
   const c = (code, s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
-  const tint = { event: '33', mac: '2', state: '36', act: '32', notify: '35', done: '1;32' };
+  const tint = { event: '33', mac: '2', state: '36', act: '32', notify: '35', done: '1;32', 'msg-title': '1;97', msg: '97' };
   const out = [c('2', 'housesitter demo: a rehearsal with a pretend Mac and a pretend KVM. The rules and the client are the real ones.'), ''];
-  for (const l of lines) out.push(`${c('2', l.at)}  ${c(tint[l.tag] || '0', l.text)}`);
+  for (const l of lines) {
+    if (l.tag === 'msg' || l.tag === 'msg-title') {
+      // The message, as a block under its line, wrapped at a space so it reads like the notification it is.
+      for (const w of wrapAt(l.text, 72)) out.push(`         ${c('35', '│')} ${c(tint[l.tag], w)}`);
+    } else out.push(`${c('2', l.at)}  ${c(tint[l.tag] || '0', l.text)}`);
+  }
   const fixed = incidents.filter((i) => i.fixed);
   const asked = incidents.filter((i) => !i.fixed);
-  out.push('', c('1', `${incidents.length} incidents overnight: ${fixed.length} fixed by itself (${fixed.map((i) => `${i.to - i.from} min`).join(', ')}), ${asked.length} needed you, and it said so once.`));
+  out.push('', c('1;92', `${incidents.length} incidents overnight: ${fixed.length} fixed by itself (${fixed.map((i) => `${i.to - i.from} min`).join(', ')}), ${asked.length} needed you, and it said so once.`));
   return out.join('\n');
 }

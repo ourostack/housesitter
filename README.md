@@ -57,7 +57,7 @@ One screen: a glimpse of what the KVM sees (40 by 22 pixels of its own picture, 
 
 <p align="center"><img src="docs/img/night.gif" alt="A terminal recording of housesitter demo night. 03:12 a kernel panic; the sitter sees FileVault, types its sealed copy, and the Mac is back by itself 4 minutes after it went down. 04:31 the Mac freezes; at 04:36 the clock hasn't moved in 5 minutes and nothing answers; three more looks over two minutes; 04:38 the smart plug goes off for 10 seconds; back by itself 12 minutes after. 05:41 another panic after the password was changed; two tries fail, and at 05:51 one message to your phone: studio is stuck at FileVault, the password was wrong twice, and the fix. 3 incidents overnight: 2 fixed by itself, 1 needed you, and it said so once." width="100%"></p>
 
-*Recorded by vhs in CI from [`docs/tapes/night.tape`](docs/tapes/night.tape). The one message it sent read: "studio is stuck at FileVault: the password was wrong twice. Fix: housesitter secret studio mac-password, then housesitter adopt studio."*
+*Recorded by vhs in CI from [`docs/tapes/night.tape`](docs/tapes/night.tape). The block at 05:51 is the one message it sent, word for word: its title and the two of its four lines that matter at 3 a.m.*
 
 ## Why not just…
 
