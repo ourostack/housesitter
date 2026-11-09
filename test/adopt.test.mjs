@@ -33,14 +33,16 @@ test('GL.iNet with its REST API shipped off: one first-run page, then the API is
 });
 
 test('where it messages you: --notify ntfy makes a private topic, the sitter says hello once, and the start reports it', async () => {
-  const { f, results } = await run({}, {}, { notify: 'ntfy', heartbeat: 'https://hc-ping.com/abc' });
+  const { f, results } = await run({}, {}, { notify: 'ntfy', watchedBy: 'https://hc-ping.com/abc' });
   assert.match(f.s.saved.notify.url, /^https:\/\/ntfy\.sh\/housesitter-studio-[0-9a-f]{18}$/);
   assert.equal(f.s.saved.notify.kind, 'ntfy');
-  assert.equal(f.s.saved.heartbeat.url, 'https://hc-ping.com/abc');
+  assert.equal(f.s.saved.watched_by.url, 'https://hc-ping.com/abc');
   const cfg = JSON.parse(f.s.files['/etc/kvmd/user/housesitter/config.json']);
   assert.equal(cfg.notify.url, f.s.saved.notify.url);
-  assert.equal(cfg.heartbeat.url, 'https://hc-ping.com/abc');
+  assert.equal(cfg.watched_by.url, 'https://hc-ping.com/abc');
   assert.equal(f.s.hello, 1);
+  const old = await run({}, {}, { notify: 'ntfy', heartbeat: 'https://hc-ping.com/abc' });
+  assert.equal(JSON.parse(old.f.s.files['/etc/kvmd/user/housesitter/config.json']).watched_by.url, 'https://hc-ping.com/abc', '--heartbeat, the 0.2 name, still works');
   assert.match(results.find((r) => r.id === 'start').detail, /it can notify;.*sent you a hello/);
 });
 
