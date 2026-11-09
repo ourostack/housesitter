@@ -105,3 +105,8 @@ test('the prompt matcher is two-sided: a frame bright everywhere never matches',
   const n = e.frames.find((f) => f.lum).lum.length;
   for (const v of [255, 200, 128]) assert.equal(promptMatch(e.prompt_points, Buffer.alloc(n, v)), 0);
 });
+
+test('--private keeps email addresses out of a screenshot', async () => {
+  const { maskEmails } = await import('../src/doctor.mjs');
+  assert.equal(maskEmails('ntfy and email to ada.lovelace@example.com; 23:30 notify: posted 200, emailed ada@example.com'), 'ntfy and email to a…@example.com; 23:30 notify: posted 200, emailed a…@example.com');
+});

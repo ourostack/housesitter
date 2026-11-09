@@ -50,7 +50,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2019,7 +2019,7 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
     req = urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST")
     try:
         with opener(req, timeout=10) as r:
-            return "posted %d%s" % (r.status, ", emailed %s" % email if email else note)
+            return "posted %d%s" % (r.status, ", emailed" if email else note)
     except urllib.error.HTTPError as e:
         if not email or not 400 <= e.code < 500:
             raise

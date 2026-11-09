@@ -442,7 +442,7 @@ class NotifyEmail(unittest.TestCase):
 
     def test_the_email_header_and_the_account_token(self):
         r = W.notify(self.cfg, "mini is stuck at FileVault", "body", opener=self.op, now=10 ** 12, ledger=[])
-        self.assertEqual(r, "posted 200, emailed ari@example.com")
+        self.assertEqual(r, "posted 200, emailed", "the address stays in the config, out of the log and ledger")
         self.assertEqual(self.reqs[0].get_header("Email"), "ari@example.com")
         self.assertEqual(self.reqs[0].get_header("Authorization"), "Bearer tk_fake")
 

@@ -70,4 +70,6 @@ Ari reads alerts in HEY, not the ntfy app, so 0.2.1 added `notify.email`: ntfy f
 - 07:30:24: ntfy's own record of the message ([ntfy-record.jsonl](ntfy-record.jsonl), third line).
 - 07:30:26: the email, "🏠 TEST: mini is stuck at FileVault", from ntfy@ntfy.sh, at the top of the owner's HEY Imbox, read back with the `hey` CLI ([hey-record.json](hey-record.json); the address is redacted).
 
+The log lines above are 0.2.1's words. From 0.2.2 the ingress line reads `SSH and HTTPS: home, unfiltered (anything that reaches the KVM may connect)`, and a sent email is logged as `emailed`, without the address.
+
 That was the day's first ntfy email; a free ntfy.sh account may send 5 a day, and the sitter keeps to that.
