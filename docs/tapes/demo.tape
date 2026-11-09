@@ -13,7 +13,7 @@ Set TypingSpeed 45ms
 Set WindowBar Colorful
 
 Hide
-Type "alias housesitter=\"node $PWD/bin/housesitter.mjs\"; cd docs/tapes; clear" Enter
+Type `alias housesitter="node $PWD/bin/housesitter.mjs"; cd docs/tapes; clear` Enter
 Show
 
 Sleep 500ms
