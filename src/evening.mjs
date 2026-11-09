@@ -26,8 +26,8 @@ const STORY = {
   locked: { before: [['18:07', 'We locked the mini and taught the sitter the lock screen, from three frames.']], did: 'waits. A plain lock screen is your lock: it types there only when you ask.' },
   unlocked: { before: [['18:15', 'We asked it to unlock, once. It typed the password at the field on its picture.']], did: 'the desktop followed, so the password is verified.' },
   restart: {
-    before: [['18:31', 'Then the real test: we restarted the mini and left it alone. From the KVM\'s own log:']],
-    log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault, waiting for a password'], ['18:32:35', 'the password field is on its picture, steady'], ['18:32:37', 'typed the password, once'], ['18:32:56', 'the desktop is up. Nobody touched it.']],
+    before: [['18:31', 'Then the real test: we restarted the mini with nobody at it. From the KVM\'s own log:']],
+    log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault: not a screen it was taught, so it waits'], ['18:32:18', 'an agent teaches it this screen from three frames, once'], ['18:32:35', 'the password field is on its picture, steady'], ['18:32:37', 'typed the password, once, by itself'], ['18:32:56', 'the desktop is up. Nobody at the Mac.']],
   },
 };
 
@@ -76,6 +76,6 @@ export function renderEvening(steps, { color = false } = {}) {
     const box = s.withheld ? [p.dim(`${head}${'─'.repeat(Math.max(0, 41 - head.length))}╮`)] : glimpse(p, s.glimpse, { title: s.at });
     blocks.push([...beside(box.map((l) => `  ${l}`), right, 3), '']);
   }
-  blocks.push([`  ${p.dim('In the morning it would have refused and told you. In the evening it unlocked. Same rules.')}`, `  ${p.dim('Your own Mac: housesitter adopt <mac> --address <kvm ip>     A rehearsed bad night: housesitter demo night')}`, '']);
+  blocks.push([`  ${p.dim('The morning: it refuses and tells you. The evening: our watchdog, on these same rules, unlocked it.')}`, `  ${p.dim('Your own Mac: housesitter adopt <mac> --address <kvm ip>     A rehearsed bad night: housesitter demo night')}`, '']);
   return blocks;
 }

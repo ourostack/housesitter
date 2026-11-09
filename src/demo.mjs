@@ -47,7 +47,13 @@ export async function night({ name = 'studio', start = 2 * 60 + 58, end = 6 * 60
         const s = classifyScreen(await kvm.ocr(), { userNames: ['Ada'] });
         if (s.kind === 'filevault' || s.kind === 'login') { await kvm.type(`${SEALED}\n`); const n = ledger.filter((l) => l.kind === 'unlock' && t * 60000 - l.at < 3600000).length; say(t, n === 1 ? 'sitter: sees the password prompt, types its sealed copy of the password, slowly' : `sitter: still at FileVault after 4 minutes; tries once more (${n} of 3 this hour)`, 'act'); }
       }
-      if (a.kind === 'power_cycle') { mac = { phase: 'rebooting', until: t + 3, watts: 0 }; world.st.screen = 'blank'; say(t, 'sitter: smart plug off for 10 s, then on by itself', 'act'); }
+      if (a.kind === 'power_cycle') {
+        // The sitter's cycle guard: three fresh looks over two more minutes before it cuts the power (device/sitter.py).
+        mac = { phase: 'rebooting', until: t + 5, watts: 0 };
+        world.st.screen = 'blank';
+        say(t, 'sitter: before cutting power, three more looks over two minutes: still frozen, still silent', 'state');
+        say(t + 2, 'sitter: smart plug off for 10 s, then on by itself', 'act');
+      }
       if (a.kind === 'notify') {
         const m = W.message(name, mem, a, obs);
         if (open) open.messages++;

@@ -484,6 +484,7 @@ if __name__ == "__main__":
 FRAMES = json.load(open(os.path.join(HERE, "fixtures", "comet-frames-20261108.json")))
 # Luma grids (lum_grid) from real Comet frames of a Mac's lock screen, with a moving aerial wallpaper behind it.
 LUM = {k: dict(v, _lum=base64.b64decode(v["_lum"])) for k, v in json.load(open(os.path.join(HERE, "fixtures", "comet-lum-20261109.json"))).items() if not k.startswith("_")}
+FV = {k: dict(v, _lum=base64.b64decode(v["_lum"])) for k, v in json.load(open(os.path.join(HERE, "fixtures", "comet-filevault-20261109.json"))).items() if not k.startswith("_")}
 
 
 class BootWatch(unittest.TestCase):
@@ -546,9 +547,11 @@ class BootWatch(unittest.TestCase):
             bw, act, _ = W.boot_tick(bw, 12000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"], "prompt_visible": True}, W.BOOT, 1200)
             self.assertNotEqual(act, "type")
 
-    def test_a_kvm_that_booted_with_the_mac_counts_that_enumeration(self):
-        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 40)
-        self.assertEqual(bw["boot_at"], 0)
+    def test_a_kvm_that_just_started_needs_a_dark_screen_too(self):
+        bw, _, note = W.boot_tick(None, 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 40)
+        self.assertIsNone(bw.get("boot_at"), note)
+        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.8, "mode": None, "frame": None}, W.BOOT, 40)
+        self.assertEqual(bw["boot_at"], 0, "the Mac still dark when the KVM came up: a boot")
 
     def test_usb_and_hdmi_readers(self):
         d = "[   16.786538] dwc3 21500000.usb: device reset\n[   16.856062] android_work: sent uevent USB_STATE=CONFIGURED\n[ 2001.5] lt6911c x\n[ 2050.25] dwc3 21500000.usb: device reset\n"
@@ -1054,7 +1057,7 @@ class LockScreenIsNotADesktop(unittest.TestCase):
 
     def test_the_prompt_is_learned_through_a_moving_wallpaper(self):
         W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "test")
-        seen, match, refs = W.prompt_seen(LUM["lock-later"])
+        seen, match, refs, _ = W.prompt_seen(LUM["lock-later"])
         self.assertTrue(seen)
         self.assertGreaterEqual(match, W.PROMPT_RECALL)
         self.assertEqual(refs, 1)
@@ -1106,7 +1109,7 @@ class Look(unittest.TestCase):
         self.assertEqual(out["from"], "shot.png")
         self.assertEqual(out["size"], [w, h])
         self.assertEqual(out["reads_as"], "prompt_like")
-        self.assertEqual(out["prompt"], {"taught": 0, "match": 0.0, "visible": False})
+        self.assertEqual(out["prompt"], {"taught": 0, "match": 0.0, "visible": False, "kind": None})
         self.assertEqual(out["glimpse"]["w"], 40)
         self.assertEqual(calls[0][0], "ffmpeg")
         self.assertEqual(W.look(NoKeys(), "x.png", run=lambda c, **k: type("R", (), {"stdout": b""})())["reads_as"], "none")
@@ -1185,9 +1188,22 @@ class LiveFindings(unittest.TestCase):
 
     def test_a_kvm_reboot_during_a_power_cut_still_sees_the_mac_boot(self):
         bw, _, _ = self.tick(None, 0, 30960.7, up=31000)
-        # Power cut: the KVM reboots too, so its kernel clock restarts from zero and its boot id changes.
-        bw, _, note = self.tick(bw, 60000, 16.9, kvm_boot="b2", up=40)
+        # Power cut: the KVM reboots too, so its kernel clock restarts from zero and its boot id changes. The Mac is
+        # still dark when the KVM comes up.
+        bw, _, note = self.tick(bw, 60000, 16.9, mode=None, kvm_boot="b2", up=40)
         self.assertTrue(bw.get("pending"), note)
+
+    def test_pulling_the_kvms_power_never_unlocks_a_lock_screen(self):
+        # Morgan's review, round 2: a KVM reboot (a PoE blip, or someone pulling its cable) while the Mac sits at a
+        # taught lock screen. No dark screen, so no boot, so never a type.
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "test")
+        bw, _, _ = self.tick(None, 0, 30960.7, up=31000)
+        for k in range(40):
+            f = LUM["lock-later"]
+            bw, act, note = W.boot_tick(bw, 60000 + k * 3000, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2",
+                                                                "prompt_visible": W.prompt_seen(f)[0], "prompt_kind": W.prompt_seen(f)[3]}, W.BOOT, 40 + k * 3)
+            self.assertNotEqual(act, "type", note)
+        self.assertIsNone(bw.get("pending"))
 
     def test_the_outbox_cannot_attend(self):
         r = W.handle({"op": "power_cycle", "args": {"attended": True}}, {"name": "studio"}, None, None, lambda m: None, 10**6, {"ledger": []}, via="outbox")
@@ -1204,3 +1220,93 @@ class LiveFindings(unittest.TestCase):
         self.assertEqual(k.posts, [])
         W.save("status.json", {"obs": {"screen": "desktop"}})
         self.assertTrue(W.handle({"op": "key", "args": {"combo": "esc"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})["ok"])
+
+
+class TaughtAtFileVault(unittest.TestCase):
+    """The restart of 2026-11-09 on real frames: the sitter refused a FileVault screen it had only been taught as a lock
+    screen; taught at the FileVault screen itself (during the boot, once), it matches every FileVault frame and nothing
+    else: not the lock screen, and not the wallpaper the KVM saw on 2026-11-08, when no field ever reached its picture."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def test_a_lock_screen_lesson_does_not_open_filevault(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        for k in ("filevault-023155", "filevault-023232"):
+            self.assertFalse(W.prompt_seen(FV[k])[0], k)
+            self.assertLess(W.prompt_seen(FV[k])[1], W.PROMPT_RECALL, k)
+
+    def test_taught_at_filevault_it_sees_filevault_and_nothing_else(self):
+        n = W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot")
+        self.assertEqual(n, 1)
+        for k in ("filevault-023155", "filevault-023203", "filevault-023232"):
+            seen = W.prompt_seen(FV[k])
+            self.assertTrue(seen[0], k)
+            self.assertEqual(seen[3], "boot", k)
+        for k, f in (("lock", LUM["lock-a"]), ("lock later", LUM["lock-later"]), ("incident", FV["incident-no-field"]), ("third display", LUM["third-display-lock"])):
+            seen = W.prompt_seen(f)
+            self.assertFalse(seen[0], k)
+            self.assertLess(seen[1], 0.1, k)
+        self.assertFalse(W.prompt_seen(LUM["desktop"])[0])
+
+    def test_the_restart_types_once_at_the_field(self):
+        W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot")
+        bw, now = None, 1_000_000
+        bw, _, _ = W.boot_tick(bw, now, {"usb": 30960.7, "mode": (2560, 1440), "frame": LUM["desktop"]}, W.BOOT, 31000)
+        bw, _, _ = W.boot_tick(bw, now + 2000, {"usb": 30960.7, "mode": None, "frame": None}, W.BOOT, 31000)
+        acts = []
+        for k in range(12):
+            f = FV["filevault-023232"]
+            seen = W.prompt_seen(f)
+            bw, act, note = W.boot_tick(bw, now + 32000 + k * 3000, {"usb": 30990.0, "mode": (2560, 1440), "frame": f, "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 31040)
+            acts.append(act)
+        self.assertIn("type", acts)
+
+    def test_a_kvm_that_just_started_sees_filevault_only_by_its_lesson(self):
+        W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot")
+        f = FV["filevault-023232"]
+        seen = W.prompt_seen(f)
+        bw, _, note = W.boot_tick(None, 50000, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2", "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 40)
+        self.assertTrue(bw.get("pending"), note)
+        self.assertIn("FileVault prompt it was taught at a boot", note)
+        # A running KVM never infers a boot from the picture alone.
+        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2", "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 4000)
+        self.assertIsNone(bw.get("pending"))
+
+    def test_a_lock_lesson_never_counts_as_a_boot(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        f = LUM["lock-later"]
+        seen = W.prompt_seen(f)
+        self.assertEqual(seen[3], "lock")
+        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2", "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 40)
+        self.assertIsNone(bw.get("pending"))
+
+
+class AgentsHands(unittest.TestCase):
+    """An agent types and presses Escape only on a desktop read fresh from the KVM's picture; the outbox can't unlock a
+    plain lock screen."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def test_a_stale_desktop_status_does_not_let_an_agent_type_at_a_login_window(self):
+        W.save("status.json", {"obs": {"screen": "desktop"}})
+        k = FakeKvmd(text="Ari Mendelow Enter Password")
+        r = W.handle({"op": "type", "args": {"text": "hello"}}, {"name": "studio", "user_names": ["Ari Mendelow"]}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable", r)
+        r = W.handle({"op": "key", "args": {"combo": "esc"}}, {"name": "studio", "user_names": ["Ari Mendelow"]}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable", r)
+        self.assertEqual(k.posts, [])
+
+    def test_a_desktop_read_fresh_lets_an_agent_type(self):
+        k = FakeKvmd()
+        r = W.handle({"op": "type", "args": {"text": "hello"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertTrue(r["ok"], r)
+
+    def test_the_outbox_cannot_unlock_a_lock_screen(self):
+        k = FakeKvmd(text="Ari Mendelow Enter Password")
+        r = W.handle({"op": "unlock"}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []}, via="outbox")
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertIn("over SSH", r["result"])
+        self.assertEqual(k.posts, [])
+

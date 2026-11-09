@@ -4,17 +4,19 @@
 It needs nothing else to be up. Every minute it looks at the Mac, with no help from it:
   - the picture: kvmd's own OCR on a snapshot (FileVault/login prompt, desktop, blank), and whether the menu-bar
     clock still changes (a frozen desktop is a hang). Where the KVM has no working OCR (a GL.iNet Comet at 2560x1440),
-    it decodes a frame on the device itself and reads it without OCR: a menu bar means a desktop, and a steady screen
-    with no menu bar right after the Mac booted is the FileVault prompt (the boot watch, below);
+    it decodes a frame on the device itself and reads it without OCR: a menu bar means a desktop, and a password prompt
+    is one an operator taught it (learn-prompt), matched pixel by pixel (the boot watch, below);
   - the HDMI signal (kvmd /streamer);
   - the Mac's network stack, when the Mac is on this KVM's own network: one ping to make the kernel resolve ARP, then
     /proc/net/arp (macOS answers ARP even in stealth mode, and a hung kernel doesn't);
   - optionally a TCP port on the Mac (health), and the smart plug's relay and power draw.
 It decides with the same rules as src/watchdog.mjs (both run spec/watchdog-cases.json) and acts locally:
   - unlock FileVault by typing the Mac's password, which it holds itself, sealed, so a panic at 3 am is unlocked in
-    minutes with no laptop, cloud or internet. Only when its own fresh look reads the password prompt, or, without OCR,
-    when the Mac has just booted (it enumerated the KVM's keyboard again) and sits on a steady screen with no menu bar;
-    at most twice a boot and three times an hour;
+    minutes with no laptop, cloud or internet. Only where the password field itself is on the KVM's own picture: read
+    by OCR, or matched against a prompt an operator taught it from three frames (learn-prompt). By itself only after a
+    boot (the screen went dark, then the Mac enumerated the KVM's keyboard again; or the prompt it was taught at a boot
+    is on the picture of a KVM that has itself just started); a plain lock screen only when you ask over SSH. Never
+    blind: a settled screen without the field is reported, never typed into. At most twice a boot, three times an hour;
   - power-cycle a hung Mac through a smart plug (Shelly Switch.Set with toggle_after, so the plug switches itself
     back on even if this process dies), switch it on, or press its power button with a Fingerbot;
   - tell you when it's stuck (ntfy or any webhook), and once more when the Mac is back.
@@ -1192,12 +1194,14 @@ def thumb_diff(a, b):
 
 
 def prompt_seen(f):
-    """(visible, best match 0..1, references taught) for this frame against the prompts an operator taught."""
+    """(visible, best match 0..1, references taught, the best one's kind) for this frame against the prompts an
+    operator taught. kind "boot" was taught while a boot was pending (the FileVault screen); "lock" any other time."""
     refs = [r for r in (load("prompt_refs.json", []) or []) if r.get("points")]
     if not f or not f.get("_lum") or classify_frame(f) != "prompt_like":
-        return False, 0.0, len(refs)
-    best = max([prompt_match(r["points"], f) for r in refs] or [0.0])
-    return best >= PROMPT_RECALL, round(best, 3), len(refs)
+        return False, 0.0, len(refs), None
+    scored = sorted(((prompt_match(r["points"], f), r.get("kind") or "lock") for r in refs), key=lambda m: -m[0])
+    best, kind = scored[0] if scored else (0.0, None)
+    return best >= PROMPT_RECALL, round(best, 3), len(refs), (kind if best >= PROMPT_RECALL else None)
 
 
 def prompt_visible(f):
@@ -1206,7 +1210,7 @@ def prompt_visible(f):
     return prompt_seen(f)[0]
 
 
-def learn_prompt(frames, why, now=None):
+def learn_prompt(frames, why, now=None, kind="lock"):
     """Keep the steady bright pixels of the password prompt, from several frames a few seconds apart (one frame is
     accepted too), as a reference. Only an operator who is looking at the KVM's picture and sees the password field on
     it runs this (housesitter learn-prompt <mac>)."""
@@ -1219,7 +1223,7 @@ def learn_prompt(frames, why, now=None):
     if len(pts) < PROMPT_MIN_POINTS:
         raise ValueError("nothing steady and bright enough to learn (%d points); is the password prompt on the KVM's picture?" % len(pts))
     refs = [r for r in (load("prompt_refs.json", []) or []) if r.get("points")][-4:]
-    refs.append({"points": pts, "frames": len(frames), "at": now if now is not None else int(time.time() * 1000), "why": why})
+    refs.append({"points": pts, "frames": len(frames), "at": now if now is not None else int(time.time() * 1000), "why": why, "kind": kind})
     save("prompt_refs.json", refs)
     return len(refs)
 
@@ -1248,12 +1252,13 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
     if obs.get("mode") is None or (f0 is not None and classify_frame(f0, cfg) == "black"):
         bw["dark_at"] = now
     if bw.get("usb_seen") is None:
-        # A KVM that has just booted itself may have booted with the Mac (powered from the Mac's USB): count it.
+        # A KVM that has just started reads its own first enumeration as new; it counts only after a dark screen.
         bw["usb_seen"] = 0.0 if (kvm_up_s is not None and kvm_up_s < 180) else obs.get("usb", 0.0)
     if obs.get("usb", 0.0) > bw["usb_seen"]:
+        # A KVM that has just started proves nothing about the Mac by itself: pulling the KVM's power must never unlock
+        # a lock screen. Only a dark screen this KVM saw shortly before counts.
         dark = bw.get("dark_at")
-        fresh = kvm_up_s is not None and kvm_up_s < 180
-        if fresh or (dark is not None and now - dark <= cfg.get("boot_dark_sec", 180) * 1000):
+        if dark is not None and now - dark <= cfg.get("boot_dark_sec", 180) * 1000:
             bw.update(usb_seen=obs["usb"], boot_at=now, pending=now, stable=0, last_thumb=None, stuck=None, blind_noted=None)
             note = "boot seen: the screen went dark, then the Mac enumerated the KVM's keyboard again"
         else:
@@ -1270,6 +1275,12 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
             note = "HDMI back after %d s without signal (not a boot by itself)" % ((now - bw["no_signal_since"]) // 1000)
         bw["no_signal_since"] = None
     f = obs.get("frame")
+    if (not bw.get("pending") and obs.get("prompt_kind") == "boot" and kvm_up_s is not None and kvm_up_s < 180
+            and f is not None and classify_frame(f, cfg) == "prompt_like"):
+        # The KVM has just started (a power cut takes both down) and missed the Mac's dark screen, but the prompt it
+        # was taught at a boot, the FileVault screen, is on its picture: only a boot shows that screen.
+        bw.update(boot_at=now, pending=now, stable=0, last_thumb=None, stuck=None, blind_noted=None)
+        note = "boot seen: the KVM just started, and the FileVault prompt it was taught at a boot is on its picture"
     if f is not None and classify_frame(f, cfg) == "desktop":
         was = bw.get("pending")
         bw.update(boot_at=None, pending=None, stuck=None, last_kind="desktop", desktop_at=now)
@@ -1329,7 +1340,8 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
             log("boot-watch: frame failed: %s" % str(e)[:120])
         bw["frame_at"] = now
     if obs["frame"]:
-        obs["prompt_visible"] = prompt_visible(obs["frame"])
+        seen = prompt_seen(obs["frame"])
+        obs["prompt_visible"], obs["prompt_kind"] = seen[0], seen[3]
     b2, act, note = boot_tick(bw, now, obs, bcfg, kvm_uptime_s())
     if note and note != bw.get("last_note"):
         log("boot-watch: %s" % note)
@@ -1384,9 +1396,9 @@ def look(kvmd, src=None, run=subprocess.run, now=None):
         return out
     yuv, w, h = dec
     f = frame_features(yuv[:w * h], w, h)
-    visible, match, refs = prompt_seen(f)
+    visible, match, refs, kind = prompt_seen(f)
     out.update(size=[w, h], reads_as=classify_frame(f), mean=f["mean"], menu_edges=f["top_edges"],
-               prompt={"taught": refs, "match": match, "visible": visible}, glimpse=glimpse(yuv, w, h))
+               prompt={"taught": refs, "match": match, "visible": visible, "kind": kind}, glimpse=glimpse(yuv, w, h))
     return out
 
 
@@ -1504,10 +1516,12 @@ def eyes_without_ocr(cfg, mem, raw, boot):
     last = LAST_FRAME
     g = glimpse(*last) if last and last[1:] == (w, h) else None
     seen = prompt_seen(f)
-    prompt = {"taught": seen[2], "match": seen[1], "visible": seen[0]}
+    prompt = {"taught": seen[2], "match": seen[1], "visible": seen[0], "kind": seen[3]}
     if kind == "desktop":
         return {"screen": "desktop", "eyes": "frame", "clock_ticking": clock_ticking(mem, clock_sig(y, w, h)), "glimpse": g, "prompt": prompt}
     out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown", "glimpse": g, "prompt": prompt}
+    if seen[0]:
+        out["screen"] = "filevault" if seen[3] == "boot" else "login"
     if (boot or {}).get("pending"):
         # A boot that hasn't reached a desktop: the FileVault screen. The boot watch types; the rules only wait and tell.
         out["screen"] = "filevault"
@@ -1586,6 +1600,21 @@ def at_password_screen(st=None):
     return last.get("screen") in ("filevault", "login") or bool(boot.get("pending"))
 
 
+def hands_refusal(cfg, kvmd, st):
+    """An agent's typing and Escape go only to a desktop, read fresh from the KVM's picture right now. At a login, lock
+    or FileVault screen (or anything that doesn't read as a desktop: a full-screen app hides its menu bar, so show it
+    first) only the sitter types, its own copy, at a field it can see."""
+    if at_password_screen(st):
+        return "the Mac is at a password screen; only the sitter types there, its own copy, at a field it can see: use unlock"
+    try:
+        kind = screen_read(cfg, kvmd)[0]
+    except Exception:  # noqa: BLE001
+        kind = "unknown"
+    if kind != "desktop":
+        return "the KVM's picture reads as %s right now, not a desktop with its menu bar; agents type only on a desktop (a full-screen app: show its menu bar first)" % kind
+    return None
+
+
 def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     """One command (from the inbox, or `sitter.py do` over SSH). Unlock and power ops keep the sitter's own budgets and
     checks; screenshot, click, type and key are an agent's hands and pass through, except at a password screen.
@@ -1627,8 +1656,9 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         text = a.get("text")
         if not isinstance(text, str) or not text or len(text) > 2000:
             return {"ok": False, "code": "input-invalid", "result": "args.text: 1-2000 characters"}
-        if at_password_screen(st):
-            return {"ok": False, "code": "action-unavailable", "result": "the Mac is at a password screen; only the sitter types there, its own copy, at a field it can see: use unlock"}
+        why = hands_refusal(cfg, kvmd, st)
+        if why:
+            return {"ok": False, "code": "action-unavailable", "result": why}
         kvmd.post("/hid/print?limit=0&slow=1", body=text.encode("utf-8"), timeout=120)
         return {"ok": True, "result": "typed %d characters" % len(text)}
     if op == "key":
@@ -1636,14 +1666,17 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
             names = key_names(a.get("combo", ""))
         except ValueError as e:
             return {"ok": False, "code": "input-invalid", "result": "args.combo: %s" % e}
-        if "Escape" in names and at_password_screen(st):
-            return {"ok": False, "code": "action-unavailable", "result": "no Escape at a login window: it switches to the list of users, where no password field has focus (2026-11-08)"}
+        if "Escape" in names and hands_refusal(cfg, kvmd, st):
+            return {"ok": False, "code": "action-unavailable", "result": "no Escape unless the KVM's picture reads as a desktop right now: at a login window it switches to the list of users, where no password field has focus (2026-11-08)"}
         if len(names) == 1:
             kvmd.post("/hid/events/send_key?key=%s" % names[0])
         else:
             kvmd.post("/hid/events/send_shortcut?keys=%s" % ",".join(names))
         return {"ok": True, "result": "pressed %s" % "+".join(names)}
     if op == "unlock":
+        boot = (st.get("boot") or load("state.json", {}).get("boot") or {})
+        if via != "ssh" and not boot.get("pending"):
+            return {"ok": False, "code": "action-unavailable", "result": "a plain lock screen is your lock: unlock it over SSH from your own machine (housesitter unlock <mac>); through the outbox only during a boot"}
         res = type_at_field(cfg, kvmd, st, now, "asked for", "request", log)
         return {"ok": res.startswith("typed"), "code": None if res.startswith("typed") else "action-failed", "result": res}
     if a.get("attended") is True and via != "ssh":
@@ -1791,7 +1824,9 @@ def after_boot(cfg, obs, boot):
     KVM's keyboard again and no desktop since, or OCR read the FileVault screen itself. A plain lock screen is the
     owner's lock, and the sitter can't tell it from a dead session, so it stays locked (and you hear about it) unless an
     operator asks (housesitter unlock <mac>) or the config says "unlock_lock_screen": true. Learned live, 2026-11-08."""
-    return bool((boot or {}).get("pending")) or obs.get("screen") == "filevault" or cfg.get("unlock_lock_screen") is True
+    # Without OCR, "filevault" is a matched picture; the boot watch alone decides when that follows a boot.
+    ocr_filevault = obs.get("screen") == "filevault" and obs.get("eyes") != "frame"
+    return bool((boot or {}).get("pending")) or ocr_filevault or cfg.get("unlock_lock_screen") is True
 
 
 def once(cfg, kvmd, power, log, now=None, gh=None):
@@ -1994,7 +2029,9 @@ def main(argv):
             if i < 2:
                 SLEEP(4)
         try:
-            print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator"), "points": len(prompt_points(frames))}))
+            pending = bool((load("state.json", {}).get("boot") or {}).get("pending"))
+            kind = "boot" if pending else "lock"
+            print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator", kind=kind), "points": len(prompt_points(frames)), "kind": kind}))
             return 0
         except ValueError as e:
             print("learn-prompt: %s" % e, file=sys.stderr)
