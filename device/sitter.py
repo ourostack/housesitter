@@ -212,7 +212,7 @@ def classify_screen(text, user_names=()):
     names = [re.escape(n) for n in user_names if n]
     around = r"(Restart|Shut Down|Sleep|FileVault|Other|Switch User%s)" % ("|" + "|".join(names) if names else "")
     if re.search(r"Enter Password|Password", t, re.I) and re.search(around, t, re.I):
-        return "filevault" if re.search(r"FileVault|Disk Password|unlock", t, re.I) else "login"
+        return "filevault" if re.search(r"FileVault|Disk Password", t, re.I) else "login"
     if re.search(r"Screen Time|Lock Screen|is locked", t, re.I):
         return "login"
     return "unknown"
@@ -809,10 +809,12 @@ def look_now(kvmd, cfg):
 SLEEP = time.sleep
 
 
-def see_field(cfg, kvmd):
+def see_field(cfg, kvmd, need_boot=False):
     """A fresh look: is the FileVault or login password field itself visible on the KVM's own picture? Returns
     (visible, what the screen reads as, how). With OCR, the field's own words; without, a match of a frame against a
-    password prompt an operator taught the sitter while looking at it (learn-prompt). Nothing else counts."""
+    password prompt an operator taught the sitter while looking at it (learn-prompt). Nothing else counts. need_boot:
+    the sitter is about to type by itself, so a frame must match a prompt taught during a boot (the FileVault screen),
+    never one taught at the lock screen."""
     try:
         kind = look_now(kvmd, cfg)
         return kind in ("filevault", "login"), kind, "ocr"
@@ -822,7 +824,10 @@ def see_field(cfg, kvmd):
     if not raw:
         return False, "unknown", "frame"
     f = frame_features(*raw)
-    return prompt_visible(f), classify_frame(f), "frame"
+    seen = prompt_seen(f)
+    if seen[0] and need_boot and seen[3] != "boot":
+        return False, "the lock screen it was taught (it types there only when you ask)", "frame"
+    return seen[0], classify_frame(f), "frame"
 
 
 # ---------- the password gate ----------
@@ -991,7 +996,7 @@ def type_at_field(cfg, kvmd, st, now, why, by, log=lambda m: None, secret=None, 
     pw = (secret or load_secret)("mac")
     if not pw:
         return "refused: no password on the sitter (housesitter adopt <mac> provisions it)"
-    seen, kind, how = visible if visible is not None else see_field(cfg, kvmd)
+    seen, kind, how = visible if visible is not None else see_field(cfg, kvmd, need_boot=by != "request")
     if not seen:
         return "refused: no password field visible on the KVM's own picture (it reads as %s, by %s); blind unlock is unsupported" % (kind, how)
     if cfg.get("dry_run"):
@@ -1249,7 +1254,9 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
             bw["usb_seen"] = None
         bw["kvm_boot"] = obs["kvm_boot"]
     f0 = obs.get("frame")
-    if obs.get("mode") is None or (f0 is not None and classify_frame(f0, cfg) == "black"):
+    if (obs.get("mode") is None or (f0 is not None and classify_frame(f0, cfg) == "black")) and not (kvm_up_s is not None and kvm_up_s < 180):
+        # A KVM that has just started often sees no picture at first whatever the Mac is doing, so that dark proves
+        # nothing (a power cut is caught by the FileVault lesson instead, below).
         bw["dark_at"] = now
     if bw.get("usb_seen") is None:
         # A KVM that has just started reads its own first enumeration as new; it counts only after a dark screen.
@@ -1299,6 +1306,12 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
     wait = cfg["black_settle_sec"] if kind == "black" else cfg["settle_sec"]
     if now - boot_at < wait * 1000 or bw["stable"] < cfg["stable_frames"]:
         return bw, None, note
+    if obs.get("prompt_visible") and obs.get("prompt_kind") != "boot":
+        bw["stuck"] = "the prompt on the KVM's picture is the lock screen it was taught, not the FileVault screen taught at a boot; it types there only when you ask (housesitter unlock <mac>)"
+        if bw.get("blind_noted"):
+            return bw, None, note
+        bw["blind_noted"] = now
+        return bw, "blind", bw["stuck"]
     if not obs.get("prompt_visible"):
         bw["stuck"] = "no password field visible on the KVM's own picture after the boot (it reads as %s); blind unlock is unsupported, so it never types" % kind
         if bw.get("blind_noted"):
@@ -1601,7 +1614,7 @@ def at_password_screen(st=None):
 
 
 def hands_refusal(cfg, kvmd, st):
-    """An agent's typing and Escape go only to a desktop, read fresh from the KVM's picture right now. At a login, lock
+    """An agent's clicks, keys and typing go only to a desktop, read fresh from the KVM's picture right now. At a login, lock
     or FileVault screen (or anything that doesn't read as a desktop: a full-screen app hides its menu bar, so show it
     first) only the sitter types, its own copy, at a field it can see."""
     if at_password_screen(st):
@@ -1635,6 +1648,10 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         w = int(a.get("width", 1280))
         jpg = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % max(320, min(w, 1920)))
         return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd)}, "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
+    if op == "click":
+        why = hands_refusal(cfg, kvmd, st)
+        if why:
+            return {"ok": False, "code": "action-unavailable", "result": why}
     if op in ("click", "scroll"):
         try:
             w, h = int(a.get("w", 1920)), int(a.get("h", 1080))
@@ -1666,8 +1683,11 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
             names = key_names(a.get("combo", ""))
         except ValueError as e:
             return {"ok": False, "code": "input-invalid", "result": "args.combo: %s" % e}
-        if "Escape" in names and hands_refusal(cfg, kvmd, st):
-            return {"ok": False, "code": "action-unavailable", "result": "no Escape unless the KVM's picture reads as a desktop right now: at a login window it switches to the list of users, where no password field has focus (2026-11-08)"}
+        why = hands_refusal(cfg, kvmd, st)
+        if why:
+            if "Escape" in names:
+                why += ". And never Escape there: at a login window it switches to the list of users, where no password field has focus (2026-11-08)"
+            return {"ok": False, "code": "action-unavailable", "result": why}
         if len(names) == 1:
             kvmd.post("/hid/events/send_key?key=%s" % names[0])
         else:
