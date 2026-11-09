@@ -205,7 +205,7 @@ housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our wa
 | A macOS update | **Not yet tried.** An update can restart more than once; each restart is its own boot with its own two tries, and all of them share three unlocks an hour |
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
-| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 220 tests in Node and Python on every push |
+| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 221 tests in Node and Python on every push |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art
