@@ -49,6 +49,9 @@ def main(d, dataset):
         (det, "det_736x1280_i8.rknn", dict(quant=True, dataset=dataset, size=[1, 3, 736, 1280], mean=dm, std=ds)),
         (det, "det_736x1280_fp.rknn", dict(size=[1, 3, 736, 1280], mean=dm, std=ds)),
         (rec, "rec_48x320_fp.rknn", dict(size=[1, 3, 48, 320])),
+        # The same, taking uint8 pixels: (x - 127.5) / 127.5 is PaddleOCR's own normalisation; x / 255 is the zoo demo's.
+        (rec, "rec_48x320_fp_pm1.rknn", dict(size=[1, 3, 48, 320], mean=[127.5] * 3, std=[127.5] * 3)),
+        (rec, "rec_48x320_fp_01.rknn", dict(size=[1, 3, 48, 320], mean=[0, 0, 0], std=[255, 255, 255])),
     ]
     for src, name, kw in jobs:
         try:
