@@ -891,6 +891,19 @@ def typing_budget(st, now, rules=DEFAULTS, bcfg=None):
     return None
 
 
+def budgets(st, now, rules=DEFAULTS, bcfg=None):
+    """What `housesitter doctor` shows: each limit, how much of it is used, and when the hourly and daily ones free up."""
+    bcfg = bcfg or BOOT
+    ledger = st.get("ledger") or []
+    since = st.get("desktop_at") or 0
+    hour = _recent(ledger, "unlock", now, 60)
+    day = _recent(ledger, "power_cycle", now, 24 * 60)
+    return {"unlock_since_desktop": [len([e for e in ledger if e.get("kind") == "unlock" and e.get("at", 0) > since]), bcfg["per_boot"]],
+            "unlock_hour": [len(hour), rules["unlocks_per_hour"]], "unlock_hour_frees_at": min(e["at"] for e in hour) + 3600000 if hour else None,
+            "cycles_day": [len(day), rules["cycles_per_day"]], "cycles_day_frees_at": min(e["at"] for e in day) + 86400000 if day else None,
+            "blocked": typing_budget(st, now, rules, bcfg)}
+
+
 def merge_ledger(a, b):
     """Two copies of the ledger (the file's, then this process's) into one: by id where there is one, field by field
     (so `judged` and the like survive), a finished result beating "started" either way; oldest first, the last 200."""
@@ -1049,7 +1062,41 @@ def frame_raw(kvmd, run=subprocess.run):
     with StreamWarm(kvmd):
         out = run(["sh", "-c", FRAME_RAW], capture_output=True, timeout=20).stdout
     wh = SIZES.get(len(out))
-    return (out[:wh[0] * wh[1]], wh[0], wh[1]) if wh else None
+    if not wh:
+        return None
+    global LAST_FRAME
+    LAST_FRAME = (out, wh[0], wh[1])  # the whole yuv420p frame, for glimpse(): colour lives past the luma plane
+    return (out[:wh[0] * wh[1]], wh[0], wh[1])
+
+
+LAST_FRAME = None
+
+GLIMPSE = (40, 22)  # cells x half-cells: `housesitter doctor` draws it as 40x11 characters, two pixels to a character
+
+
+def glimpse(yuv, w, h, size=GLIMPSE):
+    """A tiny colour picture of the frame (rgb24, gw*gh pixels), each pixel the average of a 4x4 sample of its cell.
+    It is what `housesitter doctor` and `look` draw in the terminal: enough to see a lock screen, never enough to read."""
+    gw, gh = size
+    if not yuv or len(yuv) < w * h * 3 // 2:
+        return None
+    u0, v0, cw = w * h, w * h + (w // 2) * (h // 2), w // 2
+    out = bytearray()
+    for j in range(gh):
+        for i in range(gw):
+            r = g = b = 0
+            for sy in range(4):
+                for sx in range(4):
+                    x = int((i + (sx + 0.5) / 4) * w / gw)
+                    yy = int((j + (sy + 0.5) / 4) * h / gh)
+                    Y = yuv[yy * w + x] - 16
+                    U = yuv[u0 + (yy // 2) * cw + x // 2] - 128
+                    V = yuv[v0 + (yy // 2) * cw + x // 2] - 128
+                    r += 1.164 * Y + 1.596 * V
+                    g += 1.164 * Y - 0.392 * U - 0.813 * V
+                    b += 1.164 * Y + 2.017 * U
+            out += bytes(max(0, min(255, int(c / 16))) for c in (r, g, b))
+    return {"w": gw, "h": gh, "rgb": base64.b64encode(bytes(out)).decode("ascii")}
 
 
 def frame_jpeg(kvmd, run=subprocess.run):
@@ -1061,20 +1108,59 @@ def frame_jpeg(kvmd, run=subprocess.run):
 
 
 def frame_features(y, w, h):
-    """Mean brightness, menu-bar text edges in the top rows, and a 32x18 thumbnail (luma only)."""
+    """Mean brightness, menu-bar text edges in the top rows, a 32x18 thumbnail (luma only), and the luma grid the
+    password prompt is matched on."""
     step = max(1, len(y) // 4000)
     sample = y[::step]
     mean = sum(sample) / max(1, len(sample))
     edges = 0
+    # Only the left 40%: the Apple menu and the app's menus. A lock screen has its own status icons top right
+    # (keyboard layout, Wi-Fi) and nothing top left. Real frames, 2026-11-08: desktop 458-498 edges, lock screen 0.
     for row in range(2, min(40, h), 2):
-        r = y[row * w:(row + 1) * w:2]
+        r = y[row * w:row * w + int(w * 0.4):2]
         edges += sum(1 for a, b in zip(r, r[1:]) if abs(a - b) > 30)
     thumb = []
     for ty in range(18):
         for tx in range(32):
             yy, xx = int((ty + 0.5) * h / 18), int((tx + 0.5) * w / 32)
             thumb.append(y[yy * w + xx])
-    return {"mean": round(mean, 1), "top_edges": edges, "thumb": thumb, "size": [w, h]}
+    return {"mean": round(mean, 1), "top_edges": edges, "thumb": thumb, "size": [w, h], "_lum": lum_grid(y, w, h)}
+
+
+# The password prompt's own pixels: the avatar, the name and "Enter Password" are white and never move; an aerial
+# wallpaper behind them does (two lock-screen frames 40 s apart differ by 17 in the thumbnail). Sampled on a fixed
+# grid over the lower middle of the screen, so it doesn't depend on the resolution the Mac sends.
+PROMPT_REGION = (0.30, 0.70, 0.40, 0.97)
+PROMPT_GRID = (200, 150)
+PROMPT_LEARN_LUMA, PROMPT_SEEN_LUMA, PROMPT_RECALL, PROMPT_MIN_POINTS = 200, 160, 0.9, 20
+
+
+def lum_grid(y, w, h, region=PROMPT_REGION, grid=PROMPT_GRID):
+    x0, x1, y0, y1 = region[0] * w, region[1] * w, region[2] * h, region[3] * h
+    gx, gy = grid
+    xs = [int(x0 + (i + 0.5) * (x1 - x0) / gx) for i in range(gx)]
+    out = bytearray(gx * gy)
+    for j in range(gy):
+        row = int(y0 + (j + 0.5) * (y1 - y0) / gy) * w
+        for i, x in enumerate(xs):
+            out[j * gx + i] = y[row + x]
+    return bytes(out)
+
+
+def prompt_points(frames):
+    """Grid points bright in every frame: the prompt's own pixels, with the moving wallpaper dropped out."""
+    lums = [f["_lum"] for f in frames if f and f.get("_lum")]
+    if not lums:
+        return []
+    return [i for i in range(len(lums[0])) if all(l[i] >= PROMPT_LEARN_LUMA for l in lums)]
+
+
+def prompt_match(points, f):
+    """The share of a taught prompt's points that are bright in this frame (0..1)."""
+    lum = (f or {}).get("_lum")
+    if not lum or len(points) < PROMPT_MIN_POINTS:
+        return 0.0
+    return sum(1 for i in points if i < len(lum) and lum[i] >= PROMPT_SEEN_LUMA) / len(points)
 
 
 def clock_sig(y, w, h):
@@ -1100,23 +1186,35 @@ def thumb_diff(a, b):
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
+def prompt_seen(f):
+    """(visible, best match 0..1, references taught) for this frame against the prompts an operator taught."""
+    refs = [r for r in (load("prompt_refs.json", []) or []) if r.get("points")]
+    if not f or not f.get("_lum") or classify_frame(f) != "prompt_like":
+        return False, 0.0, len(refs)
+    best = max([prompt_match(r["points"], f) for r in refs] or [0.0])
+    return best >= PROMPT_RECALL, round(best, 3), len(refs)
+
+
 def prompt_visible(f):
     """Does this frame show the password prompt an operator taught the sitter (learn-prompt) while looking at the KVM's
     own picture? A desktop or a black frame never does. So a prompt drawn on another display never matches."""
-    if not f or not f.get("thumb") or classify_frame(f) != "prompt_like":
-        return False
-    refs = load("prompt_refs.json", []) or []
-    return any(thumb_diff(f["thumb"], r.get("thumb")) <= BOOT["same_diff"] for r in refs)
+    return prompt_seen(f)[0]
 
 
-def learn_prompt(f, why, now=None):
-    """Keep this frame as a reference for the password prompt. Only an operator who is looking at the KVM's picture and
-    sees the password field on it runs this (housesitter learn-prompt <mac>)."""
-    k = classify_frame(f)
-    if k != "prompt_like":
-        raise ValueError("that frame reads as %s, not a password prompt; show the FileVault or login screen on the KVM's display first" % k)
-    refs = (load("prompt_refs.json", []) or [])[-4:]
-    refs.append({"thumb": f["thumb"], "size": f.get("size"), "at": now if now is not None else int(time.time() * 1000), "why": why})
+def learn_prompt(frames, why, now=None):
+    """Keep the steady bright pixels of the password prompt, from several frames a few seconds apart (one frame is
+    accepted too), as a reference. Only an operator who is looking at the KVM's picture and sees the password field on
+    it runs this (housesitter learn-prompt <mac>)."""
+    frames = frames if isinstance(frames, list) else [frames]
+    for f in frames:
+        k = classify_frame(f)
+        if k != "prompt_like":
+            raise ValueError("that frame reads as %s, not a password prompt; show the FileVault or login screen on the KVM's display first" % k)
+    pts = prompt_points(frames)
+    if len(pts) < PROMPT_MIN_POINTS:
+        raise ValueError("nothing steady and bright enough to learn (%d points); is the password prompt on the KVM's picture?" % len(pts))
+    refs = [r for r in (load("prompt_refs.json", []) or []) if r.get("points")][-4:]
+    refs.append({"points": pts, "frames": len(frames), "at": now if now is not None else int(time.time() * 1000), "why": why})
     save("prompt_refs.json", refs)
     return len(refs)
 
@@ -1163,7 +1261,8 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
         return bw, "frame", note
     kind = classify_frame(f, cfg)
     bw["last_kind"] = kind
-    same = thumb_diff(f.get("thumb"), bw.get("last_thumb")) <= cfg["same_diff"]
+    # A prompt the sitter recognises is steady by definition; an aerial wallpaper behind it never is.
+    same = thumb_diff(f.get("thumb"), bw.get("last_thumb")) <= cfg["same_diff"] or bool(obs.get("prompt_visible"))
     bw["stable"] = bw.get("stable", 0) + 1 if same else 0
     bw["last_thumb"] = f.get("thumb")
     wait = cfg["black_settle_sec"] if kind == "black" else cfg["settle_sec"]
@@ -1221,8 +1320,47 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
         b2["stable"] = 0
     st["boot"] = b2
     save_state(st, ("boot", "desktop_at"))
-    return {"obs": {k: v for k, v in obs.items() if k != "frame"}, "frame": {k: v for k, v in (obs.get("frame") or {}).items() if k != "thumb"},
+    return {"obs": {k: v for k, v in obs.items() if k != "frame"}, "frame": {k: v for k, v in (obs.get("frame") or {}).items() if k != "thumb" and not k.startswith("_")},
             "act": act, "note": note, "boot": {k: v for k, v in b2.items() if k != "last_thumb"}}
+
+
+def glimpse_of_jpeg(jpg, run=subprocess.run, size=GLIMPSE):
+    """The same glimpse from a kvmd JPEG snapshot, scaled by the KVM's own ffmpeg."""
+    gw, gh = size
+    out = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "image2pipe", "-i", "-", "-vf", "scale=%d:%d:flags=area" % (gw, gh),
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], input=jpg, capture_output=True, timeout=20).stdout
+    return {"w": gw, "h": gh, "rgb": base64.b64encode(out).decode("ascii")} if len(out) == gw * gh * 3 else None
+
+
+def decode_picture(path, run=subprocess.run, w=2560):
+    """A saved picture (PNG, JPEG) as a yuv420p frame w wide, with ffmpeg: (yuv, w, h) or None."""
+    out = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-frames:v", "1", "-vf", "scale=%d:-2" % w,
+               "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"], capture_output=True, timeout=60).stdout
+    h = len(out) * 2 // (3 * w)
+    return (out, w, h) if out and len(out) == w * h * 3 // 2 else None
+
+
+def look(kvmd, src=None, run=subprocess.run, now=None):
+    """One read-only look at the screen (or at a saved picture): what it reads as, and whether the password field the
+    operator taught is on it. Presses and types nothing."""
+    now = now if now is not None else int(time.time() * 1000)
+    mode = None
+    if src:
+        dec = decode_picture(src, run=run)
+    else:
+        mode = hdmi_mode(kvmd=kvmd)
+        raw = frame_raw(kvmd, run=run) if mode else None
+        dec = LAST_FRAME if raw else None
+    out = {"at": now, "from": os.path.basename(src) if src else "kvm", "mode": list(mode) if mode else None}
+    if not dec:
+        out.update(reads_as="none", why="no signal" if not src and not mode else "no frame decoded")
+        return out
+    yuv, w, h = dec
+    f = frame_features(yuv[:w * h], w, h)
+    visible, match, refs = prompt_seen(f)
+    out.update(size=[w, h], reads_as=classify_frame(f), mean=f["mean"], menu_edges=f["top_edges"],
+               prompt={"taught": refs, "match": match, "visible": visible}, glimpse=glimpse(yuv, w, h))
+    return out
 
 
 GUARD = {"reads": 3, "gap_sec": 65}
@@ -1334,10 +1472,15 @@ def eyes_without_ocr(cfg, mem, raw, boot):
     if not raw:
         return {"screen": "unknown", "eyes": "frame"}
     y, w, h = raw
-    kind = classify_frame(frame_features(y, w, h), dict(BOOT, **cfg.get("boot", {})))
+    f = frame_features(y, w, h)
+    kind = classify_frame(f, dict(BOOT, **cfg.get("boot", {})))
+    last = LAST_FRAME
+    g = glimpse(*last) if last and last[1:] == (w, h) else None
+    seen = prompt_seen(f)
+    prompt = {"taught": seen[2], "match": seen[1], "visible": seen[0]}
     if kind == "desktop":
-        return {"screen": "desktop", "eyes": "frame", "clock_ticking": clock_ticking(mem, clock_sig(y, w, h))}
-    out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown"}
+        return {"screen": "desktop", "eyes": "frame", "clock_ticking": clock_ticking(mem, clock_sig(y, w, h)), "glimpse": g, "prompt": prompt}
+    out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown", "glimpse": g, "prompt": prompt}
     if (boot or {}).get("pending"):
         # A boot that hasn't reached a desktop: the FileVault screen. The boot watch types; the rules only wait and tell.
         out["screen"] = "filevault"
@@ -1535,6 +1678,10 @@ def observe(cfg, kvmd, power, mem, now):
             obs["screen"] = classify_screen(ocr_text(kvmd), cfg.get("user_names") or ())
             box = cfg.get("clock_box", [1500, 0, 1920, 32])
             obs["clock_ticking"] = clock_ticking(mem, re.sub(r"\s+", " ", str(ocr_text(kvmd, box))).strip())
+            try:
+                obs["glimpse"] = glimpse_of_jpeg(snapshot_jpeg(kvmd))
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as e:  # noqa: BLE001
             obs["ocr_error"] = str(e)[:120]
             try:
@@ -1598,18 +1745,30 @@ def caps_of(cfg, power):
     return {"unlock": cfg.get("unlock") is not False and has_secret("mac") and armed, "plug": bool(power), "fingerbot": fingerbot, "notify": bool((cfg.get("notify") or {}).get("url"))}
 
 
+def after_boot(cfg, obs, boot):
+    """May the sitter type by itself here? Only at a prompt that follows a boot: the boot watch saw the Mac enumerate the
+    KVM's keyboard again and no desktop since, or OCR read the FileVault screen itself. A plain lock screen is the
+    owner's lock, and the sitter can't tell it from a dead session, so it stays locked (and you hear about it) unless an
+    operator asks (housesitter unlock <mac>) or the config says "unlock_lock_screen": true. Learned live, 2026-11-08."""
+    return bool((boot or {}).get("pending")) or obs.get("screen") == "filevault" or cfg.get("unlock_lock_screen") is True
+
+
 def once(cfg, kvmd, power, log, now=None, gh=None):
     now = now if now is not None else int(time.time() * 1000)
     st = load("state.json", {"mem": None, "ledger": []})
     mem, ledger = st.get("mem") or {}, st.get("ledger") or []
     obs = observe(cfg, kvmd, power, mem, now)
+    seen = {"glimpse": obs.pop("glimpse", None), "prompt": obs.pop("prompt", None)}
     if obs.pop("desktop", False):
         st["desktop_at"] = now
     settle_trial(now, obs.get("screen") == "desktop", log)
     caps = caps_of(cfg, power)
+    if not after_boot(cfg, obs, st.get("boot")):
+        caps["unlock"] = False
     if obs.get("eyes") == "frame":
         caps["unlock"] = False  # without OCR, only the boot watch types, and only at a field it can match
     clock_seen = mem.get("clock_seen")
+    open_incident = mem.get("incident")
     mem, actions = tick(mem or None, ledger, {k: v for k, v in obs.items() if not k.endswith("_error")}, now, caps, dict(DEFAULTS, **cfg.get("rules", {})))
     if clock_seen is not None:
         mem["clock_seen"] = clock_seen[-4:]
@@ -1640,8 +1799,16 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
             mem["incident"]["notified_at"] = now
         done.append({"kind": a["kind"], "why": a["why"], "result": res})
         log("%s %s -> %s: %s" % (mem["state"], a["kind"], a["why"], res))
+    if open_incident and not mem.get("incident"):
+        # Over: keep a short record, so `housesitter doctor` can say what the last bad stretch was and how it ended.
+        acts = [e.get("kind") for e in st.get("ledger") or [] if e.get("at", 0) >= open_incident.get("started", now) and e.get("kind") != "notify"]
+        st["last_incident"] = {"started": open_incident.get("started"), "ended": now, "actions": acts[-6:],
+                               "told_you": open_incident.get("notified_at") is not None}
     status = {"v": 1, "sitter": VERSION, "at": now, "name": cfg.get("name"), "state": mem["state"], "since": mem.get("since"), "obs": obs,
-              "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in SECRET_NAMES}}
+              "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in SECRET_NAMES},
+              "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
+              "recent": [{k: e.get(k) for k in ("at", "kind", "result")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
+              **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
     if gh and o.get("gist"):
         status["tailnet"] = tailnet_self()
@@ -1652,7 +1819,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
             st["published"] = {"at": now, "state": status["state"]}
         except Exception as e:  # noqa: BLE001
             log("outbox publish failed: %s" % str(e)[:160])
-    save_state(st, ("mem", "desktop_at", "published"))
+    save_state(st, ("mem", "desktop_at", "published", "last_incident"))
     save("status.json", status)
     heartbeat(cfg, status)
     return status
@@ -1743,6 +1910,16 @@ def main(argv):
         print(json.dumps(cert_fingerprint()))
         return 0
     kvmd_default = Kvmd(user="admin", passwd=load_secret("kvmd") or "")
+    if argv[:1] == ["look"]:
+        # Read-only, and fine before adopt: one frame, what it reads as, the taught prompt's match and a glimpse. It
+        # presses nothing, types nothing and writes nothing. --from <image> reads a saved picture instead (with ffmpeg),
+        # so you can see what the sitter would make of a screenshot. --passwd-stdin: kvmd's admin password on stdin, for a
+        # KVM that has no sitter yet.
+        src = argv[argv.index("--from") + 1] if "--from" in argv else None
+        if "--passwd-stdin" in argv:
+            kvmd_default.passwd = sys.stdin.readline().rstrip("\n")
+        print(json.dumps(look(kvmd_default, src)))
+        return 0
     if argv[:1] == ["harden"]:
         try:
             print(json.dumps(harden(kvmd_default, load("config.json", None) or {})))
@@ -1764,13 +1941,19 @@ def main(argv):
         print(json.dumps(once(cfg, kvmd, power, log, gh=gh)))
         return 0
     if argv[:1] == ["learn-prompt"]:
-        # An operator looking at the KVM's own picture, with the password field on it, teaches the sitter that screen.
-        raw = frame_raw(kvmd)
-        if not raw:
-            print("learn-prompt: no frame decoded from the KVM's picture", file=sys.stderr)
-            return 1
+        # An operator looking at the KVM's own picture, with the password field on it, teaches the sitter that screen:
+        # three frames a few seconds apart, so a moving wallpaper drops out and only the prompt's own pixels stay.
+        frames = []
+        for i in range(3):
+            raw = frame_raw(kvmd)
+            if not raw:
+                print("learn-prompt: no frame decoded from the KVM's picture", file=sys.stderr)
+                return 1
+            frames.append(frame_features(*raw))
+            if i < 2:
+                SLEEP(4)
         try:
-            print(json.dumps({"references": learn_prompt(frame_features(*raw), " ".join(argv[1:]) or "taught by an operator")}))
+            print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator"), "points": len(prompt_points(frames))}))
             return 0
         except ValueError as e:
             print("learn-prompt: %s" % e, file=sys.stderr)

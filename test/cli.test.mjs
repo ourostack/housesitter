@@ -20,9 +20,12 @@ test('demo: two incidents fixed by itself, one message for the one it could not 
   const { incidents, world } = await night();
   assert.deepEqual(incidents.map((i) => i.fixed), [true, true, false]);
   assert.equal(world.st.unlocked, 2);
-  const r = cli(['demo', '--json']);
+  const r = cli(['demo', 'night', '--json']);
   assert.equal(r.status, 0);
   assert.equal(JSON.parse(r.stdout).rehearsal, true);
+  const real = JSON.parse(cli(['demo', '--json']).stdout);
+  assert.equal(real.replay, '2026-11-08');
+  assert.deepEqual(real.steps.map((s) => s.kind), ['prompt_like', 'desktop', 'prompt_like', 'prompt_like', 'desktop', 'prompt_like']);
 });
 
 test('CLI: help, adopt --fake, and refusal exit codes', () => {

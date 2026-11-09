@@ -7,26 +7,34 @@ import { fileURLToPath } from 'node:url';
 import { configPath, loadConfig, macConfig, secretStore, updateMac } from '../src/config.mjs';
 import { adopt, defaultRefs, fakeDeps, hostIfconfig, realDeps } from '../src/adopt.mjs';
 import { night, render } from '../src/demo.mjs';
+import { buildDoctor, renderDoctor } from '../src/doctor.mjs';
+import { renderEvening, replay } from '../src/evening.mjs';
+import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
 import { connect, summarise } from '../src/kvmd.mjs';
 import * as R from '../src/reins.mjs';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 
-const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac));
+const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac), { key: mac.kvm?.ssh_key || null });
+const sitterDir = (mac) => mac.kvm?.sitter_home || '/etc/kvmd/user/housesitter';
+const onSitter = (mac, args) => `${mac.kvm?.sitter_home ? `HOUSESITTER_HOME='${mac.kvm.sitter_home}' ` : ''}python3 ${sitterDir(mac)}/sitter.py ${args}`;
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you're away.
 
-  housesitter demo                         one bad night, rehearsed in seconds (no hardware)
+  housesitter demo                         the real evening it was built for, replayed (no hardware)
+  housesitter demo night                   one bad night, rehearsed: a panic, a freeze, a changed password
   housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
       [--notify ntfy|<url>] [--heartbeat <url>] [--location home|away] [--fingerprint <sha256>]
       [--this-mac] [--outbox] [--dry-run] [--fake]
   housesitter secret <mac> <mac-password|kvm-admin|outbox-token>   store a secret (read from stdin, no echo)
   housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
 
-  housesitter status <mac>                 the KVM and the sitter, in one look
+  housesitter doctor <mac> [--private]     everything in one screen: what the KVM sees, the Mac, the budgets
+                                           (--private hides the picture, for a screenshot or a screen share)
+  housesitter look <mac>                   one read-only look at the screen   (--picture <file>: a saved one)
   housesitter screenshot <mac> [--out f.jpg] [--max-width 1280]
   housesitter click <mac> <x> <y> [--right|--double]    in the last screenshot's pixels
   housesitter type <mac> <text>            housesitter key <mac> <combo>     housesitter scroll <mac> <up|down> [n]
@@ -40,14 +48,14 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter do <mac> <action> ['<json>'] run one; refusals: action-unavailable, input-invalid, action-failed
   housesitter forget <mac> --yes           wipe the secrets from the KVM and stop the sitter
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
-  housesitter doctor                       check this computer's setup
+  housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 
   --json for machine output. Config: ${configPath()}. Docs: https://github.com/ourostack/housesitter`;
 
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--heartbeat', '--location', '--fingerprint'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -65,21 +73,51 @@ async function kvmLook(mac) {
   return { ...summarise({ info, hid, streamer }), via: `${endpoint.label || endpoint.url}${endpoint.fallback ? ' (fallback)' : ''}` };
 }
 
+function useColor() { return !flag('--plain') && !process.env.NO_COLOR && (Boolean(process.stdout.isTTY) || process.env.FORCE_COLOR === '1'); }
+
+function showLook(l) {
+  if (json) { emit(l); return 0; }
+  const p = painter(useColor());
+  const words = { desktop: 'a desktop: a menu bar, top left', black: 'black: asleep, off, or no picture', none: `nothing (${l.why || 'no frame'})`, prompt_like: 'no menu bar' };
+  const right = ['', `${p.label('IT SEES')}  ${words[l.reads_as] || l.reads_as}`];
+  if (l.prompt) right.push(`${p.label('PROMPT ')}  ${l.prompt.taught ? (l.prompt.visible ? `the taught password prompt (${Math.round(l.prompt.match * 100)}%)` : `not the taught prompt (${Math.round(l.prompt.match * 100)}%)`) : 'none taught yet: housesitter learn-prompt <mac> --i-see-the-field'}`);
+  if (l.size) right.push(`${p.dim('picture  ')}${l.size.join('×')}${l.mode ? ` · HDMI ${l.mode.join('×')}` : ''} · from ${l.from}`);
+  right.push(`${p.dim('pressed  nothing; typed nothing; changed nothing')}`);
+  console.log(['', ...beside(paintGlimpse(p, flag('--private') ? null : l.glimpse, { title: 'what the KVM sees', note: flag('--private') ? 'hidden (--private)' : '' }).map((x) => `  ${x}`), right), ''].join('\n'));
+  return 0;
+}
+
 function need(n, usage) { if (!n) throw new Refusal('input-invalid', `usage: ${usage}`); }
 
 async function main() {
   if (!cmd || cmd === 'help' || flag('--help') || flag('-h')) { console.log(HELP); return 0; }
   if (cmd === 'version' || flag('--version')) { console.log(VERSION); return 0; }
 
+  if (cmd === 'demo' && name !== 'night') {
+    const steps = replay();
+    if (json) { emit({ replay: '2026-11-08', steps: steps.map(({ lum, glimpse, ...s }) => s) }); return 0; }
+    const blocks = renderEvening(steps, { color: useColor() });
+    const slow = process.stdout.isTTY && !flag('--fast');
+    for (const b of blocks) { console.log(b.join('\n')); if (slow) await new Promise((r) => setTimeout(r, 1400)); }
+    return 0;
+  }
+
   if (cmd === 'demo') {
     const r = await night();
-    if (json) emit({ rehearsal: true, lines: r.lines, incidents: r.incidents }); else console.log(render(r, { color: process.stdout.isTTY && !process.env.NO_COLOR }));
+    if (json) emit({ rehearsal: true, lines: r.lines, incidents: r.incidents }); else console.log(render(r, { color: useColor() }));
     return 0;
   }
 
   if (cmd === 'tailnet-policy') { console.log(fs.readFileSync(path.join(ROOT, 'docs', 'tailnet-policy.hujson'), 'utf8')); return 0; }
 
-  if (cmd === 'doctor') {
+  if (cmd === 'look' && val('--picture')) {
+    // What the sitter would make of a saved picture: the same code as on the KVM, run here (needs python3 and ffmpeg).
+    const r = spawnSync('python3', [path.join(ROOT, 'device', 'sitter.py'), 'look', '--from', path.resolve(val('--picture'))], { encoding: 'utf8', env: { ...process.env, HOUSESITTER_HOME: val('--home') || path.join(path.dirname(configPath()), 'look') } });
+    if (r.status !== 0) { say(`✗ ${String(r.stderr || '').trim() || 'python3 or ffmpeg missing?'}`); return 1; }
+    return showLook(JSON.parse(r.stdout));
+  }
+
+  if (cmd === 'doctor' && !name) {
     const cfg = loadConfig();
     const store = secretStore();
     const lines = [`node ${process.version}${Number(process.versions.node.split('.')[0]) >= 20 ? ' ✓' : ' ✗ (needs 20+)'}`, `config ${configPath()}${fs.existsSync(configPath()) ? '' : ' (none yet: housesitter adopt makes it)'}`];
@@ -128,12 +166,23 @@ async function main() {
   need(name, `housesitter ${cmd} <mac>`);
   const mac = macConfig(name);
 
-  if (cmd === 'status') {
+  if (cmd === 'status' || cmd === 'doctor') {
     const [kvm, sit] = await Promise.all([kvmLook(mac).catch((e) => ({ error: e.message })), sitterClient(mac).status().catch((e) => ({ errors: [e.message] }))]);
     if (json) { emit({ name, kvm, sitter: sit.status, sitter_via: sit.via }); return 0; }
-    console.log(kvm.error ? `KVM: not reached (${kvm.error})` : `KVM via ${kvm.via}: ${kvm.model || 'kvmd'}; video ${kvm.video.online ? `on, ${kvm.video.resolution}` : 'no signal'}; keyboard ${kvm.hid.keyboard_online ? 'online' : 'offline'}`);
-    console.log(sit.status ? `${describeStatus(name, sit.status)}\n  via ${sit.via}` : `sitter: no status (${(sit.errors || []).join('; ') || 'no route'})`);
-    return 0;
+    if (flag('--plain')) {
+      console.log(kvm.error ? `KVM: not reached (${kvm.error})` : `KVM via ${kvm.via}: ${kvm.model || 'kvmd'}; video ${kvm.video.online ? `on, ${kvm.video.resolution}` : 'no signal'}; keyboard ${kvm.hid.keyboard_online ? 'online' : 'offline'}`);
+      console.log(sit.status ? `${describeStatus(name, sit.status)}\n  via ${sit.via}` : `sitter: no status (${(sit.errors || []).join('; ') || 'no route'})`);
+      return 0;
+    }
+    const model = buildDoctor({ name, mac, kvm, sit });
+    console.log(renderDoctor(model, { color: useColor(), hidePicture: flag('--private') }));
+    return cmd === 'doctor' && (kvm.error || !sit.status) ? 3 : 0;
+  }
+
+  if (cmd === 'look') {
+    const r = await sitterSsh(mac)(onSitter(mac, 'look'));
+    if (r.status !== 0) { say(`✗ ${String(r.stderr || r.stdout).trim() || 'could not reach the KVM over SSH'}`); return 1; }
+    return showLook(JSON.parse(String(r.stdout).trim().split('\n').at(-1)));
   }
 
   if (cmd === 'proof') return proof(mac);
