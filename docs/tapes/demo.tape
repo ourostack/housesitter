@@ -18,8 +18,10 @@ Show
 
 Sleep 500ms
 Type "housesitter demo" Sleep 400ms Enter
-Sleep 12s
+Sleep 16s
+Hide
 Type "clear" Enter
 Sleep 300ms
+Show
 Type "housesitter look --picture lock-screen.jpg --home ./mini" Sleep 400ms Enter
-Sleep 6s
+Sleep 8s
