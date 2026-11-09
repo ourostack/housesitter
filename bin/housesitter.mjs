@@ -48,6 +48,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter unlock <mac> --attended-test you are locking and unlocking on purpose: its own budget (30 an hour)
   housesitter want-desktop <mac> [--minutes 10]   an agent needs the UI: unlock now, and again if it locks meanwhile
                                            (only with "unlock_lock_screen": "on_request" or true in its config)
+  housesitter alert-test <mac> [--again]  one real "I'm stuck" message through the rules, marked TEST (over SSH; once a day)
   housesitter learn-prompt <mac> --i-see-the-field [--filevault]  teach it the prompt you see on the KVM; --filevault during a restart
   housesitter learn-prompt <mac> --i-see-the-field --grid <x> <y>  the login window's list of users: x y is your
                                            account's tile, as fractions of the screen (0.48 0.87)
@@ -215,6 +216,15 @@ async function main() {
       ? `armed one supervised try. Restart the Mac now and watch: housesitter proof ${name} --record ./proof. The sitter types once, only where it sees the password field; if the desktop follows within 2 minutes the password is verified, otherwise it goes back to unverified and types nothing more.`
       : 'held: the password is unverified again, and nothing is typed until you arm a trial.');
     return 0;
+  }
+
+  if (cmd === 'alert-test') {
+    // An operator act over SSH, never through the GitHub outbox: the sitter sends one real stuck message, marked TEST.
+    const r = await sitterSsh(mac)(onSitter(mac, `alert-test${flag('--again') ? ' --again' : ''}`));
+    let j = {};
+    try { j = JSON.parse(String(r.stdout).trim().split('\n').at(-1)); } catch { j = { ok: false, result: String(r.stderr || r.stdout).trim().slice(0, 200) || 'could not reach the KVM over SSH' }; }
+    if (json) emit(j); else say(j.ok ? `✓ sent through ${mac.notify?.kind || 'the notify channel'}: ${j.result}\n  title: ${j.sent?.title}\n  body:  ${String(j.sent?.body || '').replace(/\n/g, ' / ')}` : `✗ ${j.result}`);
+    return j.ok ? 0 : 1;
   }
 
   if (cmd === 'learn-prompt') {

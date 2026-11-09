@@ -1406,3 +1406,59 @@ class OnlyTheBootLesson(unittest.TestCase):
             W.LAST_FRAME = saved
         self.assertEqual(o["screen"], "login")
 
+
+
+class AlertTest(unittest.TestCase):
+    """alert-test: one real stuck message through the rules and the notify path, marked TEST, ledgered, once a day."""
+
+    def setUp(self):
+        self.dir = scratch()
+        W.HOME = self.dir
+        self.cfg = {"name": "mini", "notify": {"kind": "ntfy", "url": "https://ntfy.sh/topic"}}
+        self.reqs = []
+
+        class R:
+            status = 200
+
+            def __enter__(s):
+                return s
+
+            def __exit__(s, *a):
+                return False
+
+        def opener(req, timeout=10):
+            self.reqs.append(req)
+            return R()
+        self.opener = opener
+
+    def test_sends_the_rules_stuck_message_marked_test_and_ledgers_it(self):
+        W.save("state.json", {"mem": {"state": "healthy"}, "ledger": []})
+        logs = []
+        r = W.alert_test(self.cfg, None, None, logs.append, now=10 ** 12, opener=self.opener)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(self.reqs), 1)
+        title = self.reqs[0].get_header("Title")
+        title = title.decode() if isinstance(title, bytes) else title
+        self.assertEqual(title, "TEST: mini is stuck at FileVault")
+        body = self.reqs[0].data.decode()
+        self.assertTrue(body.startswith("TEST (housesitter alert-test; nothing is wrong). Seen by the housesitter on its KVM."))
+        self.assertIn("at the FileVault screen for 10+ min and the sitter has not unlocked it", body)
+        self.assertEqual(r["sent"]["title"], title)
+        st = W.load("state.json", {})
+        self.assertEqual(st["mem"], {"state": "healthy"}, "the real memory is untouched")
+        self.assertEqual([(e["kind"], e["test"]) for e in st["ledger"]], [("notify", True)])
+        again = W.alert_test(self.cfg, None, None, logs.append, now=10 ** 12 + 3600000, opener=self.opener)
+        self.assertFalse(again["ok"])
+        self.assertIn("one a day", again["result"])
+        self.assertEqual(len(self.reqs), 1)
+        self.assertTrue(W.alert_test(self.cfg, None, None, logs.append, now=10 ** 12 + 3600000, opener=self.opener, again=True)["ok"])
+
+    def test_no_target_sends_nothing(self):
+        r = W.alert_test({"name": "mini"}, None, None, lambda m: None, opener=self.opener)
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.reqs, [])
+
+    def test_a_real_message_is_not_marked(self):
+        W.notify(self.cfg, "mini is stuck at FileVault", "body", opener=self.opener)
+        t = self.reqs[0].get_header("Title")
+        self.assertEqual(t.decode() if isinstance(t, bytes) else t, "mini is stuck at FileVault")
