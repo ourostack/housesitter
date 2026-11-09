@@ -141,5 +141,8 @@ export function renderDoctor(model, { color = false, now = Date.now(), hidePictu
     for (const t of model.todo) out.push(`  ${p.fg([255, 158, 100], '→')} ${p.text(t.cmd)}  ${p.dim(t.why)}`);
   }
   out.push('');
-  return out.join('\n');
+  // --private is for a screenshot or a screen share: email addresses lose all but their first letter.
+  return hidePicture ? maskEmails(out.join('\n')) : out.join('\n');
 }
+
+export const maskEmails = (s) => String(s).replace(/([A-Za-z0-9])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g, '$1…@$2');
