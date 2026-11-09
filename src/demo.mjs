@@ -47,11 +47,24 @@ export async function night({ name = 'studio', start = 2 * 60 + 58, end = 6 * 60
         const s = classifyScreen(await kvm.ocr(), { userNames: ['Ada'] });
         if (s.kind === 'filevault' || s.kind === 'login') { await kvm.type(`${SEALED}\n`); const n = ledger.filter((l) => l.kind === 'unlock' && t * 60000 - l.at < 3600000).length; say(t, n === 1 ? 'sitter: sees the password prompt, types its sealed copy of the password, slowly' : `sitter: still at FileVault after 4 minutes; tries once more (${n} of 3 this hour)`, 'act'); }
       }
-      if (a.kind === 'power_cycle') { mac = { phase: 'rebooting', until: t + 3, watts: 0 }; world.st.screen = 'blank'; say(t, 'sitter: smart plug off for 10 s, then on by itself', 'act'); }
+      if (a.kind === 'power_cycle') {
+        // The sitter's cycle guard: three fresh looks over two more minutes before it cuts the power (device/sitter.py).
+        mac = { phase: 'rebooting', until: t + 5, watts: 0 };
+        world.st.screen = 'blank';
+        say(t, 'sitter: before cutting power, three more looks over two minutes: still frozen, still silent', 'state');
+        say(t + 2, 'sitter: smart plug off for 10 s, then on by itself', 'act');
+      }
       if (a.kind === 'notify') {
         const m = W.message(name, mem, a, obs);
         if (open) open.messages++;
-        say(t, a.recovered ? `sitter → your phone: "${m.subject}"` : `sitter → your phone: "${m.subject}: ${a.why.replaceAll('<mac>', name)}"`, 'notify');
+        if (a.recovered) say(t, `sitter → your phone: "${m.subject}"`, 'notify');
+        else {
+          // The message itself, word for word: its title and the two lines that matter at 3 a.m. (the other two are the
+          // time it got stuck and the raw signs).
+          say(t, 'sitter → your phone, once:', 'notify');
+          const keep = m.body.split('\n').filter((l) => /^(Stuck because|Look):/.test(l));
+          for (const l of [m.subject, ...keep]) lines.push({ t, at: '', text: l, tag: l === m.subject ? 'msg-title' : 'msg' });
+        }
         if (mem.incident) mem.incident.notified_at = t * 60000;
       }
     }
@@ -70,13 +83,28 @@ export function defaultEvents() {
   ];
 }
 
+function wrapAt(text, width) {
+  const out = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    if (line && line.length + 1 + word.length > width) { out.push(line); line = word; } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
 export function render({ lines, incidents }, { color = false } = {}) {
   const c = (code, s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
-  const tint = { event: '33', mac: '2', state: '36', act: '32', notify: '35', done: '1;32' };
-  const out = [c('2', 'housesitter demo: a rehearsal with a pretend Mac and a pretend KVM. The rules and the client are the real ones.'), ''];
-  for (const l of lines) out.push(`${c('2', l.at)}  ${c(tint[l.tag] || '0', l.text)}`);
+  const tint = { event: '33', mac: '2', state: '36', act: '32', notify: '35', done: '1;32', 'msg-title': '1;97', msg: '97' };
+  const out = [c('2', 'housesitter demo night: a pretend Mac and KVM, run by the real rules and client.'), ''];
+  for (const l of lines) {
+    if (l.tag === 'msg' || l.tag === 'msg-title') {
+      // The message, as a block under its line, wrapped at a space so it reads like the notification it is.
+      for (const w of wrapAt(l.text, 72)) out.push(`         ${c('32', '│')} ${c(tint[l.tag], w)}`);
+    } else out.push(`${c('2', l.at)}  ${c(tint[l.tag] || '0', l.text)}`);
+  }
   const fixed = incidents.filter((i) => i.fixed);
   const asked = incidents.filter((i) => !i.fixed);
-  out.push('', c('1', `${incidents.length} incidents overnight: ${fixed.length} fixed by itself (${fixed.map((i) => `${i.to - i.from} min`).join(', ')}), ${asked.length} needed you, and it said so once.`));
+  out.push('', c('1;97', `${incidents.length} incidents overnight: ${fixed.length} fixed by itself (${fixed.map((i) => `${i.to - i.from} min`).join(', ')}), ${asked.length} needed you, and it said so once.`));
   return out.join('\n');
 }

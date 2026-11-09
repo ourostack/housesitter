@@ -4,7 +4,8 @@
 //   { "macs": { "studio": {
 //       "kvm":    { "endpoints": [{ "label": "tailnet", "url": "https://kvm-studio.example.ts.net" },
 //                                 { "label": "home LAN", "url": "https://192.168.1.50", "fallback": true }],
-//                   "tls_sha256": "AB:CD:…", "user": "admin", "admin_password": "keychain:housesitter/studio-kvm" },
+//                   "tls_sha256": "AB:CD:…", "user": "admin", "admin_password": "keychain:housesitter/studio-kvm",
+//                   "ssh_key": "~/.ssh/…",  "sitter_home": "/etc/kvmd/user/housesitter" },   // both optional
 //       "mac_password": "keychain:housesitter/studio-mac",        // copied once to the sitter, sealed there
 //       "user_names": ["Ada"],                                    // what the FileVault screen shows, to read it
 //       "power":  { "kind": "shelly", "url": "http://192.168.1.60" },   // or shelly-ble, fingerbot, command, none

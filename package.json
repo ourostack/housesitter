@@ -12,7 +12,7 @@
     "./screen": "./src/screen.mjs",
     "./fake": "./src/fake.mjs"
   },
-  "files": ["bin", "src", "device", "spec", "docs/tailnet-policy.hujson", "README.md", "LICENSE", "llms.txt"],
+  "files": ["bin", "src", "device", "spec", "assets/evening.json", "docs/tailnet-policy.hujson", "README.md", "LICENSE", "llms.txt"],
   "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test test/*.test.mjs && python3 -m unittest discover -s test -p 'test_*.py'",

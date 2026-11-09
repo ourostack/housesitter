@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -176,7 +177,8 @@ class Io(unittest.TestCase):
         orig = W.load_secret
         W.load_secret = lambda name, k=None: orig(name, key)
         try:
-            kvmd = FakeKvmd(online=True, text="Ada Lovelace\nEnter Password\nRestart Shut Down")
+            # The FileVault screen after a boot (OCR reads it as such); a plain lock screen stays locked (OnlyAfterABoot).
+            kvmd = FakeKvmd(online=True, text="FileVault\nAda Lovelace\nEnter Password\nRestart Shut Down")
             W.arp_alive = lambda ips, macs: None
             st = W.once({"name": "studio"}, kvmd, None, self.logs.append, now=0)
             self.assertEqual(st["state"], "filevault")
@@ -469,6 +471,10 @@ class Do(unittest.TestCase):
             posts = []
             def post(self, p, body=None, timeout=60):
                 K.posts.append(p)
+            def get(self, p, timeout=15):
+                return b'{"ok":true}'
+            def json(self, p):
+                return {"streamer": {"source": {"online": True}}} if p == "/streamer" else "Finder File Edit View Go Window Help 9:41"
         W.handle({"op": "scroll", "args": {"dy": -3}}, {}, K(), None, print, 0, {})
         self.assertEqual(K.posts[-1], "/hid/events/send_mouse_wheel?delta_x=0&delta_y=-3")
         K.posts = []
@@ -481,6 +487,9 @@ if __name__ == "__main__":
 
 
 FRAMES = json.load(open(os.path.join(HERE, "fixtures", "comet-frames-20261108.json")))
+# Luma grids (lum_grid) from real Comet frames of a Mac's lock screen, with a moving aerial wallpaper behind it.
+LUM = {k: dict(v, _lum=base64.b64decode(v["_lum"])) for k, v in json.load(open(os.path.join(HERE, "fixtures", "comet-lum-20261109.json"))).items() if not k.startswith("_")}
+FV = {k: dict(v, _lum=base64.b64decode(v["_lum"])) for k, v in json.load(open(os.path.join(HERE, "fixtures", "comet-filevault-20261109.json"))).items() if not k.startswith("_")}
 
 
 class BootWatch(unittest.TestCase):
@@ -498,7 +507,7 @@ class BootWatch(unittest.TestCase):
         log = []
         for f in frames:
             now += 3000
-            bw, act, note = W.boot_tick(bw, now, {"usb": usb + 900, "mode": (2560, 1440), "frame": f, "prompt_visible": visible}, W.BOOT, kvm_up)
+            bw, act, note = W.boot_tick(bw, now, {"usb": usb + 900, "mode": (2560, 1440), "frame": f, "prompt_visible": visible, "prompt_kind": "boot" if visible else None}, W.BOOT, kvm_up)
             log.append((act, note))
         return bw, log
 
@@ -543,9 +552,13 @@ class BootWatch(unittest.TestCase):
             bw, act, _ = W.boot_tick(bw, 12000 + k * 3000, {"usb": 16.8, "mode": (2560, 1440), "frame": FRAMES["lock-2560-later"], "prompt_visible": True}, W.BOOT, 1200)
             self.assertNotEqual(act, "type")
 
-    def test_a_kvm_that_booted_with_the_mac_counts_that_enumeration(self):
-        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 40)
-        self.assertEqual(bw["boot_at"], 0)
+    def test_a_kvm_that_just_started_proves_nothing_by_itself(self):
+        bw, _, note = W.boot_tick(None, 5000, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 40)
+        self.assertIsNone(bw.get("boot_at"), note)
+        # Its HDMI receiver often hasn't locked yet: that dark proves nothing either.
+        bw, _, _ = W.boot_tick(None, 5000, {"usb": 16.8, "mode": None, "frame": None}, W.BOOT, 40)
+        bw, _, _ = W.boot_tick(bw, 8000, {"usb": 16.8, "mode": (2560, 1440), "frame": None}, W.BOOT, 43)
+        self.assertIsNone(bw.get("boot_at"))
 
     def test_usb_and_hdmi_readers(self):
         d = "[   16.786538] dwc3 21500000.usb: device reset\n[   16.856062] android_work: sent uevent USB_STATE=CONFIGURED\n[ 2001.5] lt6911c x\n[ 2050.25] dwc3 21500000.usb: device reset\n"
@@ -593,12 +606,12 @@ class EyesWithoutOcr(unittest.TestCase):
         return bytes([90]) * (self.w * self.h), self.w, self.h
 
     def test_after_a_boot_the_steady_prompt_is_filevault_and_the_rules_dont_type(self):
-        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": 1})
+        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": int(time.time() * 1000)})
         self.assertEqual(o["screen"], "filevault")
         self.assertEqual(W.raw_state(dict(o, answers=False, video=True)), "filevault")
 
     def test_stuck_at_the_prompt_says_why_in_the_message_signs(self):
-        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": 1, "stuck": "the password didn't take, 2 tries this boot. Fix: housesitter secret <mac> mac-password"})
+        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": int(time.time() * 1000), "stuck": "the password didn't take, 2 tries this boot. Fix: housesitter secret <mac> mac-password"})
         self.assertIn("housesitter secret studio mac-password", o["boot"])
 
     def test_no_boot_and_no_menu_bar_while_not_answering_is_a_hang(self):
@@ -626,7 +639,7 @@ class EyesWithoutOcr(unittest.TestCase):
         old = W.HOME
         W.HOME = d
         try:
-            W.save("state.json", {"mem": None, "ledger": [], "boot": {"pending": 1}})
+            W.save("state.json", {"mem": None, "ledger": [], "boot": {"pending": int(time.time() * 1000)}})
 
             class K:
                 calls = []
@@ -688,7 +701,7 @@ class Safety(unittest.TestCase):
         self.dir = scratch()
         W.HOME = self.dir
         self.saved = (W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.kvm_uptime_s, W.load_secret, W.arp_alive, W.tcp_answers)
-        self.usb, self.frame, self.logs = 16.8, FRAMES["lock-2560-later"], []
+        self.usb, self.frame, self.logs = 16.8, LUM["lock-later"], []
         W.usb_last_enum = lambda run=None: self.usb
         W.hdmi_mode = lambda read=None, kvmd=None: (2560, 1440)
         W.frame_raw = lambda kvmd, run=None: (b"", 2560, 1440)
@@ -701,11 +714,16 @@ class Safety(unittest.TestCase):
         (W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.kvm_uptime_s, W.load_secret, W.arp_alive, W.tcp_answers) = self.saved
 
     def teach(self):
-        W.learn_prompt(FRAMES["lock-2560-later"], "an operator saw the FileVault field on the KVM's picture")
+        # Taught during a boot: the kind the sitter may type at by itself.
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "an operator saw the FileVault field on the KVM's picture", kind="boot")
 
     def boot(self, cfg=None, start=1_000_000, ticks=20):
         cfg = cfg or {"name": "studio"}
         W.boot_watch(cfg, self.kvmd, self.logs.append, now=start)
+        # A restart: HDMI goes dark, then the Mac enumerates the KVM's keyboard again.
+        mode, W.hdmi_mode = W.hdmi_mode, lambda read=None, kvmd=None: None
+        W.boot_watch(cfg, self.kvmd, self.logs.append, now=start + 1000)
+        W.hdmi_mode = mode
         self.usb += 900
         t = start
         for k in range(1, ticks):
@@ -726,16 +744,17 @@ class Safety(unittest.TestCase):
         W.set_password_trust("verified", "test")
         r = W.handle({"op": "unlock"}, {"name": "studio"}, self.kvmd, None, self.logs.append, 10**6, {"ledger": []})
         self.assertFalse(r["ok"])
-        self.assertIn("no password field visible", r["result"])
+        self.assertIn("no password prompt it was taught", r["result"])
         self.assertEqual(self.kvmd.typed(), [])
 
     def test_learn_prompt_takes_only_a_prompt_like_frame(self):
         with self.assertRaises(ValueError):
-            W.learn_prompt(FRAMES["desktop-2560"], "x")
-        self.assertFalse(W.prompt_visible(FRAMES["lock-2560-later"]))
+            W.learn_prompt([LUM["lock-a"], LUM["desktop"]], "x")
+        self.assertFalse(W.prompt_visible(LUM["lock-later"]))
         self.teach()
-        self.assertTrue(W.prompt_visible(FRAMES["lock-2560-later"]))
-        self.assertFalse(W.prompt_visible(FRAMES["desktop-2560"]))
+        self.assertTrue(W.prompt_visible(LUM["lock-later"]))
+        self.assertFalse(W.prompt_visible(LUM["desktop"]))
+        self.assertFalse(W.prompt_visible(LUM["third-display-lock"]))
 
     # 2. the password gate
     def test_unverified_by_default_never_types_even_at_a_visible_field(self):
@@ -751,7 +770,7 @@ class Safety(unittest.TestCase):
         t = self.boot(ticks=12)
         self.assertEqual(self.kvmd.typed(), [b"pw-from-keychain"])
         self.assertEqual(W.password_gate()["trust"], "trial")
-        self.frame = FRAMES["desktop-2560"]
+        self.frame = LUM["desktop"]
         W.boot_watch({"name": "studio"}, self.kvmd, self.logs.append, now=t + 3000)
         self.assertEqual(W.password_gate()["trust"], "verified")
 
@@ -765,7 +784,7 @@ class Safety(unittest.TestCase):
     def test_a_desktop_without_our_try_never_verifies(self):
         self.teach()
         W.set_password_trust("trial", "armed")
-        self.frame = FRAMES["desktop-2560"]
+        self.frame = LUM["desktop"]
         self.boot(ticks=5)
         self.assertEqual(self.kvmd.typed(), [])
         self.assertEqual(W.password_gate()["trust"], "trial")
@@ -1019,3 +1038,371 @@ class ReviewFixes(unittest.TestCase):
             self.assertEqual(W.load("state.json", {})["ledger"][-1]["kind"], "press_power")
         finally:
             W.arp_alive, W.tcp_answers = orig
+
+
+class LockScreenIsNotADesktop(unittest.TestCase):
+    """Real frames through the GLKVM mirror, 2026-11-08: the lock screen's top-right icons once read as a menu bar."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def test_real_mirror_frames(self):
+        self.assertEqual(W.classify_frame(FRAMES["desktop-mirror-2560"]), "desktop")
+        self.assertEqual(W.classify_frame(FRAMES["lockscreen-mirror-2560"]), "prompt_like")
+        self.assertEqual(W.classify_frame(FRAMES["lockscreen-mirror-awake-2560"]), "prompt_like")
+
+    def test_status_icons_top_right_are_not_a_menu_bar(self):
+        w, h = 400, 60
+        y = bytearray([100] * (w * h))
+        for row in range(0, 40):
+            for x in range(300, 400, 4):
+                y[row * w + x] = 250
+        self.assertEqual(W.frame_features(bytes(y), w, h)["top_edges"], 0)
+        for row in range(0, 40):
+            for x in range(0, 120, 4):
+                y[row * w + x] = 250
+        self.assertGreater(W.frame_features(bytes(y), w, h)["top_edges"], 40)
+
+    def test_the_prompt_is_learned_through_a_moving_wallpaper(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "test")
+        seen, match, refs, _ = W.prompt_seen(LUM["lock-later"])
+        self.assertTrue(seen)
+        self.assertGreaterEqual(match, W.PROMPT_RECALL)
+        self.assertEqual(refs, 1)
+        self.assertFalse(W.prompt_seen(LUM["desktop"])[0])
+
+    def test_a_plain_bright_or_grey_frame_never_matches(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "test")
+        n = len(LUM["lock-a"]["_lum"])
+        for luma in (255, 200, 128, 3):
+            f = {"mean": luma, "top_edges": 0, "_lum": bytes([luma]) * n}
+            self.assertEqual(W.prompt_seen(f)[1], 0.0, luma)
+            self.assertFalse(W.prompt_seen(f)[0], luma)
+
+
+class Look(unittest.TestCase):
+    """`housesitter look` and `doctor`: a read-only look and a tiny colour glimpse of the screen."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    @staticmethod
+    def solid(w, h, y, u, v):
+        return bytes([y]) * (w * h) + bytes([u]) * ((w // 2) * (h // 2)) + bytes([v]) * ((w // 2) * (h // 2))
+
+    def test_glimpse_is_a_small_colour_picture(self):
+        g = W.glimpse(self.solid(160, 90, 81, 90, 240), 160, 90)  # BT.601 red
+        rgb = base64.b64decode(g["rgb"])
+        self.assertEqual((g["w"], g["h"], len(rgb)), (40, 22, 40 * 22 * 3))
+        r, gg, b = rgb[0], rgb[1], rgb[2]
+        self.assertGreater(r, 200)
+        self.assertLess(gg, 40)
+        self.assertLess(b, 40)
+        self.assertIsNone(W.glimpse(b"short", 160, 90))
+
+    def test_look_from_a_picture_reads_it_and_presses_nothing(self):
+        w, h = 2560, 1440
+        frame = self.solid(w, h, 120, 128, 128)
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            return type("R", (), {"stdout": frame})()
+
+        class NoKeys:
+            def post(self, *a, **k):
+                raise AssertionError("look must not press or type anything")
+
+        out = W.look(NoKeys(), "/some/where/shot.png", run=run, now=5)
+        self.assertEqual(out["from"], "shot.png")
+        self.assertEqual(out["size"], [w, h])
+        self.assertEqual(out["reads_as"], "prompt_like")
+        self.assertEqual(out["prompt"], {"taught": 0, "match": 0.0, "visible": False, "kind": None})
+        self.assertEqual(out["glimpse"]["w"], 40)
+        self.assertEqual(calls[0][0], "ffmpeg")
+        self.assertEqual(W.look(NoKeys(), "x.png", run=lambda c, **k: type("R", (), {"stdout": b""})())["reads_as"], "none")
+
+    def test_budgets_show_use_and_when_they_free_up(self):
+        now = 10_000_000
+        st = {"desktop_at": now - 50 * 60000, "ledger": [{"at": now - 40 * 60000, "kind": "unlock"}, {"at": now - 2 * 3600000, "kind": "power_cycle"}]}
+        b = W.budgets(st, now)
+        self.assertEqual(b["unlock_since_desktop"], [1, W.BOOT["per_boot"]])
+        self.assertEqual(b["unlock_hour"], [1, W.DEFAULTS["unlocks_per_hour"]])
+        self.assertEqual(b["unlock_hour_frees_at"], now - 40 * 60000 + 3600000)
+        self.assertEqual(b["cycles_day"], [1, W.DEFAULTS["cycles_per_day"]])
+        self.assertIsNone(b["blocked"])
+
+
+class NeverEscape(unittest.TestCase):
+    """At a macOS login window, Escape leaves the password field for the list of users (2026-11-08). The sitter's own
+    keys are a lone Shift to wake the screen, and the password, then Return, at a field it can see. (An agent's own
+    `key` request is that agent's choice, and passes through as asked.)"""
+
+    def test_the_only_key_the_sitter_presses_by_itself_is_shift(self):
+        src = open(os.path.join(HERE, "..", "device", "sitter.py")).read()
+        import re
+        self.assertEqual(sorted(set(re.findall(r"send_key\?key=(\w+)", src))), ["Enter", "ShiftLeft"])
+        # Its only key of its own besides Return is a lone Shift; an agent's Escape at a login window is refused (LiveFindings).
+
+
+class OnlyAfterABoot(unittest.TestCase):
+    """By itself the sitter types only at a prompt that follows a boot. A plain lock screen is the owner's lock: it
+    stays locked unless an operator asks or the config opts in (live finding, 2026-11-08; housesitter#7)."""
+
+    def setUp(self):
+        W.HOME = scratch()
+        self.saved = (W.load_secret, W.arp_alive, W.has_secret)
+        W.load_secret = lambda name, key=None: "pw" if name == "mac" else None
+        W.has_secret = lambda name: name == "mac"
+        W.arp_alive = lambda ips, macs: None
+        W.set_password_trust("verified", "test")
+
+    def tearDown(self):
+        (W.load_secret, W.arp_alive, W.has_secret) = self.saved
+
+    def test_the_rule(self):
+        self.assertFalse(W.after_boot({}, {"screen": "login"}, {}))
+        self.assertTrue(W.after_boot({}, {"screen": "login"}, {"pending": 5}, now=60000))
+        self.assertFalse(W.after_boot({}, {"screen": "login"}, {"pending": 5}, now=5 + 16 * 60000), "a boot older than the watch's window grants nothing")
+        self.assertTrue(W.after_boot({}, {"screen": "filevault"}, {}))
+        self.assertTrue(W.after_boot({"unlock_lock_screen": True}, {"screen": "login"}, {}))
+
+    def test_a_plain_lock_screen_stays_locked(self):
+        kvmd = FakeKvmd(online=True, text="Ada Lovelace\nEnter Password\nSleep Restart Shut Down")
+        for t in range(0, 6):
+            st = W.once({"name": "studio", "user_names": ["Ada"]}, kvmd, None, lambda m: None, now=t * 60000)
+            self.assertFalse(st["can"]["unlock"])
+        self.assertEqual([p for p in kvmd.posts if "print" in p[0]], [])
+        self.assertFalse(any(e.get("kind") == "unlock" for e in W.load("state.json", {}).get("ledger", [])))
+
+
+class LiveFindings(unittest.TestCase):
+    """From the independent review after the real restart (2026-11-08)."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def tick(self, bw, now, usb, mode=(2560, 1440), frame=None, kvm_boot="b1", up=5000):
+        return W.boot_tick(bw, now, {"usb": usb, "mode": mode, "frame": frame, "kvm_boot": kvm_boot}, W.BOOT, up)
+
+    def test_a_usb_reset_without_a_dark_screen_is_not_a_boot(self):
+        bw, _, _ = self.tick(None, 0, 10.0)
+        bw, _, note = self.tick(bw, 3000, 900.0)
+        self.assertIsNone(bw.get("pending"))
+        self.assertIn("not a boot", note)
+        bw, _, _ = self.tick(bw, 6000, 900.0, mode=None)
+        bw, _, note = self.tick(bw, 9000, 1500.0)
+        self.assertTrue(bw.get("pending"))
+        self.assertIn("boot seen", note)
+
+    def test_a_kvm_reboot_during_a_power_cut_still_sees_the_mac_boot(self):
+        bw, _, _ = self.tick(None, 0, 30960.7, up=31000)
+        # Power cut: the KVM reboots too, so its kernel clock restarts from zero and its boot id changes. Its own dark
+        # proves nothing; the FileVault screen it was taught at a boot does.
+        W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot")
+        bw, _, note = self.tick(bw, 60000, 16.9, mode=None, kvm_boot="b2", up=40)
+        self.assertFalse(bw.get("pending"), note)
+        f = FV["filevault-023232"]
+        seen = W.prompt_seen(f)
+        bw, _, note = W.boot_tick(bw, 63000, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2", "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 43)
+        self.assertTrue(bw.get("pending"), note)
+
+    def test_pulling_the_kvms_power_never_unlocks_a_lock_screen(self):
+        # Morgan's review, round 2: a KVM reboot (a PoE blip, or someone pulling its cable) while the Mac sits at a
+        # taught lock screen. No dark screen, so no boot, so never a type.
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "test")
+        bw, _, _ = self.tick(None, 0, 30960.7, up=31000)
+        for k in range(40):
+            f = LUM["lock-later"]
+            bw, act, note = W.boot_tick(bw, 60000 + k * 3000, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2",
+                                                                "prompt_visible": W.prompt_seen(f)[0], "prompt_kind": W.prompt_seen(f)[3]}, W.BOOT, 40 + k * 3)
+            self.assertNotEqual(act, "type", note)
+        self.assertIsNone(bw.get("pending"))
+
+    def test_the_outbox_cannot_attend(self):
+        r = W.handle({"op": "power_cycle", "args": {"attended": True}}, {"name": "studio"}, None, None, lambda m: None, 10**6, {"ledger": []}, via="outbox")
+        self.assertFalse(r["ok"])
+        self.assertIn("SSH only", r["result"])
+
+    def test_no_escape_and_no_typing_from_agents_at_a_password_screen(self):
+        W.save("status.json", {"obs": {"screen": "login"}})
+        k = FakeKvmd()
+        r = W.handle({"op": "key", "args": {"combo": "esc"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable")
+        r = W.handle({"op": "type", "args": {"text": "hunter2"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertEqual(k.posts, [])
+        W.save("status.json", {"obs": {"screen": "desktop"}})
+        self.assertTrue(W.handle({"op": "key", "args": {"combo": "esc"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})["ok"])
+
+
+class TaughtAtFileVault(unittest.TestCase):
+    """The restart of 2026-11-09 on real frames: the sitter refused a FileVault screen it had only been taught as a lock
+    screen; taught at the FileVault screen itself (during the boot, once), it matches every FileVault frame and nothing
+    else: not the lock screen, and not the wallpaper the KVM saw on 2026-11-08, when no field ever reached its picture."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def test_a_lock_screen_lesson_does_not_open_filevault(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        for k in ("filevault-023155", "filevault-023232"):
+            self.assertFalse(W.prompt_seen(FV[k])[0], k)
+            self.assertLess(W.prompt_seen(FV[k])[1], W.PROMPT_RECALL, k)
+
+    def test_taught_at_filevault_it_sees_filevault_and_nothing_else(self):
+        n = W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot")
+        self.assertEqual(n, 1)
+        for k in ("filevault-023155", "filevault-023203", "filevault-023232"):
+            seen = W.prompt_seen(FV[k])
+            self.assertTrue(seen[0], k)
+            self.assertEqual(seen[3], "boot", k)
+        for k, f in (("lock", LUM["lock-a"]), ("lock later", LUM["lock-later"]), ("incident", FV["incident-no-field"]), ("third display", LUM["third-display-lock"])):
+            seen = W.prompt_seen(f)
+            self.assertFalse(seen[0], k)
+            self.assertLess(seen[1], 0.1, k)
+        self.assertFalse(W.prompt_seen(LUM["desktop"])[0])
+
+    def test_the_restart_types_once_at_the_field(self):
+        W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot")
+        bw, now = None, 1_000_000
+        bw, _, _ = W.boot_tick(bw, now, {"usb": 30960.7, "mode": (2560, 1440), "frame": LUM["desktop"]}, W.BOOT, 31000)
+        bw, _, _ = W.boot_tick(bw, now + 2000, {"usb": 30960.7, "mode": None, "frame": None}, W.BOOT, 31000)
+        acts = []
+        for k in range(12):
+            f = FV["filevault-023232"]
+            seen = W.prompt_seen(f)
+            bw, act, note = W.boot_tick(bw, now + 32000 + k * 3000, {"usb": 30990.0, "mode": (2560, 1440), "frame": f, "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 31040)
+            acts.append(act)
+        self.assertIn("type", acts)
+
+    def test_a_kvm_that_just_started_sees_filevault_only_by_its_lesson(self):
+        W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot")
+        f = FV["filevault-023232"]
+        seen = W.prompt_seen(f)
+        bw, _, note = W.boot_tick(None, 50000, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2", "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 40)
+        self.assertTrue(bw.get("pending"), note)
+        self.assertIn("FileVault prompt it was taught at a boot", note)
+        # A running KVM never infers a boot from the picture alone.
+        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2", "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 4000)
+        self.assertIsNone(bw.get("pending"))
+
+    def test_a_lock_lesson_never_counts_as_a_boot(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        f = LUM["lock-later"]
+        seen = W.prompt_seen(f)
+        self.assertEqual(seen[3], "lock")
+        bw, _, _ = W.boot_tick(None, 0, {"usb": 16.9, "mode": (2560, 1440), "frame": f, "kvm_boot": "b2", "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 40)
+        self.assertIsNone(bw.get("pending"))
+
+
+class AgentsHands(unittest.TestCase):
+    """An agent types and presses Escape only on a desktop read fresh from the KVM's picture; the outbox can't unlock a
+    plain lock screen."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def test_a_stale_desktop_status_does_not_let_an_agent_type_at_a_login_window(self):
+        W.save("status.json", {"obs": {"screen": "desktop"}})
+        k = FakeKvmd(text="Ari Mendelow Enter Password")
+        r = W.handle({"op": "type", "args": {"text": "hello"}}, {"name": "studio", "user_names": ["Ari Mendelow"]}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable", r)
+        r = W.handle({"op": "key", "args": {"combo": "esc"}}, {"name": "studio", "user_names": ["Ari Mendelow"]}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertEqual(r["code"], "action-unavailable", r)
+        self.assertEqual(k.posts, [])
+
+    def test_a_desktop_read_fresh_lets_an_agent_type(self):
+        k = FakeKvmd()
+        r = W.handle({"op": "type", "args": {"text": "hello"}}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})
+        self.assertTrue(r["ok"], r)
+
+    def test_the_outbox_cannot_unlock_a_lock_screen(self):
+        k = FakeKvmd(text="Ari Mendelow Enter Password")
+        W.set_password_trust("verified", "test")
+        saved = W.load_secret
+        W.load_secret = lambda name, key=None: "pw" if name == "mac" else None
+        try:
+            r = W.handle({"op": "unlock"}, {"name": "studio", "user_names": ["Ari Mendelow"]}, k, None, lambda m: None, 10**6, {"ledger": []}, via="outbox")
+        finally:
+            W.load_secret = saved
+        self.assertFalse(r["ok"], r)
+        self.assertIn("no password prompt it was taught", r["result"])
+        self.assertFalse([p for p, _ in k.posts if "print" in p or "Enter" in p], "a lone Shift to wake the screen, nothing typed")
+
+
+class OnlyTheBootLesson(unittest.TestCase):
+    """Morgan's review, round 3: a dark screen and a keyboard re-enumeration also come from a sleep and wake, or a
+    reseated cable. So the sitter types by itself only at the prompt taught during a boot, never at the lock screen."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def test_a_wake_at_a_taught_lock_screen_is_reported_never_typed(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        bw, now = None, 1_000_000
+        bw, _, _ = W.boot_tick(bw, now, {"usb": 900.0, "mode": (2560, 1440), "frame": LUM["desktop"]}, W.BOOT, 31000)
+        bw, _, _ = W.boot_tick(bw, now + 2000, {"usb": 900.0, "mode": None, "frame": None}, W.BOOT, 31000)
+        acts = []
+        for k in range(20):
+            f = LUM["lock-later"]
+            seen = W.prompt_seen(f)
+            bw, act, note = W.boot_tick(bw, now + 5000 + k * 3000, {"usb": 950.0, "mode": (2560, 1440), "frame": f, "prompt_visible": seen[0], "prompt_kind": seen[3]}, W.BOOT, 31010)
+            acts.append(act)
+        self.assertNotIn("type", acts)
+        self.assertEqual(acts.count("blind"), 1)
+        self.assertIn("only when you ask", bw["stuck"])
+
+    def test_the_rules_never_type_at_a_lock_lesson_by_themselves(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        saved = W.frame_raw, W.frame_features
+        try:
+            W.frame_raw = lambda kvmd, run=None: (b"", 1, 1)
+            W.frame_features = lambda y, w, h: LUM["lock-later"]
+            class K:
+                def json(self, p):
+                    raise RuntimeError("no OCR on this KVM")
+            self.assertFalse(W.see_field({}, K(), need_boot=True)[0])
+            self.assertTrue(W.see_field({}, K())[0], "asked for over SSH, the lock screen is fine")
+        finally:
+            W.frame_raw, W.frame_features = saved
+
+    def test_ocr_unlock_alone_is_not_filevault(self):
+        self.assertNotEqual(W.classify_screen("Ari Mendelow Enter Password Touch ID or Enter Password to Unlock", ["Ari Mendelow"]), "filevault")
+
+    def test_no_keys_or_clicks_from_agents_at_a_password_screen(self):
+        W.save("status.json", {"obs": {"screen": "login"}})
+        k = FakeKvmd(text="Ari Mendelow Enter Password")
+        for cmd in ({"op": "key", "args": {"combo": "enter"}}, {"op": "key", "args": {"combo": "a"}}, {"op": "click", "args": {"x": 1, "y": 1}}):
+            r = W.handle(cmd, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []})
+            self.assertEqual(r["code"], "action-unavailable", cmd)
+        self.assertEqual(k.posts, [])
+
+    def test_filevault_lessons_need_a_recent_boot(self):
+        self.assertFalse(W.boot_recent({"pending": 1000}, now=1000 + 16 * 60000))
+        self.assertTrue(W.boot_recent({"pending": 1000}, now=1000 + 60000))
+        self.assertFalse(W.boot_recent({}, now=1000))
+
+    def test_a_lock_screen_cannot_be_filed_as_filevault(self):
+        # Morgan's review, round 5: after a wake looks like a boot, someone runs learn-prompt --filevault at the lock
+        # screen. If the sitter already knows that screen as the lock screen, it refuses.
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        with self.assertRaises(ValueError) as e:
+            W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-later"]], "wrong", kind="boot")
+        self.assertIn("can't tell your lock screen from FileVault", str(e.exception))
+        # The real FileVault screen is distinct, so it is learned.
+        self.assertEqual(W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot"), 2)
+
+    def test_a_wake_reads_as_the_lock_screen_not_filevault(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        saved = W.LAST_FRAME
+        try:
+            raw = (bytes(2560 * 1440), 2560, 1440)
+            ff = W.frame_features
+            W.frame_features = lambda y, w, h: LUM["lock-later"]
+            o = W.eyes_without_ocr({"name": "studio"}, {}, raw, {"pending": int(time.time() * 1000)})
+        finally:
+            W.frame_features = ff
+            W.LAST_FRAME = saved
+        self.assertEqual(o["screen"], "login")
+

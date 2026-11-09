@@ -17,7 +17,7 @@ export function classifyScreen(text, { userNames = [] } = {}) {
   const names = userNames.filter(Boolean).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const around = new RegExp(`(Restart|Shut Down|Sleep|FileVault|Other|Switch User${names.length ? `|${names.join('|')}` : ''})`, 'i');
   if (/Enter Password|Password/i.test(t) && around.test(t)) {
-    return { kind: /FileVault|Disk Password|unlock/i.test(t) ? 'filevault' : 'login', why: 'the password prompt is on screen' };
+    return { kind: /FileVault|Disk Password/i.test(t) ? 'filevault' : 'login', why: 'the password prompt is on screen' };
   }
   if (/Screen Time|Lock Screen|is locked/i.test(t)) return { kind: 'login', why: 'the lock screen is on screen' };
   return { kind: 'unknown', why: `unrecognised: ${t.replace(/\s+/g, ' ').slice(0, 80)}` };

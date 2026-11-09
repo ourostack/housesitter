@@ -20,8 +20,8 @@ export function kvmHost(mac) {
 }
 
 // Root SSH to the KVM with housesitter's own key. Returns run(cmd, input) -> { status, stdout, stderr }.
-export function sshRunner(name, address, { run = spawnSync, home = os.homedir() } = {}) {
-  const args = ['-i', sshKeyPath(name, home), '-o', `UserKnownHostsFile=${knownHostsPath(name, home)}`, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8'];
+export function sshRunner(name, address, { run = spawnSync, home = os.homedir(), key = null } = {}) {
+  const args = ['-i', key ? key.replace(/^~(?=\/)/, home) : sshKeyPath(name, home), '-o', `UserKnownHostsFile=${knownHostsPath(name, home)}`, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8'];
   return async (cmd, input) => {
     const r = run('/usr/bin/ssh', [...args, `root@${address}`, cmd], { encoding: 'utf8', input: input ?? '', timeout: 120000 });
     return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
@@ -34,13 +34,15 @@ export function sitterClient(mac, { deps = {} } = {}) {
   const store = deps.secrets || secretStore();
   const routes = [];
   const host = kvmHost(mac);
-  if (deps.ssh || (host && fs.existsSync(sshKeyPath(mac.name)))) {
-    const sh = deps.ssh || sshRunner(mac.name, host);
+  const key = mac.kvm?.ssh_key ? mac.kvm.ssh_key.replace(/^~(?=\/)/, os.homedir()) : sshKeyPath(mac.name);
+  const dir = mac.kvm?.sitter_home || DIR;
+  if (deps.ssh || (host && fs.existsSync(key))) {
+    const sh = deps.ssh || sshRunner(mac.name, host, { key });
     routes.push({
       via: `ssh ${host}`,
       async status() { const r = await this.op('status'); return r.ok ? r.result : null; },
       async op(op, args = {}) {
-        const r = await sh(`python3 ${DIR}/sitter.py do ${op} ${quote(JSON.stringify(args))}`);
+        const r = await sh(`${dir === DIR ? '' : `HOUSESITTER_HOME=${quote(dir)} `}python3 ${dir}/sitter.py do ${op} ${quote(JSON.stringify(args))}`);
         try { return JSON.parse(String(r.stdout).trim().split('\n').at(-1)); } catch { return { ok: false, code: 'action-failed', result: `no answer over SSH (${String(r.stderr).trim().slice(0, 160) || `exit ${r.status}`})` }; }
       },
     });
