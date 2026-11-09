@@ -9,7 +9,7 @@ on:
 jobs:
   convert:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,7 +28,24 @@ jobs:
           (cd zoo/datasets/PPOCR/imgs && ls *.jpg *.png 2>/dev/null | sed "s#^#$PWD/#") > dataset.txt
           wc -l dataset.txt
           sha256sum models/*.onnx models/*.txt
-      - name: Convert
+      - name: Smoke model (a committed ONNX, converted first, to prove the NPU runs a small model at all)
+        run: |
+          python - <<'PY'
+          import glob
+          from rknn.api import RKNN
+          for src in glob.glob("npu/smoke/*.onnx"):
+              r = RKNN(verbose=False)
+              r.config(mean_values=[[0]], std_values=[[255]], target_platform="rv1126b")
+              ret = r.load_onnx(model=src) or r.build(do_quantization=False) or r.export_rknn(src[:-5] + ".rknn")
+              print(src, "ok" if ret == 0 else ret)
+              r.release()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-models
+          path: npu/smoke/*.rknn
+      - name: Convert (PP-OCRv4, kept for the record: too big for the Comet's NPU without its IOMMU)
+        if: false
         run: python npu/convert.py models dataset.txt
       - name: Clock reader (trained on synthetic menu bars, open fonts only)
         run: |
@@ -39,7 +56,7 @@ jobs:
           cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf fonts/ 2>/dev/null || true
           cp /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf fonts/ 2>/dev/null || true
           ls fonts
-          CLOCK_STEPS=3000 python npu/train_clock.py models fonts
+          CLOCK_N=40000 CLOCK_EPOCHS=30 CLOCK_BUDGET_SEC=1500 python npu/train_clock.py models fonts
           python - <<'PY'
           from rknn.api import RKNN
           for name, q in (("clock_fp.rknn", False), ("clock_i8.rknn", True)):
@@ -49,14 +66,8 @@ jobs:
               print(name, "ok" if ret == 0 else ret)
               r.release()
           PY
-      - name: Embedder (MobileNetV1 0.25, small enough for the Comet's NPU without its IOMMU)
-        run: |
-          pip install -q tensorflow-cpu==2.15.1 tf2onnx==1.16.1
-          find docs/proof -name '*.jpg' | sed "s#^#$PWD/#" > calib.txt
-          cat dataset.txt >> calib.txt
-          wc -l calib.txt
-          python npu/build_embedder.py models calib.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: rknn-models
           path: |
