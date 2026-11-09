@@ -527,7 +527,7 @@ def apply_ingress(mode, run=subprocess.run, iface_up=lambda i: os.path.exists("/
                 v6note = "IPv6: off on %s (read back), so only tailscale0 speaks it; ip6tables unavailable" % (", ".join(sorted(seen)) or "every interface")
                 continue
             raise RuntimeError("%s failed: %s" % (" ".join(cmd), (r.stderr or "")[:120]))
-    out = "SSH and HTTPS from %s" % ("the LAN and the tailnet" if mode == "lan" else "the tailnet only (tailscale0)")
+    out = "SSH and HTTPS: %s" % ("home, unfiltered (anything that reaches the KVM may connect)" if mode == "lan" else "the tailnet only (tailscale0)")
     return "%s; %s" % (out, v6note) if v6note else out
 
 
@@ -2353,12 +2353,40 @@ def alert_test(cfg, kvmd, power, log, now=None, opener=None, again=False):
     return {"ok": res.startswith("posted"), "result": res, "why": act["why"], "sent": sent}
 
 
+SCREEN_WORDS = {"filevault": "FileVault", "desktop": "a desktop", "lock": "a lock screen", "login": "a login window", "blank": "black", "black": "black", "unknown": "nothing it knows"}
+
+
+def plain_signs(obs):
+    """What the sitter saw, in words a person reads at 3 a.m. (the same words in src/watchdog.mjs)."""
+    out = []
+    for k, v in sorted(obs.items()):
+        if v is None or k.endswith("_error") or k == "eyes":
+            continue
+        if k == "video":
+            out.append("picture on HDMI" if v else "no picture on HDMI")
+        elif k == "screen":
+            out.append("the screen shows %s" % SCREEN_WORDS.get(v, v))
+        elif k == "arp":
+            out.append("on the network" if v else "gone from the network")
+        elif k == "answers":
+            out.append("answers its health check" if v else "doesn't answer its health check")
+        elif k == "clock_ticking":
+            out.append("its clock is moving" if v else "its clock has stopped")
+        elif k == "beat_min":
+            out.append("last heartbeat %s min ago" % v)
+        elif k == "presence":
+            out.append("someone is logged in" if v else "nobody is logged in")
+        else:
+            out.append("%s=%s" % (k, v))
+    return "; ".join(out) or "none"
+
+
 def perform_notify(cfg, act, mem, obs, opener=urllib.request.urlopen):
     """The rules' notify action, as perform() sends it: a stuck message, or the one that says the Mac is back."""
     name = cfg.get("name", "your Mac")
     if act.get("recovered"):
         return notify(cfg, "%s is back" % name, "%s is healthy again (seen by its housesitter)." % name, opener=opener)
-    signs = ", ".join("%s=%s" % (a, b) for a, b in sorted(obs.items()) if b is not None and not a.endswith("_error"))
+    signs = plain_signs(obs)
     stuck = {"filevault": "is stuck at FileVault", "hung": "is frozen", "off": "is off", "down": "is not answering", "unknown": "is out of sight"}.get(mem["state"], "needs you (%s)" % mem["state"])
     return notify(cfg, "%s %s" % (name, stuck), "Seen by the housesitter on its KVM.\nStuck because: %s.\nSigns: %s." % (act["why"].replace("<mac>", name), signs), opener=opener)
 

@@ -378,7 +378,7 @@ export function steps() {
       // After the tailnet step: away from home, the KVM may only be reached over the tailnet, so it must have joined it.
       id: 'harden', title: "Harden the KVM: GL.iNet's cloud off (read back), and SSH and HTTPS only from where they should come",
       async run(x) {
-        if (x.dryRun) return { ok: true, detail: `would turn GL.iNet's cloud binding off and check it, then allow SSH and HTTPS from ${(x.location || x.mac.location || 'home') === 'home' ? 'the LAN and the tailnet' : 'the tailnet only'}` };
+        if (x.dryRun) return { ok: true, detail: `would turn GL.iNet's cloud binding off and check it, then ${(x.location || x.mac.location || 'home') === 'home' ? 'leave SSH and HTTPS unfiltered, as at home' : 'allow SSH and HTTPS from the tailnet only'}` };
         const hd = await x.deps.ssh(`python3 ${DIR}/sitter.py harden`);
         if (hd.status !== 0) return { ok: false, stop: true, detail: `not hardened: ${String(hd.stderr || hd.stdout).trim().slice(0, 200)}` };
         let j = {};
@@ -454,7 +454,7 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
           const away = JSON.parse(Object.entries(s.files).find(([f]) => f.endsWith('/config.json'))?.[1] || '{}').location === 'away';
           if (s.hardenFails) return { status: 1, stdout: '', stderr: "harden: GL.iNet's cloud binding did not read back as disabled" };
           if (away && !s.ssh.some((c) => c.startsWith('tailscale up'))) return { status: 1, stdout: '', stderr: "harden: refusing tailnet-only SSH and HTTPS: this KVM hasn't joined a running tailnet, so nothing could reach it" };
-          return { status: 0, stdout: `{"gl_cloud": "off (read back)", "ingress": "SSH and HTTPS from ${away ? 'the tailnet only (tailscale0)' : 'the LAN and the tailnet'}"}\n`, stderr: '' };
+          return { status: 0, stdout: `{"gl_cloud": "off (read back)", "ingress": "SSH and HTTPS: ${away ? 'the tailnet only (tailscale0)' : 'home, unfiltered (anything that reaches the KVM may connect)'}"}\n`, stderr: '' };
         }
         if (cmd.includes('sitter.py eyes')) return { status: 0, stdout: `${JSON.stringify({ mode: [2560, 1440], ocr: null, frame: 'desktop', size: [2560, 1440] })}\n`, stderr: '' };
         if (cmd.includes('sitter.py hello')) { s.hello = (s.hello || 0) + 1; return { status: 0, stdout: '{"sent": "posted 200"}\n', stderr: '' }; }

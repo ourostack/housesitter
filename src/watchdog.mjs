@@ -149,6 +149,25 @@ export function tick(mem, ledger, obs, now, caps, cfg = DEFAULTS) {
 // The message a watcher sends when it's stuck (or when the Mac is back). Never carries a secret: only signs.
 const STUCK = { filevault: 'is stuck at FileVault', hung: 'is frozen', off: 'is off', down: 'is not answering', unknown: 'is out of sight', degraded: 'needs a look' };
 
+const SCREEN_WORDS = { filevault: 'FileVault', desktop: 'a desktop', lock: 'a lock screen', login: 'a login window', blank: 'black', black: 'black', unknown: 'nothing it knows' };
+
+// What the sitter saw, in words a person reads at 3 a.m. (the same words in device/sitter.py).
+export function plainSigns(obs) {
+  const out = [];
+  for (const [k, v] of Object.entries(obs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (v == null || k.endsWith('_error') || k === 'eyes') continue;
+    if (k === 'video') out.push(v ? 'picture on HDMI' : 'no picture on HDMI');
+    else if (k === 'screen') out.push(`the screen shows ${SCREEN_WORDS[v] || v}`);
+    else if (k === 'arp') out.push(v ? 'on the network' : 'gone from the network');
+    else if (k === 'answers') out.push(v ? 'answers its health check' : "doesn't answer its health check");
+    else if (k === 'clock_ticking') out.push(v ? 'its clock is moving' : 'its clock has stopped');
+    else if (k === 'beat_min') out.push(`last heartbeat ${v} min ago`);
+    else if (k === 'presence') out.push(v ? 'someone is logged in' : 'nobody is logged in');
+    else out.push(`${k}=${v}`);
+  }
+  return out.join('; ') || 'none';
+}
+
 export function message(name, mem, act, obs) {
   const since = mem.since != null ? new Date(mem.since).toISOString() : '?';
   if (act.recovered) return { subject: `${name} is back`, body: `${name} is healthy again (state since ${since}).` };
@@ -157,7 +176,7 @@ export function message(name, mem, act, obs) {
     body: [
       `${name} has been ${mem.state} since ${since}.`,
       `Stuck because: ${act.why.replaceAll('<mac>', name)}.`,
-      `Signs: ${Object.entries(obs).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}.`,
+      `Signs: ${plainSigns(obs)}.`,
       `Look: housesitter status ${name}; housesitter screenshot ${name}.`,
     ].join('\n'),
   };

@@ -13,7 +13,7 @@ Every three seconds the KVM decodes a frame and reads it itself. It sends a JPEG
 ffmpeg -framerate 4 -pattern_type glob -i 'proof-studio/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p proof-studio/proof.mp4
 ```
 
-What a good run shows, in order: the desktop (in the timeline only); black while it restarts; the FileVault screen; the sitter's `unlock` in the timeline; the desktop again (timeline only).
+What a good run shows, in order: the desktop (in the timeline only); black while it restarts; the FileVault screen; the sitter's `unlock` in its log (`sitter.log`); the desktop again (timeline only).
 
 Real ones: [docs/proof/2026-11-09-v0.2](proof/2026-11-09-v0.2/), our Mac mini on 8 November, hands-off on housesitter 0.2, 70 seconds from Restart to desktop; and [docs/proof/2026-11-09](proof/2026-11-09/), the same night on 0.1, 79 seconds. Before you publish a frame with typed dots in the password field, blur the field: the dots are all the KVM ever sees, but their count is the password's length.
 
