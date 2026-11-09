@@ -96,7 +96,7 @@ function wrapAt(text, width) {
 export function render({ lines, incidents }, { color = false } = {}) {
   const c = (code, s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
   const tint = { event: '33', mac: '2', state: '36', act: '32', notify: '35', done: '1;32', 'msg-title': '1;97', msg: '97' };
-  const out = [c('2', 'housesitter demo: a rehearsal with a pretend Mac and a pretend KVM. The rules and the client are the real ones.'), ''];
+  const out = [c('2', 'housesitter demo night: a pretend Mac and KVM, run by the real rules and client.'), ''];
   for (const l of lines) {
     if (l.tag === 'msg' || l.tag === 'msg-title') {
       // The message, as a block under its line, wrapped at a space so it reads like the notification it is.
