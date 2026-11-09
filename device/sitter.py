@@ -15,8 +15,10 @@ It decides with the same rules as src/watchdog.mjs (both run spec/watchdog-cases
     minutes with no laptop, cloud or internet. Only where the password field itself is on the KVM's own picture: read
     by OCR, or matched against a prompt an operator taught it from three frames (learn-prompt). By itself only after a
     boot (the screen went dark, then the Mac enumerated the KVM's keyboard again; or the prompt it was taught at a boot
-    is on the picture of a KVM that has itself just started); a plain lock screen only when you ask over SSH. Never
-    blind: a settled screen without the field is reported, never typed into. At most twice a boot, three times an hour;
+    is on the picture of a KVM that has itself just started); a plain lock screen, or the login window's list of users
+    (it clicks the account's tile it was taught), only when you ask over SSH or the config's unlock_lock_screen allows
+    it ("on_request": while an agent's want_desktop request stands). Never blind: a settled screen without the field is
+    reported, never typed into. At most twice a boot, three times an hour (attended tests have their own budget);
   - power-cycle a hung Mac through a smart plug (Shelly Switch.Set with toggle_after, so the plug switches itself
     back on even if this process dies), switch it on, or press its power button with a Fingerbot;
   - tell you when it's stuck (ntfy or any webhook), and once more when the Mac is back.
@@ -25,7 +27,8 @@ The outbox (optional): two secret gists. The sitter writes its status to the out
 commands every couple of seconds, with ETags. That is how agents reach it from anywhere with only GitHub.
 
 Secrets are root-only 0600 files, sealed with a key bound to this device's own ids, so a copied file is useless
-elsewhere: mac.cred (the Mac's password), kvmd.cred (the KVM's admin password), outbox.cred (a gist-only token).
+elsewhere: mac.cred (the Mac's password), kvmd.cred (the KVM's admin password), outbox.cred (a gist-only token),
+plug.cred (the smart plug's own password).
 Written by `sitter.py store-secret <name>` from stdin; never in argv, logs or status.
 
 Files: $HOUSESITTER_HOME (default /etc/kvmd/user/housesitter): config.json, *.cred, state.json, status.json,
@@ -51,7 +54,7 @@ VERSION = "0.1.0"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
-    "hung_min": 5, "off_min": 2, "down_min": 10, "filevault_min": 0, "filevault_wait_min": 10, "unlocks_per_hour": 3, "settle_min": 4,
+    "hung_min": 5, "off_min": 2, "down_min": 10, "filevault_min": 0, "filevault_wait_min": 10, "unlocks_per_hour": 3, "attended_test_unlocks_per_hour": 30, "settle_min": 4,
     "cycle_gap_min": 30, "cycles_per_day": 3, "on_gap_min": 10, "max_failed": 2, "remind_hours": 6, "idle_watts": 2,
 }
 
@@ -63,6 +66,11 @@ def raw_state(o, cfg=DEFAULTS):
     up = g("answers") is True or (g("beat_min") is not None and g("beat_min") <= 3 and g("presence") is not False)
     if up:
         return "degraded" if g("screen") == "filevault" else "healthy"
+    if (all(g(k) is None for k in ("answers", "beat_min", "presence")) and g("screen") == "desktop" and g("clock_ticking") is True
+            and g("arp") is not False):
+        # No health probe and no heartbeat to ask: a desktop whose clock moves (and a network stack that answers, where
+        # the KVM can see it) is as up as this watcher can know. Without this an incident would never close.
+        return "healthy"
     if g("screen") in ("filevault", "login"):
         return "filevault"
     watts = g("watts")
@@ -455,16 +463,72 @@ def tailnet_running(run=subprocess.run):
         return False
 
 
-def apply_ingress(mode, run=subprocess.run, iface_up=lambda i: os.path.exists("/sys/class/net/%s" % i), joined=None):
+def ipv6_present(exists=os.path.exists):
+    """Does this kernel speak IPv6 at all? Without it there is nothing for ip6tables to filter."""
+    return exists("/proc/net/if_inet6")
+
+
+def ipv6_off_except_tailnet(run=subprocess.run, ifaces=None, read=None, write=None):
+    """For a KVM whose ip6tables can't start (a GL-RM1PE has no modules.dep): turn IPv6 off on every interface except
+    lo and tailscale0, then read each back. Returns (ok, what was found per interface)."""
+    root = "/proc/sys/net/ipv6/conf"
+    if ifaces is None:
+        try:
+            ifaces = sorted(os.listdir(root))
+        except OSError:
+            ifaces = []
+    read = read or (lambda p: open(p).read())
+
+    def _write(p, v):
+        with open(p, "w") as f:
+            f.write(v)
+    write = write or _write
+    seen = {}
+    for i in ifaces:
+        if i in ("lo", "tailscale0", "all", "default"):
+            continue
+        p = "%s/%s/disable_ipv6" % (root, i)
+        try:
+            write(p, "1")
+        except OSError:
+            pass
+        try:
+            seen[i] = read(p).strip() == "1"
+        except OSError:
+            seen[i] = False
+    return all(seen.values()), seen
+
+
+def apply_ingress(mode, run=subprocess.run, iface_up=lambda i: os.path.exists("/sys/class/net/%s" % i), joined=None, v6=None, v6_off=None):
+    """Put the firewall in place for a mode. ip6tables is optional on some KVMs (GL.iNet's firmware can't load its
+    module): at home there are no DROP rules, so there is nothing for IPv6 to filter; away it fails closed unless IPv6
+    is off, and read back as off, on every interface but tailscale0."""
     if mode == "tailnet" and not (iface_up("tailscale0") and (joined if joined is not None else tailnet_running(run))):
         raise RuntimeError("refusing tailnet-only SSH and HTTPS: this KVM hasn't joined a running tailnet, so nothing could reach it. Join first (adopt does, with a tagged auth key)")
+    v6note = None
     for cmd in ingress_rules(mode):
+        if cmd[0] == "ip6tables" and v6note:
+            continue
         r = run(cmd, capture_output=True, text=True, timeout=10)
         if cmd[1] == "-C" and r.returncode != 0:
             r = run([cmd[0], "-I", "INPUT", "-j", CHAIN], capture_output=True, text=True, timeout=10)
         if r.returncode != 0 and cmd[1] not in ("-N",):
+            if cmd[0] == "ip6tables":
+                why = (r.stderr or "").strip()[:120]
+                if not (v6 if v6 is not None else ipv6_present()):
+                    v6note = "IPv6: this kernel has none, so nothing to filter"
+                    continue
+                if mode == "lan":
+                    v6note = "IPv6: nothing to filter at home (ip6tables unavailable: %s)" % why
+                    continue
+                ok, seen = (v6_off or ipv6_off_except_tailnet)()
+                if not ok:
+                    raise RuntimeError("ip6tables unavailable (%s) and IPv6 is still on for %s: refusing to call it tailnet-only" % (why, ", ".join(i for i, v in seen.items() if not v) or "an interface"))
+                v6note = "IPv6: off on %s (read back), so only tailscale0 speaks it; ip6tables unavailable" % (", ".join(sorted(seen)) or "every interface")
+                continue
             raise RuntimeError("%s failed: %s" % (" ".join(cmd), (r.stderr or "")[:120]))
-    return "SSH and HTTPS from %s" % ("the LAN and the tailnet" if mode == "lan" else "the tailnet only (tailscale0)")
+    out = "SSH and HTTPS from %s" % ("the LAN and the tailnet" if mode == "lan" else "the tailnet only (tailscale0)")
+    return "%s; %s" % (out, v6note) if v6note else out
 
 
 CERT_PATHS = ("/etc/kvmd/nginx/ssl/server.crt", "/etc/kvmd/nginx/ssl/server.pem", "/etc/nginx/ssl/server.crt")
@@ -569,17 +633,97 @@ def tcp_answers(health, connect=socket.create_connection):
 
 # ---------- power: pluggable adapters ----------
 
+def _h(x):
+    return hashlib.sha256(x.encode("utf-8")).hexdigest()
+
+
+def shelly_digest(challenge, method, uri, password, user="admin", cnonce=None, nc=1):
+    """Shelly Gen2+ HTTP digest (RFC 7616, SHA-256): the Authorization header for one request."""
+    f = dict(re.findall(r'(\w+)="?([^",]+)"?', challenge or ""))
+    cnonce = cnonce or os.urandom(8).hex()
+    ha1 = _h("%s:%s:%s" % (user, f.get("realm", ""), password))
+    resp = _h("%s:%s:%08x:%s:auth:%s" % (ha1, f.get("nonce", ""), nc, cnonce, _h("%s:%s" % (method, uri))))
+    return ('Digest username="%s", realm="%s", nonce="%s", uri="%s", algorithm=SHA-256, response="%s", qop=auth, nc=%08x, cnonce="%s"'
+            % (user, f.get("realm", ""), f.get("nonce", ""), uri, resp, nc, cnonce))
+
+
+def shelly_rpc_auth(err, password, user="admin", cnonce=None):
+    """The JSON-RPC "auth" object Shelly wants where there is no HTTP (Bluetooth), from a 401 error's message."""
+    try:
+        c = json.loads(err.get("message", "{}"))
+    except ValueError:
+        c = {}
+    cnonce = cnonce or int.from_bytes(os.urandom(4), "big")
+    ha1 = _h("%s:%s:%s" % (user, c.get("realm", ""), password))
+    resp = _h("%s:%s:%s:%s:auth:%s" % (ha1, c.get("nonce", ""), c.get("nc", 1), cnonce, _h("dummy_method:dummy_uri")))
+    return {"realm": c.get("realm", ""), "username": user, "nonce": c.get("nonce", ""), "cnonce": cnonce, "response": resp, "algorithm": "SHA-256"}
+
+
+def find_shelly(mac, subnet=None, probe=None, timeout=0.5, run=subprocess.run):
+    """The plug's address on this KVM's network now, found by its MAC (DHCP may have moved it): asks every address on
+    the /24 for /shelly, which needs no password. Returns "http://<ip>" or None."""
+    import concurrent.futures as cf  # noqa: PLC0415
+    want = str(mac or "").replace(":", "").upper()
+    if not want:
+        return None
+    if subnet is None:
+        out = run(["sh", "-c", "ip -4 -o addr show eth0"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"inet (\d+\.\d+\.\d+)\.\d+/", out or "")
+        if not m:
+            return None
+        subnet = m.group(1)
+
+    def ask(ip):
+        try:
+            if probe:
+                d = probe(ip)
+            else:
+                with urllib.request.urlopen("http://%s/shelly" % ip, timeout=timeout) as r:
+                    d = json.loads(r.read().decode("utf-8"))
+            return ip if str(d.get("mac", "")).replace(":", "").upper() == want else None
+        except Exception:  # noqa: BLE001
+            return None
+    with cf.ThreadPoolExecutor(32) as ex:
+        for ip in ex.map(ask, ["%s.%d" % (subnet, i) for i in range(1, 255)]):
+            if ip:
+                return "http://%s" % ip
+    return None
+
+
 class ShellyHttp:
-    """Shelly Gen2+ local RPC over the LAN. Switch.Set with toggle_after: the plug switches itself back on."""
+    """Shelly Gen2+ local RPC over the LAN, with its digest password when one is set. Switch.Set with toggle_after:
+    the plug switches itself back on even if this process dies. If the plug has moved (DHCP), it is found again by its
+    MAC on this KVM's network."""
     kind = "shelly"
 
-    def __init__(self, url, opener=urllib.request.urlopen):
-        self.url, self.opener = url.rstrip("/"), opener
+    def __init__(self, url, opener=urllib.request.urlopen, password=None, mac=None, refind=find_shelly):
+        self.url, self.opener, self.password, self.mac, self.refind = url.rstrip("/"), opener, password, mac, refind
+
+    def _get(self, uri):
+        req = urllib.request.Request(self.url + uri)
+        try:
+            with self.opener(req, timeout=5) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code != 401 or not self.password:
+                raise
+            hdr = {"Authorization": shelly_digest(e.headers.get("WWW-Authenticate", ""), "GET", uri, self.password)}
+            with self.opener(urllib.request.Request(self.url + uri, headers=hdr), timeout=5) as r:
+                return json.loads(r.read().decode("utf-8"))
 
     def rpc(self, method, **params):
         q = urllib.parse.urlencode({k: (str(v).lower() if isinstance(v, bool) else v) for k, v in params.items()})
-        with self.opener("%s/rpc/%s?%s" % (self.url, method, q), timeout=5) as r:
-            return json.loads(r.read().decode("utf-8"))
+        uri = "/rpc/%s?%s" % (method, q)
+        try:
+            return self._get(uri)
+        except urllib.error.HTTPError:
+            raise
+        except Exception:  # noqa: BLE001  (no answer at the old address: maybe a new one)
+            new = self.refind(self.mac) if self.mac and self.refind else None
+            if not new or new.rstrip("/") == self.url:
+                raise
+            self.url = new.rstrip("/")
+            return self._get(uri)
 
     def status(self):
         s = self.rpc("Switch.GetStatus", id=0)
@@ -604,11 +748,12 @@ class ShellyBle(ShellyHttp):
     """The same Shelly plug over Bluetooth, for a network the plug can't join (a captive-portal guest network).
     Shelly's documented RPC-over-GATT framing: write the request length (4 bytes, big-endian) to tx_ctl, the JSON to
     data, then read the reply length from rx_ctl and the reply from data. `connect(mac)` gives a context manager with
-    write(uuid, bytes) and read(uuid) -> bytes (bleak on a KVM with a Bluetooth adapter, a fake in tests)."""
+    write(uuid, bytes) and read(uuid) -> bytes (bleak on a KVM with a Bluetooth adapter, a fake in tests). A password
+    set on the plug is answered with the JSON-RPC auth object."""
     kind = "shelly-ble"
 
-    def __init__(self, mac, connect=None, chunk=180):
-        self.mac, self.connect, self.chunk, self._id = mac, connect or bleak_connect, chunk, 0
+    def __init__(self, mac, connect=None, chunk=180, password=None):
+        self.mac, self.connect, self.chunk, self._id, self.password = mac, connect or bleak_connect, chunk, 0, password
 
     def rpc(self, method, **params):
         self._id += 1
@@ -625,8 +770,11 @@ class ShellyBle(ShellyHttp):
                     break
                 buf += part
         reply = json.loads(buf.decode("utf-8"))
-        if "error" in reply:
-            raise RuntimeError("plug: %s" % reply["error"].get("message", reply["error"]))
+        err = reply.get("error")
+        if err and err.get("code") == 401 and self.password and "auth" not in params:
+            return self.rpc(method, auth=shelly_rpc_auth(err, self.password), **params)
+        if err:
+            raise RuntimeError("plug: %s" % err.get("message", err))
         return reply.get("result", {})
 
 
@@ -693,10 +841,11 @@ class CommandPower:
 def make_power(cfg):
     p = cfg.get("power") or {}
     k = p.get("kind")
+    pw = load_secret("plug") if p.get("auth") else None
     if k == "shelly" and p.get("url"):
-        return ShellyHttp(p["url"])
-    if k == "shelly-ble" and p.get("mac"):
-        return ShellyBle(p["mac"])
+        return ShellyHttp(p["url"], password=pw, mac=p.get("mac"))
+    if k == "shelly-ble" and (p.get("ble_mac") or p.get("mac")):
+        return ShellyBle(p.get("ble_mac") or p["mac"], password=pw)
     if k == "command":
         return CommandPower(p)
     return None
@@ -706,7 +855,7 @@ def make_power(cfg):
 
 HW_IDS = ("/sys/block/mmcblk0/device/cid", "/sys/block/mmcblk1/device/cid", "/proc/device-tree/serial-number")
 SOFT_IDS = ("/etc/machine-id",)
-SECRET_NAMES = ("mac", "kvmd", "outbox")
+SECRET_NAMES = ("mac", "kvmd", "outbox", "plug")
 
 
 def device_key(paths=None):
@@ -809,17 +958,55 @@ def look_now(kvmd, cfg):
 SLEEP = time.sleep
 
 
-def see_field(cfg, kvmd, need_boot=False):
-    """A fresh look: is the FileVault or login password field itself visible on the KVM's own picture? Returns
-    (visible, what the screen reads as, how). With OCR, the field's own words; without, a match of a frame against a
-    password prompt an operator taught the sitter while looking at it (learn-prompt). Nothing else counts. need_boot:
-    the sitter is about to type by itself, so a frame must match a prompt taught during a boot (the FileVault screen),
-    never one taught at the lock screen."""
+LESSON = {"boot": "FileVault", "lock": "lock-screen", "grid": "user-list"}
+
+
+def lock_policy(cfg):
+    """unlock_lock_screen: false (the default: a plain lock screen is your lock, unlocked only when you ask over SSH),
+    "on_request" (also while an agent's want-desktop request stands) or true (any lock screen it sees)."""
+    p = cfg.get("unlock_lock_screen", False)
+    return p if p in (True, "on_request") else False
+
+
+def desktop_wanted(now=None):
+    """An agent asked for the desktop (want_desktop) and the request hasn't run out."""
+    now = now if now is not None else int(time.time() * 1000)
+    w = load("desktop_wanted.json", {}) or {}
+    return bool(w.get("until")) and now <= w["until"]
+
+
+def want_desktop(minutes=10, by="agent", now=None):
+    now = now if now is not None else int(time.time() * 1000)
+    try:
+        minutes = max(1, min(int(minutes), 60))
+    except (TypeError, ValueError):
+        minutes = 10
+    save("desktop_wanted.json", {"until": now + minutes * 60000, "by": str(by)[:60], "at": now})
+    return {"until": now + minutes * 60000, "minutes": minutes}
+
+
+def lock_allowed(cfg, now=None):
+    p = lock_policy(cfg)
+    return p is True or (p == "on_request" and desktop_wanted(now))
+
+
+def kinds_for(cfg, by, now=None):
+    """The lessons the sitter may act on for this caller. You over SSH ("request", "attended-test"): every lesson.
+    Anyone else (the boot watch, the rules, the outbox): the FileVault lesson, plus the lock screen and the login
+    window's user list only when unlock_lock_screen allows it right now."""
+    if by in ("request", "attended-test") or lock_allowed(cfg, now):
+        return ("boot", "lock", "grid")
+    return ("boot",)
+
+
+def see_field(cfg, kvmd, kinds=("boot",)):
+    """A fresh look: is a password prompt the sitter may type at (a lesson of one of `kinds`) visible on the KVM's own
+    picture? Returns (visible, what it is, how). With OCR, the field's own words; without, a match of a frame against a
+    prompt an operator taught the sitter while looking at it (learn-prompt). Nothing else counts."""
     try:
         kind = look_now(kvmd, cfg)
-        if need_boot:
-            return kind == "filevault", kind, "ocr"
-        return kind in ("filevault", "login"), kind, "ocr"
+        ok = (kind == "filevault" and "boot" in kinds) or (kind == "login" and "lock" in kinds)
+        return ok, kind, "ocr"
     except Exception:  # noqa: BLE001
         pass
     raw = frame_raw(kvmd)
@@ -827,9 +1014,9 @@ def see_field(cfg, kvmd, need_boot=False):
         return False, "unknown", "frame"
     f = frame_features(*raw)
     seen = prompt_seen(f)
-    if seen[0] and need_boot and seen[3] != "boot":
-        return False, "the lock screen it was taught (it types there only when you ask)", "frame"
-    return seen[0], classify_frame(f), "frame"
+    if seen[0] and seen[3] not in kinds:
+        return False, "the lock screen it was taught (it types there only when you ask, or when unlock_lock_screen allows)", "frame"
+    return seen[0], (LESSON[seen[3]] if seen[0] else classify_frame(f)), "frame"
 
 
 # ---------- the password gate ----------
@@ -884,17 +1071,23 @@ def settle_trial(now, desktop, log=None):
     return "trial"
 
 
-def typing_budget(st, now, rules=DEFAULTS, bcfg=None):
+UNLOCK_KINDS = ("unlock", "unlock_test")
+
+
+def typing_budget(st, now, rules=DEFAULTS, bcfg=None, kind="unlock"):
     """Limits that live in state.json, so a KVM reboot can't reset them: tries since the Mac was last seen at its
-    desktop (per boot), tries in the last hour, and a pause after each try. Write-ahead entries count too."""
+    desktop (per boot, counting every kind of try), tries in the last hour, and a pause after each try. Write-ahead
+    entries count too. An attended test ("unlock_test": you, over SSH, locking and unlocking on purpose) has its own
+    hourly budget, so testing never uses up the tries a FileVault screen after a panic may need."""
     bcfg = bcfg or BOOT
     ledger = st.get("ledger") or []
     since = st.get("desktop_at") or 0
-    tries = [e for e in ledger if e.get("kind") == "unlock" and e.get("at", 0) > since]
+    tries = [e for e in ledger if e.get("kind") in UNLOCK_KINDS and e.get("at", 0) > since]
     if len(tries) >= bcfg["per_boot"]:
         return "%d tries since the Mac was last at its desktop, so it stops. Fix: housesitter secret <mac> mac-password, then housesitter adopt <mac>" % len(tries)
-    if len(_recent(ledger, "unlock", now, 60)) >= rules["unlocks_per_hour"]:
-        return "unlock budget used (%d in the last hour)" % rules["unlocks_per_hour"]
+    limit = rules["attended_test_unlocks_per_hour"] if kind == "unlock_test" else rules["unlocks_per_hour"]
+    if len(_recent(ledger, kind, now, 60)) >= limit:
+        return "%s budget used (%d in the last hour)" % ("attended-test" if kind == "unlock_test" else "unlock", limit)
     if tries and now - tries[-1]["at"] < bcfg["retry_sec"] * 1000:
         return "waiting %d s after the last try" % bcfg["retry_sec"]
     return None
@@ -906,9 +1099,11 @@ def budgets(st, now, rules=DEFAULTS, bcfg=None):
     ledger = st.get("ledger") or []
     since = st.get("desktop_at") or 0
     hour = _recent(ledger, "unlock", now, 60)
+    test = _recent(ledger, "unlock_test", now, 60)
     day = _recent(ledger, "power_cycle", now, 24 * 60)
-    return {"unlock_since_desktop": [len([e for e in ledger if e.get("kind") == "unlock" and e.get("at", 0) > since]), bcfg["per_boot"]],
+    return {"unlock_since_desktop": [len([e for e in ledger if e.get("kind") in UNLOCK_KINDS and e.get("at", 0) > since]), bcfg["per_boot"]],
             "unlock_hour": [len(hour), rules["unlocks_per_hour"]], "unlock_hour_frees_at": min(e["at"] for e in hour) + 3600000 if hour else None,
+            "unlock_test_hour": [len(test), rules["attended_test_unlocks_per_hour"]],
             "cycles_day": [len(day), rules["cycles_per_day"]], "cycles_day_frees_at": min(e["at"] for e in day) + 86400000 if day else None,
             "blocked": typing_budget(st, now, rules, bcfg)}
 
@@ -984,35 +1179,130 @@ def finish(st, entry, result):
 
 
 def type_at_field(cfg, kvmd, st, now, why, by, log=lambda m: None, secret=None, visible=None):
-    """The only way the password is typed. Gate, then budgets, then a fresh look for the field itself, then a
-    write-ahead entry, then the keys. `visible` lets the boot watch pass the look it has just taken."""
+    """The only way the password is typed. Gate, then budgets, then a fresh look for a prompt this caller may type at,
+    then a write-ahead entry, then the keys. `visible` lets a caller pass the look it has just taken."""
     if cfg.get("unlock") is False:
         return "refused: unlock is off in this sitter's config"
     g = password_gate()
+    test = by == "attended-test"
+    if test and g["trust"] != "verified":
+        return "refused: an attended test needs a verified password (arm and prove one try first: housesitter unlock <mac> --trial)"
     r = gate_refusal(g)
     if r:
         return "refused: %s" % r
-    r = typing_budget(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {})))
+    kind = "unlock_test" if test else "unlock"
+    r = typing_budget(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {})), kind)
     if r:
         return "refused: %s" % r
     pw = (secret or load_secret)("mac")
     if not pw:
         return "refused: no password on the sitter (housesitter adopt <mac> provisions it)"
-    seen, kind, how = visible if visible is not None else see_field(cfg, kvmd, need_boot=by != "request")
+    seen, what, how = visible if visible is not None else see_field(cfg, kvmd, kinds_for(cfg, by, now))
     if not seen:
-        return "refused: no password prompt it was taught is on the KVM's own picture (it reads as %s, by %s); blind unlock is unsupported" % (kind, how)
+        return "refused: no password prompt it may type at is on the KVM's own picture (it reads as %s, by %s); blind unlock is unsupported" % (what, how)
     if cfg.get("dry_run"):
-        return "dry-run: would type at the %s prompt" % kind
+        return "dry-run: would type at the %s prompt" % what
     if g["trust"] == "trial":
         set_password_trust("trial", g.get("why", "armed"), now, tried_at=now)
-    entry = write_ahead(st, {"at": now, "kind": "unlock", "state": "filevault", "by": by, "why": why, "trust": g["trust"]})
+    entry = write_ahead(st, {"at": now, "kind": kind, "state": "filevault", "by": by, "why": why, "trust": g["trust"]})
     try:
         type_password(kvmd, pw)
-        res = "typed the password at the %s prompt (%s, %s)" % (kind, how, g["trust"])
+        res = "typed the password at the %s prompt %s (%s, password %s)" % (what, "it was taught" if how == "frame" else "it read", how, g["trust"])
     except Exception as e:  # noqa: BLE001
         res = "failed: %s" % str(e)[:120]
     log("unlock: %s" % res)
     return finish(st, entry, res)
+
+
+def click_at(kvmd, fx, fy):
+    """A left click at a fraction of the screen (the KVM's absolute mouse lands on the display it sees)."""
+    x, y = max(-32768, min(32767, int(-32768 + fx * 65535))), max(-32768, min(32767, int(-32768 + fy * 65535)))
+    kvmd.post("/hid/events/send_mouse_move?to_x=%d&to_y=%d" % (x, y), timeout=10)
+    SLEEP(0.25)
+    kvmd.post("/hid/events/send_mouse_button?button=left&state=true", timeout=10)
+    SLEEP(0.08)
+    kvmd.post("/hid/events/send_mouse_button?button=left&state=false", timeout=10)
+
+
+def wake(kvmd):
+    """A lone Shift: wakes a sleeping display or a screen saver and types nothing."""
+    try:
+        kvmd.post("/hid/events/send_key?key=ShiftLeft", timeout=10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def grab_frame(kvmd):
+    raw = frame_raw(kvmd)
+    return frame_features(*raw) if raw else None
+
+
+def unlock_steps(cfg, kvmd, st, now, why, by, log=lambda m: None, secret=None, grab=None, click=None, confirm_sec=20, tries=8):
+    """From whatever the KVM sees to the desktop, one step at a time, each from a fresh frame:
+      - a dark display or a screen saver: Shift (wakes it, types nothing);
+      - the login window's list of users, taught with its account tile (learn-prompt --grid): click that tile;
+      - a password prompt this caller may type at: type (type_at_field's gates), then watch for the desktop;
+      - anything else: Shift once more, then give up and say so.
+    Never Escape: at a macOS login window it leaves the password field for the list of users (2026-11-08)."""
+    kinds = kinds_for(cfg, by, now)
+    if grab is None:
+        try:
+            ocr_text(kvmd)
+            # A KVM whose OCR works (PiKVM and most others) reads the prompt's own words instead: one gated try.
+            return type_at_field(cfg, kvmd, st, now, why, by, log, secret)
+        except Exception:  # noqa: BLE001  (no OCR here, as on a GL.iNet Comet: frames and lessons below)
+            pass
+    grab = grab or (lambda: grab_frame(kvmd))
+    click = click or (lambda fx, fy: click_at(kvmd, fx, fy))
+    steps, clicks, t = [], 0, now
+
+    def pause(sec):
+        nonlocal t
+        SLEEP(sec)
+        t += int(sec * 1000)
+    done = lambda: ", ".join(steps) or "no steps"  # noqa: E731
+    for _ in range(tries):
+        f = grab()
+        k = classify_frame(f)
+        if k == "desktop":
+            return "already at the desktop (%s); nothing typed" % done()
+        if k in ("none", "black"):
+            wake(kvmd)
+            steps.append("woke a dark screen")
+            pause(2)
+            continue
+        seen = prompt_seen(f)
+        if seen[0]:
+            if seen[3] not in kinds:
+                return "refused: the %s prompt it was taught is on the picture, and unlock_lock_screen doesn't allow that for %s (%s)" % (LESSON[seen[3]], by, done())
+            res = type_at_field(cfg, kvmd, st, t, why, by, log, secret, visible=(True, LESSON[seen[3]], "frame"))
+            if not res.startswith("typed"):
+                return "%s (%s)" % (res, done())
+            steps.append("typed")
+            waited = 0
+            while waited < confirm_sec:
+                pause(2)
+                waited += 2
+                if classify_frame(grab()) == "desktop":
+                    st["desktop_at"] = t
+                    settle_trial(t, True, log)
+                    return "%s; the desktop is back (%s)" % (res, done())
+            return "%s, but no desktop within %d s (%s)" % (res, confirm_sec, done())
+        g = grid_seen(f)
+        if g is not None:
+            if "grid" not in kinds:
+                return "refused: the login window's list of users is on the picture, and unlock_lock_screen doesn't allow that for %s (%s)" % (by, done())
+            if clicks >= 2:
+                break
+            click(*g["click"])
+            clicks += 1
+            steps.append("clicked the account's tile")
+            pause(1.5)
+            continue
+        wake(kvmd)
+        steps.append("not a screen it was taught (%s): Shift" % k)
+        pause(1.5)
+    return "refused: no password prompt it was taught is on the KVM's own picture (it reads as %s; %s); blind unlock is unsupported" % (classify_frame(grab()), done())
 
 
 def unlock(cfg, kvmd, st=None, now=None, by="rules", log=lambda m: None, secret=None):
@@ -1141,7 +1431,7 @@ def frame_features(y, w, h):
 # grid over the lower middle of the screen, so it doesn't depend on the resolution the Mac sends.
 PROMPT_REGION = (0.30, 0.70, 0.40, 0.97)
 PROMPT_GRID = (200, 150)
-PROMPT_LEARN_LUMA, PROMPT_SEEN_LUMA, PROMPT_RECALL, PROMPT_MIN_POINTS = 200, 160, 0.9, 20
+PROMPT_LEARN_LUMA, PROMPT_SEEN_LUMA, PROMPT_RECALL, PROMPT_MIN_POINTS = 200, 160, 0.9, 12
 # Two-sided: the prompt is a little white on a darker screen. Real lock and FileVault frames have 0.1-1% of the grid
 # that bright; a desktop has 62%. A frame brighter than this nearly everywhere (white, grey, a bright app) never matches.
 PROMPT_MAX_BRIGHT = 0.15
@@ -1200,15 +1490,39 @@ def thumb_diff(a, b):
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
-def prompt_seen(f):
-    """(visible, best match 0..1, references taught, the best one's kind) for this frame against the prompts an
-    operator taught. kind "boot" was taught while a boot was pending (the FileVault screen); "lock" any other time."""
-    refs = [r for r in (load("prompt_refs.json", []) or []) if r.get("points")]
+PASSWORD_KINDS = ("boot", "lock")
+
+
+def lessons():
+    return [r for r in (load("prompt_refs.json", []) or []) if r.get("points")]
+
+
+def prompt_seen(f, refs=None):
+    """(visible, best match 0..1, password lessons taught, the best one's kind) for this frame against the password
+    prompts an operator taught. kind "boot" was taught while a boot was pending (the FileVault screen); "lock" any other
+    time. The login window's list of users ("grid") is never a password prompt: see grid_seen."""
+    refs = [r for r in (lessons() if refs is None else refs) if (r.get("kind") or "lock") in PASSWORD_KINDS]
     if not f or not f.get("_lum") or classify_frame(f) != "prompt_like":
         return False, 0.0, len(refs), None
     scored = sorted(((prompt_match(r["points"], f), r.get("kind") or "lock") for r in refs), key=lambda m: -m[0])
     best, kind = scored[0] if scored else (0.0, None)
     return best >= PROMPT_RECALL, round(best, 3), len(refs), (kind if best >= PROMPT_RECALL else None)
+
+
+def grid_seen(f, refs=None):
+    """The taught list of users (with the account tile to click) when it is on this frame, else None."""
+    if not f or not f.get("_lum") or classify_frame(f) != "prompt_like":
+        return None
+    hits = [(prompt_match(r["points"], f), r) for r in (lessons() if refs is None else refs) if r.get("kind") == "grid" and r.get("click")]
+    hits = [h for h in hits if h[0] >= PROMPT_RECALL]
+    return max(hits, key=lambda h: h[0])[1] if hits else None
+
+
+def lesson_counts(refs=None):
+    out = {"boot": 0, "lock": 0, "grid": 0}
+    for r in (lessons() if refs is None else refs):
+        out[r.get("kind") or "lock"] = out.get(r.get("kind") or "lock", 0) + 1
+    return out
 
 
 def prompt_visible(f):
@@ -1217,25 +1531,34 @@ def prompt_visible(f):
     return prompt_seen(f)[0]
 
 
-def learn_prompt(frames, why, now=None, kind="lock"):
-    """Keep the steady bright pixels of the password prompt, from several frames a few seconds apart (one frame is
-    accepted too), as a reference. Only an operator who is looking at the KVM's picture and sees the password field on
-    it runs this (housesitter learn-prompt <mac>)."""
+def learn_prompt(frames, why, now=None, kind="lock", click=None):
+    """Keep the steady bright pixels of a screen from several frames a few seconds apart (one frame is accepted too)
+    as a lesson. Only an operator who is looking at the KVM's picture runs this (housesitter learn-prompt <mac>).
+    kind "boot": the FileVault screen; "lock": the lock screen's password prompt; "grid": the login window's list of
+    users, with `click` the account's tile as [fx, fy] fractions of the screen (a grid lesson only ever clicks)."""
     frames = frames if isinstance(frames, list) else [frames]
+    if kind not in LESSON:
+        raise ValueError("kind is boot, lock or grid")
+    if kind == "grid" and not (isinstance(click, (list, tuple)) and len(click) == 2 and all(0 < float(c) < 1 for c in click)):
+        raise ValueError("a list of users needs the account's tile to click, as two fractions of the screen (for example 0.5 0.55)")
     for f in frames:
         k = classify_frame(f)
         if k != "prompt_like":
-            raise ValueError("that frame reads as %s, not a password prompt; show the FileVault or login screen on the KVM's display first" % k)
+            raise ValueError("that frame reads as %s, not a login screen; show the FileVault, lock or login screen on the KVM's display first" % k)
     pts = prompt_points(frames)
     if len(pts) < PROMPT_MIN_POINTS:
-        raise ValueError("nothing steady and bright enough to learn (%d points); is the password prompt on the KVM's picture?" % len(pts))
-    refs = [r for r in (load("prompt_refs.json", []) or []) if r.get("points")][-4:]
+        raise ValueError("nothing steady and bright enough to learn (%d points); is the screen on the KVM's picture?" % len(pts))
+    refs = lessons()[-6:]
     for r in refs:
         other = r.get("kind") or "lock"
         if other != kind and any(prompt_match(r["points"], f) >= PROMPT_RECALL for f in frames):
-            # If the two screens look alike to the sitter, a FileVault lesson would also open the lock screen.
-            raise ValueError("this screen matches the %s lesson it already has, so on this Mac the sitter can't tell your lock screen from FileVault; it won't learn it as %s. Is this the screen you meant (restart and teach it at FileVault, or forget the lessons and start again)?" % ("FileVault" if other == "boot" else "lock-screen", "FileVault" if kind == "boot" else "the lock screen"))
-    refs.append({"points": pts, "frames": len(frames), "at": now if now is not None else int(time.time() * 1000), "why": why, "kind": kind})
+            # If two screens look alike to the sitter, the lesson for one would also act on the other.
+            names = {"boot": "FileVault", "lock": "lock screen", "grid": "list of users"}
+            raise ValueError("this screen matches the %s lesson it already has, so on this Mac the sitter can't tell your %s from %s; it won't learn it as %s. Is this the screen you meant (restart and teach FileVault at FileVault, or forget the lessons and start again)?" % (LESSON[other], names[other], names[kind], names[kind]))
+    ref = {"points": pts, "frames": len(frames), "at": now if now is not None else int(time.time() * 1000), "why": why, "kind": kind}
+    if kind == "grid":
+        ref["click"] = [round(float(click[0]), 4), round(float(click[1]), 4)]
+    refs.append(ref)
     save("prompt_refs.json", refs)
     return len(refs)
 
@@ -1322,8 +1645,16 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
     wait = cfg["black_settle_sec"] if kind == "black" else cfg["settle_sec"]
     if now - boot_at < wait * 1000 or bw["stable"] < cfg["stable_frames"]:
         return bw, None, note
-    if obs.get("prompt_visible") and obs.get("prompt_kind") != "boot":
+    if obs.get("prompt_visible") and obs.get("prompt_kind") != "boot" and not obs.get("lock_ok"):
         bw["stuck"] = "the prompt on the KVM's picture is the lock screen it was taught, not the FileVault screen taught at a boot; it types there only when you ask (housesitter unlock <mac>)"
+        if bw.get("blind_noted"):
+            return bw, None, note
+        bw["blind_noted"] = now
+        return bw, "blind", bw["stuck"]
+    if obs.get("grid") and not obs.get("prompt_visible"):
+        if obs.get("lock_ok"):
+            return bw, "steps", "the Mac booted to the login window's list of users it was taught; it clicks the account and types at the prompt that follows"
+        bw["stuck"] = "the login window's list of users is on the KVM's picture; unlock_lock_screen is off, so it waits for you (housesitter unlock <mac>)"
         if bw.get("blind_noted"):
             return bw, None, note
         bw["blind_noted"] = now
@@ -1334,7 +1665,7 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
             return bw, None, note
         bw["blind_noted"] = now
         return bw, "blind", bw["stuck"]
-    return bw, "type", "the Mac booted and the FileVault prompt it was taught is on the KVM's picture (steady for %d frames)" % bw["stable"]
+    return bw, "type", "the Mac booted and the %s prompt it was taught is on the KVM's picture (steady for %d frames)" % (LESSON.get(obs.get("prompt_kind"), "FileVault"), bw["stable"])
 
 
 def kvm_boot_id(read=lambda: open("/proc/sys/kernel/random/boot_id").read()):
@@ -1371,6 +1702,8 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
     if obs["frame"]:
         seen = prompt_seen(obs["frame"])
         obs["prompt_visible"], obs["prompt_kind"] = seen[0], seen[3]
+        obs["grid"] = grid_seen(obs["frame"]) is not None
+        obs["lock_ok"] = lock_allowed(cfg, now)
     b2, act, note = boot_tick(bw, now, obs, bcfg, kvm_uptime_s())
     if note and note != bw.get("last_note"):
         log("boot-watch: %s" % note)
@@ -1381,11 +1714,25 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
         settle_trial(now, True, log)
     else:
         settle_trial(now, False, log)
-    if act == "type":
-        res = type_at_field(cfg, kvmd, st, now, note, "boot-watch", log, secret)
+    if act in ("type", "steps"):
+        if act == "type":
+            res = type_at_field(cfg, kvmd, st, now, note, "boot-watch", log, secret)
+        else:
+            res = unlock_steps(cfg, kvmd, st, now, note, "boot-watch", log, secret)
+            log("boot-watch: %s" % res)
         if res.startswith("refused"):
             b2["stuck"] = res[len("refused: "):]
         b2["stable"] = 0
+    if act == "blind":
+        # Once a boot: it is waiting at a password screen it may not type at, so it tells you now rather than after
+        # the rules' FileVault wait. The rules then count this message as the incident's first.
+        name = cfg.get("name", "your Mac")
+        try:
+            sent = notify(cfg, "%s is waiting at a password screen" % name, "%s. Seen by its housesitter just now. To teach it your FileVault screen: housesitter learn-prompt %s --i-see-the-field --filevault, while you can see the field." % (b2.get("stuck", "").replace("<mac>", name)[:1].upper() + b2.get("stuck", "").replace("<mac>", name)[1:], name))
+        except Exception as e:  # noqa: BLE001
+            sent = "failed: %s" % str(e)[:120]
+        b2["told_at"] = now
+        log("boot-watch: told you it is waiting (%s)" % sent)
     st["boot"] = b2
     save_state(st, ("boot", "desktop_at"))
     return {"obs": {k: v for k, v in obs.items() if k != "frame"}, "frame": {k: v for k, v in (obs.get("frame") or {}).items() if k != "thumb" and not k.startswith("_")},
@@ -1426,8 +1773,33 @@ def look(kvmd, src=None, run=subprocess.run, now=None):
     yuv, w, h = dec
     f = frame_features(yuv[:w * h], w, h)
     visible, match, refs, kind = prompt_seen(f)
+    g = grid_seen(f)
     out.update(size=[w, h], reads_as=classify_frame(f), mean=f["mean"], menu_edges=f["top_edges"],
-               prompt={"taught": refs, "match": match, "visible": visible, "kind": kind}, glimpse=glimpse(yuv, w, h))
+               prompt={"taught": refs, "match": match, "visible": visible, "kind": kind, "grid": g is not None, "click": g["click"] if g else None, "lessons": lesson_counts()},
+               glimpse=glimpse(yuv, w, h))
+    return out
+
+
+def proof_frame(kvmd, all_frames=False, run=subprocess.run, now=None):
+    """What `housesitter proof` records each tick: what the frame reads as, the lesson match, and a JPEG only when it
+    is not a desktop (so a recording never carries your desktop or notifications), unless all_frames. Encoded at full
+    size: the Comet's ffmpeg has no scale filter, so the client scales."""
+    now = now if now is not None else int(time.time() * 1000)
+    raw = frame_raw(kvmd, run=run)
+    if not raw:
+        return {"at": now, "reads_as": "none", "hdmi": None}
+    f = frame_features(*raw)
+    kind = classify_frame(f)
+    seen = prompt_seen(f)
+    out = {"at": now, "reads_as": kind, "hdmi": "%dx%d" % (raw[1], raw[2]), "prompt": {"visible": seen[0], "match": seen[1], "kind": seen[3], "grid": grid_seen(f) is not None}}
+    if kind == "desktop" and not all_frames:
+        out["jpeg"] = None
+        out["withheld"] = "a desktop: not recorded (--all-frames to include)"
+        return out
+    yuv, w, h = LAST_FRAME
+    jpg = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "%dx%d" % (w, h), "-i", "-",
+               "-frames:v", "1", "-c:v", "mjpeg", "-strict", "-1", "-q:v", "5", "-f", "image2pipe", "-"], input=yuv, capture_output=True, timeout=30).stdout
+    out["jpeg"] = base64.b64encode(jpg).decode("ascii") if is_jpeg(jpg) else None
     return out
 
 
@@ -1545,12 +1917,15 @@ def eyes_without_ocr(cfg, mem, raw, boot):
     last = LAST_FRAME
     g = glimpse(*last) if last and last[1:] == (w, h) else None
     seen = prompt_seen(f)
-    prompt = {"taught": seen[2], "match": seen[1], "visible": seen[0], "kind": seen[3]}
+    grid = grid_seen(f) is not None
+    prompt = {"taught": seen[2], "match": seen[1], "visible": seen[0], "kind": seen[3], "grid": grid, "lessons": lesson_counts()}
     if kind == "desktop":
         return {"screen": "desktop", "eyes": "frame", "clock_ticking": clock_ticking(mem, clock_sig(y, w, h)), "glimpse": g, "prompt": prompt}
     out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown", "glimpse": g, "prompt": prompt}
     if seen[0]:
         out["screen"] = "filevault" if seen[3] == "boot" else "login"
+    elif grid:
+        out["screen"] = "login"
     if boot_recent(boot):
         # A boot that hasn't reached a desktop: the FileVault screen, unless it is the lock screen it was taught (a wake
         # looks like a boot). The boot watch types; the rules only wait and tell.
@@ -1620,7 +1995,7 @@ def should_publish(st, status, now, beat_min=10):
     return status["state"] != last.get("state") or bool(status.get("actions")) or now - last.get("at", 0) >= beat_min * 60000
 
 
-OPS = ("status", "look", "screenshot", "unlock", "power_cycle", "power_on", "click", "type", "key", "scroll")
+OPS = ("status", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll")
 
 
 def at_password_screen(st=None):
@@ -1653,7 +2028,7 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     name = cfg.get("name", "mac")
     if op not in OPS:
         return {"ok": False, "code": "action-unavailable", "result": "unknown op %r; available: %s" % (op, ", ".join(OPS))}
-    if cfg.get("dry_run") and op in ("unlock", "power_cycle", "power_on"):
+    if cfg.get("dry_run") and op in ("unlock", "want_desktop", "power_cycle", "power_on"):
         return {"ok": True, "result": "dry-run: would %s" % op}
     st.setdefault("ledger", [])
     a = cmd.get("args") or {}
@@ -1711,10 +2086,23 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
             kvmd.post("/hid/events/send_shortcut?keys=%s" % ",".join(names))
         return {"ok": True, "result": "pressed %s" % "+".join(names)}
     if op == "unlock":
-        # Over SSH, you: any prompt you taught. Through the outbox, an agent: only the FileVault screen taught at a boot,
-        # so a plain lock screen is never unlocked from GitHub.
-        res = type_at_field(cfg, kvmd, st, now, "asked for", "request" if via == "ssh" else "outbox", log)
-        return {"ok": res.startswith("typed"), "code": None if res.startswith("typed") else "action-failed", "result": res}
+        # Over SSH, you: any lesson you taught, the list of users included. Through the outbox, an agent: the FileVault
+        # screen taught at a boot, and the lock screen only while unlock_lock_screen allows it.
+        test = a.get("attended_test") is True
+        if test and via != "ssh":
+            return {"ok": False, "code": "action-unavailable", "result": "attended tests are an operator's, over SSH only"}
+        res = unlock_steps(cfg, kvmd, st, now, "asked for", ("attended-test" if test else "request") if via == "ssh" else "outbox", log)
+        ok = "desktop is back" in res or res.startswith("already") or (res.startswith("typed") and "no desktop" not in res)
+        return {"ok": ok, "code": None if ok else "action-failed", "result": res}
+    if op == "want_desktop":
+        # The agent-facing "unlock so I can drive the UI": a standing request for some minutes (a lock screen that
+        # comes back meanwhile is unlocked too), and one try now. Only where the config allows lock screens at all.
+        if lock_policy(cfg) is False:
+            return {"ok": False, "code": "action-unavailable", "result": "unlock_lock_screen is off in this sitter's config, so it unlocks a lock screen only when you ask over SSH (housesitter unlock <mac>); set \"unlock_lock_screen\": \"on_request\" to let agents ask"}
+        w = want_desktop(a.get("minutes", 10), "%s:%s" % (via, a.get("by", "agent")), now)
+        res = unlock_steps(cfg, kvmd, st, now, "an agent wants the desktop", "want-desktop", log)
+        ok = "desktop is back" in res or res.startswith("already")
+        return {"ok": ok, "code": None if ok else "action-failed", "result": dict(w, unlock=res)}
     if a.get("attended") is True and via != "ssh":
         return {"ok": False, "code": "action-unavailable", "result": "attended is an operator's override, over SSH only (housesitter power-cycle <mac> --attended from your own machine), never through the outbox"}
     if not power and (cfg.get("power") or {}).get("kind") != "fingerbot":
@@ -1752,8 +2140,8 @@ def poll_inbox(cfg, gh, kvmd, power, log, now=None):
         rep = handle(cmd, cfg, kvmd, power, log, now, st, via="outbox")
     except Exception as e:  # noqa: BLE001
         rep = {"ok": False, "code": "action-failed", "result": "failed: %s" % str(e)[:200]}
-    if cmd.get("op") in ("unlock", "power_cycle", "power_on"):
-        save_state(st)
+    if cmd.get("op") in ("unlock", "want_desktop", "power_cycle", "power_on"):
+        save_state(st, ("desktop_at",))
     files = rep.pop("_files", {})
     reply = dict(v=1, re=cmd["id"], op=cmd.get("op"), at=now, ms=int((time.time() - t0) * 1000), **rep)
     files["%s.reply.json" % name] = json.dumps(reply)
@@ -1783,6 +2171,13 @@ def observe(cfg, kvmd, power, mem, now):
         obs["video"] = bool(src.get("online")) if "online" in src else None
     except Exception as e:  # noqa: BLE001
         obs["video"], obs["kvmd_error"] = None, str(e)[:120]
+    mode = hdmi_mode()
+    if mode:
+        obs["hdmi"] = "%dx%d" % mode
+    if obs.get("video") is None and (mode is not None or os.path.exists("/proc/gl-hw-info/hdmipatch")):
+        # GLKVM reports "streamer": null while nobody is watching; its HDMI receiver still knows. frame_raw below warms
+        # the stream itself, so the screen is read (and a frozen desktop noticed) with no viewer open.
+        obs["video"] = mode is not None
     if obs.get("video"):
         try:
             obs["screen"] = classify_screen(ocr_text(kvmd), cfg.get("user_names") or ())
@@ -1859,10 +2254,11 @@ def after_boot(cfg, obs, boot, now=None):
     """May the sitter type by itself here? Only at a prompt that follows a boot: the boot watch saw the Mac enumerate the
     KVM's keyboard again and no desktop since, or OCR read the FileVault screen itself. A plain lock screen is the
     owner's lock, and the sitter can't tell it from a dead session, so it stays locked (and you hear about it) unless an
-    operator asks (housesitter unlock <mac>) or the config says "unlock_lock_screen": true. Learned live, 2026-11-08."""
+    operator asks (housesitter unlock <mac>) or the config's "unlock_lock_screen" allows it now (true, or "on_request" while
+    an agent's want-desktop request stands). Learned live, 2026-11-08."""
     # Without OCR, "filevault" is a matched picture; the boot watch alone decides when that follows a boot.
     ocr_filevault = obs.get("screen") == "filevault" and obs.get("eyes") != "frame"
-    return boot_recent(boot, now) or ocr_filevault or cfg.get("unlock_lock_screen") is True
+    return boot_recent(boot, now) or ocr_filevault or lock_allowed(cfg, now)
 
 
 def once(cfg, kvmd, power, log, now=None, gh=None):
@@ -1879,8 +2275,22 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
         caps["unlock"] = False
     if obs.get("eyes") == "frame":
         caps["unlock"] = False  # without OCR, only the boot watch types, and only at a field it can match
+    boot = st.get("boot") or {}
+    pr = seen.get("prompt") or {}
+    if (lock_allowed(cfg, now) and obs.get("eyes") == "frame" and not boot_recent(boot, now)
+            and ((pr.get("visible") and pr.get("kind") == "lock") or (pr.get("grid") and not pr.get("visible")))):
+        # unlock_lock_screen allows it right now (true, or an agent's want-desktop request stands): from the lock
+        # screen or the list of users to the desktop, through every gate.
+        res = unlock_steps(cfg, kvmd, st, now, "the lock screen, and %s" % ("an agent wants the desktop" if desktop_wanted(now) else "unlock_lock_screen is on"), "lock-watch", log)
+        log("lock-watch: %s" % res)
+        obs["lock_watch"] = res[:200]
+        if "desktop is back" in res or res.startswith("already"):
+            obs["screen"] = "desktop"
     clock_seen = mem.get("clock_seen")
     open_incident = mem.get("incident")
+    inc = (mem or {}).get("incident")
+    if inc and inc.get("notified_at") is None and boot.get("told_at") and boot["told_at"] >= inc.get("started", now) - BOOT["armed_min"] * 60000:
+        inc["notified_at"] = boot["told_at"]  # the boot watch already told you about this one
     mem, actions = tick(mem or None, ledger, {k: v for k, v in obs.items() if not k.endswith("_error")}, now, caps, dict(DEFAULTS, **cfg.get("rules", {})))
     if clock_seen is not None:
         mem["clock_seen"] = clock_seen[-4:]
@@ -1920,6 +2330,8 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in SECRET_NAMES},
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
+              "lock_policy": lock_policy(cfg), "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
+              "probes": {"health": bool((cfg.get("health") or {}).get("port")), "heartbeat": bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
     if gh and o.get("gist"):
@@ -2065,20 +2477,51 @@ def main(argv):
             if i < 2:
                 SLEEP(4)
         try:
-            kind = "lock"
+            kind, click = "lock", None
+            if "--grid" in argv:
+                # The login window's list of users: the operator names the account's tile as two fractions of the
+                # screen (from housesitter screenshot). A grid lesson only ever clicks that tile.
+                i = argv.index("--grid")
+                try:
+                    click = [float(argv[i + 1]), float(argv[i + 2])]
+                except (IndexError, ValueError):
+                    print("learn-prompt: --grid needs the account's tile as two fractions of the screen, like --grid 0.5 0.55", file=sys.stderr)
+                    return 2
+                kind = "grid"
+                argv = argv[:i] + argv[i + 3:]
             if "--filevault" in argv:
                 if not boot_recent(load("state.json", {}).get("boot")):
                     print("learn-prompt: --filevault is for the screen a boot shows, and this sitter hasn't seen the Mac boot in the last %d minutes (dark, then its keyboard again). Restart the Mac, and teach it at the FileVault screen." % BOOT["armed_min"], file=sys.stderr)
                     return 2
                 kind = "boot"
                 argv = [a for a in argv if a != "--filevault"]
-            print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator", kind=kind), "points": len(prompt_points(frames)), "kind": kind}))
+            print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator", kind=kind, click=click), "points": len(prompt_points(frames)), "kind": kind}))
             return 0
         except ValueError as e:
             print("learn-prompt: %s" % e, file=sys.stderr)
             return 2
     if argv[:1] == ["boot-watch"]:
         print(json.dumps(boot_watch(cfg, kvmd, log)))
+        return 0
+    if argv[:1] == ["boot-state"]:
+        # Read-only: the boot watch's memory and the KVM's own boot id, for `housesitter plug prove`.
+        b = load("state.json", {}).get("boot") or {}
+        print(json.dumps(dict({k: v for k, v in b.items() if k != "last_thumb"}, kvm_boot=kvm_boot_id(), desktop_at=load("state.json", {}).get("desktop_at"))))
+        return 0
+    if argv[:1] == ["plug-status"]:
+        # Read-only: the plug as this sitter reaches it (its own address, password and re-find).
+        if not power:
+            print(json.dumps({"ok": False, "error": "no power adapter in this sitter's config"}))
+            return 1
+        try:
+            print(json.dumps(dict(power.status(), ok=True, kind=power.kind, url=getattr(power, "url", None))))
+            return 0
+        except Exception as e:  # noqa: BLE001
+            print(json.dumps({"ok": False, "kind": power.kind, "error": str(e)[:200]}))
+            return 1
+    if argv[:1] == ["proof-frame"]:
+        # One frame for `housesitter proof`: decoded and read here; a JPEG leaves the KVM only when it isn't a desktop.
+        print(json.dumps(proof_frame(kvmd, all_frames="--all-frames" in argv)))
         return 0
     if argv[:1] == ["frame"]:
         sys.stdout.buffer.write(frame_jpeg(kvmd))
@@ -2116,8 +2559,8 @@ def main(argv):
             rep = handle({"op": argv[1], "args": args}, cfg, kvmd, power, log, now, st)
         except Exception as e:  # noqa: BLE001
             rep = {"ok": False, "code": "action-failed", "result": "failed: %s" % str(e)[:200]}
-        if argv[1] in ("unlock", "power_cycle", "power_on"):
-            save_state(st)
+        if argv[1] in ("unlock", "want_desktop", "power_cycle", "power_on"):
+            save_state(st, ("desktop_at",))
         files = rep.pop("_files", {})
         if files:
             rep["files"] = files

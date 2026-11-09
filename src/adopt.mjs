@@ -240,7 +240,7 @@ export function steps() {
         if (x.location) x.deps.saveMac((m) => { m.location = x.location; });
         const config = {
           name: x.name, interval_sec: 60, kvmd_user: 'admin', user_names: x.mac.user_names || [], mac_ips: net.ips, mac_macs: net.macs,
-          unlock: x.mac.unlock !== false, location: x.location || x.mac.location || 'home', power: x.mac.power || null, notify: x.mac.notify || null, health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
+          unlock: x.mac.unlock !== false, unlock_lock_screen: x.mac.unlock_lock_screen === true || x.mac.unlock_lock_screen === 'on_request' ? x.mac.unlock_lock_screen : false, location: x.location || x.mac.location || 'home', power: x.mac.power || null, notify: x.mac.notify || null, health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
           outbox: x.mac.outbox?.gist ? { gist: x.mac.outbox.gist, inbox: x.mac.outbox.inbox, poll_sec: 2, beat_min: 10 } : null,
         };
         let r = await x.deps.ssh(`mkdir -p ${DIR} && chmod 700 ${DIR} && cat > ${DIR}/sitter.py`, x.deps.readDevice('sitter.py'));
@@ -278,6 +278,17 @@ export function steps() {
         if (!x.deps.secrets.has(ref)) return { ok: false, decision: true, detail: `no token at ${ref}. Make a fine-grained or classic token with only the gist scope, store it with: housesitter secret ${x.name} outbox-token, then run adopt again` };
         if (x.dryRun) return { ok: true, detail: 'would copy the token to the sitter (sealed, root-only)' };
         const r = await storeSecret(x, 'outbox', x.deps.secrets.get(ref));
+        return r.ok ? { ok: true, detail: `stored (sealed to the KVM's ${r.bound_to} ids)` } : { ok: false, detail: r.detail };
+      },
+    },
+    {
+      id: 'plug-password', title: "The smart plug's own password onto the sitter",
+      async run(x) {
+        if (!x.mac.power?.auth) return { ok: true, skipped: true, detail: x.mac.power ? 'skipped (the plug has no password)' : 'skipped (no plug yet: housesitter plug <mac> adopt, once it is on the Mac\'s cord)' };
+        const ref = x.mac.plug_password || `keychain:housesitter/${x.name}-plug`;
+        if (!x.deps.secrets.has(ref)) return { ok: false, decision: true, detail: `no plug password at ${ref}: run housesitter plug ${x.name} adopt again` };
+        if (x.dryRun) return { ok: true, detail: 'would copy the plug password to the sitter (sealed, root-only)' };
+        const r = await storeSecret(x, 'plug', x.deps.secrets.get(ref));
         return r.ok ? { ok: true, detail: `stored (sealed to the KVM's ${r.bound_to} ids)` } : { ok: false, detail: r.detail };
       },
     },

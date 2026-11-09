@@ -21,6 +21,7 @@ export function actionsFor({ kvm, sitter }) {
   }
   const st = sitter?.state;
   if (sitter && (st === 'filevault' || st === 'degraded') && sitter.can?.unlock) add('unlock', obj(), 'ask the sitter to type its sealed copy of the password, only if its own fresh look reads the prompt');
+  if (sitter && sitter.lock_policy && sitter.obs?.screen !== 'desktop') add('want_desktop', obj({ minutes: { type: 'integer', minimum: 1, maximum: 60 } }), 'ask the sitter to unlock the lock screen so you can drive the UI (it tries now, and keeps the request for some minutes)');
   if (sitter?.can?.plug) { add('power_cycle', obj(), 'smart plug off, then on by itself (one per 30 min, three a day)'); add('power_on', obj(), 'smart plug on'); }
   return a;
 }
@@ -60,8 +61,8 @@ export async function run(name, action, input, { scr, hands, sitter }) {
   if (!a) throw new Refusal('action-unavailable', `${action} isn't available on ${name} right now`, { available: scr.actions.map((x) => x.name) });
   const bad = validate(a.input, input ?? {});
   if (bad) throw new Refusal('input-invalid', bad.message, { path: bad.path });
-  if (['unlock', 'power_cycle', 'power_on'].includes(action)) {
-    const r = await sitter.op(action, {});
+  if (['unlock', 'want_desktop', 'power_cycle', 'power_on'].includes(action)) {
+    const r = await sitter.op(action, action === 'want_desktop' ? (input || {}) : {});
     if (!r.ok) throw new Refusal(r.code === 'action-unavailable' ? r.code : 'action-failed', String(r.result));
     return { ok: true, result: r.result, via: r.via };
   }

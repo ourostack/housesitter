@@ -810,6 +810,62 @@
           ]
         }
       ]
+    },
+    {
+      "name": "no health probe and no heartbeat: FileVault, then a desktop whose clock moves ends the incident (#14)",
+      "caps": {
+        "unlock": true,
+        "plug": false,
+        "fingerbot": false,
+        "notify": true
+      },
+      "steps": [
+        {
+          "t": 0,
+          "obs": {
+            "screen": "filevault",
+            "video": true,
+            "arp": true
+          },
+          "state": "filevault",
+          "actions": [
+            "unlock"
+          ]
+        },
+        {
+          "t": 5,
+          "obs": {
+            "screen": "desktop",
+            "clock_ticking": true,
+            "video": true,
+            "arp": true
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 6,
+          "obs": {
+            "screen": "desktop",
+            "clock_ticking": true,
+            "video": true,
+            "arp": null
+          },
+          "state": "healthy",
+          "actions": []
+        },
+        {
+          "t": 7,
+          "obs": {
+            "screen": "desktop",
+            "clock_ticking": null,
+            "video": true,
+            "arp": true
+          },
+          "state": "degraded",
+          "actions": []
+        }
+      ]
     }
   ]
 }

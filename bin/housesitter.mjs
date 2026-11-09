@@ -12,6 +12,7 @@ import { renderEvening, replay } from '../src/evening.mjs';
 import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
 import { connect, summarise } from '../src/kvmd.mjs';
+import * as Plug from '../src/plug.mjs';
 import * as R from '../src/reins.mjs';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 
@@ -31,6 +32,9 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
       [--this-mac] [--outbox] [--dry-run] [--fake]
   housesitter secret <mac> <mac-password|kvm-admin|outbox-token>   store a secret (read from stdin, no echo)
   housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
+                                           (desktops are never recorded unless --all-frames)
+  housesitter plug <mac> find|adopt [ip]|status   the smart plug on the Mac's cord: set it up safely, read it
+  housesitter plug <mac> prove --attended  one real 10 s power cut, watched until the Mac is back
 
   housesitter doctor <mac> [--private]     everything in one screen: what the KVM sees, the Mac, the budgets
                                            (--private hides the picture, for a screenshot or a screen share)
@@ -41,7 +45,12 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter computer <mac> '<json>'      an Anthropic computer-use action, as-is
   housesitter unlock|power-cycle|power-on <mac>     ask the sitter (it keeps its own limits and checks)
   housesitter unlock <mac> --trial|--hold  arm one supervised try of the stored password, or disarm it
+  housesitter unlock <mac> --attended-test you are locking and unlocking on purpose: its own budget (30 an hour)
+  housesitter want-desktop <mac> [--minutes 10]   an agent needs the UI: unlock now, and again if it locks meanwhile
+                                           (only with "unlock_lock_screen": "on_request" or true in its config)
   housesitter learn-prompt <mac> --i-see-the-field [--filevault]  teach it the prompt you see on the KVM; --filevault during a restart
+  housesitter learn-prompt <mac> --i-see-the-field --grid <x> <y>  the login window's list of users: x y is your
+                                           account's tile, as fractions of the screen (0.48 0.87)
   housesitter power-cycle <mac> --attended  you have looked: skip the frozen-desktop check (never the budgets)
 
   housesitter ls <mac>                     the Mac as state + the actions available now (Ouro Reins)
@@ -55,7 +64,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--heartbeat', '--location', '--fingerprint'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--heartbeat', '--location', '--fingerprint', '--every'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -209,14 +218,31 @@ async function main() {
   }
 
   if (cmd === 'learn-prompt') {
-    if (!flag('--i-see-the-field')) { say(`Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`); return 2; }
-    const r = await sitterSsh(mac)(`python3 /etc/kvmd/user/housesitter/sitter.py learn-prompt${flag('--filevault') ? ' --filevault' : ''} taught over SSH by an operator who saw the field`);
+    if (!flag('--i-see-the-field')) { say(`Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field (or, with --grid, the login window's list of users) on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`); return 2; }
+    let grid = '';
+    if (flag('--grid')) {
+      const i = args.indexOf('--grid');
+      const [gx, gy] = [Number(args[i + 1]), Number(args[i + 2])];
+      if (!(gx > 0 && gx < 1 && gy > 0 && gy < 1)) { say('--grid needs your account tile as two fractions of the screen, like --grid 0.48 0.87 (x then y, from housesitter screenshot)'); return 2; }
+      grid = ` --grid ${gx} ${gy}`;
+    }
+    const r = await sitterSsh(mac)(onSitter(mac, `learn-prompt${flag('--filevault') ? ' --filevault' : ''}${grid} taught over SSH by an operator who saw the screen`));
     say(r.status === 0 ? `learned: ${String(r.stdout).trim()}. The sitter types only where a frame matches this.` : `✗ ${String(r.stderr || r.stdout).trim()}`);
     return r.status === 0 ? 0 : r.status === 2 ? 2 : 1;
   }
 
+  if (cmd === 'want-desktop') {
+    const r = await sitterClient(mac).op('want_desktop', { minutes: Number(val('--minutes')) || 10 });
+    if (json) emit(r); else say(`${r.ok ? '✓' : `✗ ${r.code}`} want-desktop: ${typeof r.result === 'string' ? r.result : `${r.result?.unlock || ''}${r.result?.minutes ? ` (the request stands for ${r.result.minutes} min)` : ''}`}${r.via ? `\n  via ${r.via}` : ''}`);
+    return r.ok ? 0 : r.code === 'action-unavailable' || r.code === 'input-invalid' ? 2 : 1;
+  }
+
+  if (cmd === 'plug') return plugCmd(mac);
+
   if (['unlock', 'power-cycle', 'power-on'].includes(cmd)) {
-    const r = await sitterClient(mac).op(cmd.replace('-', '_'), flag('--attended') ? { attended: true } : {});
+    const opArgs = flag('--attended') ? { attended: true } : cmd === 'unlock' && flag('--attended-test') ? { attended_test: true } : {};
+    if (opArgs.attended_test && !sitterClient(mac).routes.some((x) => x.via.startsWith('ssh'))) { say('✗ attended tests run over SSH only, and there is no SSH route to this KVM'); return 2; }
+    const r = await sitterClient(mac).op(cmd.replace('-', '_'), opArgs);
     if (json) emit(r); else say(`${r.ok ? '✓' : `✗ ${r.code}`} ${cmd}: ${typeof r.result === 'string' ? r.result : JSON.stringify(r.result)}${r.via ? `\n  via ${r.via}` : ''}`);
     return r.ok ? 0 : r.code === 'action-unavailable' || r.code === 'input-invalid' ? 2 : 1;
   }
@@ -263,35 +289,94 @@ function saveShot(name, buf) {
   return f;
 }
 
-// Record what the KVM sees while the Mac restarts: numbered frames, the sitter's state beside each, a timeline.
-// The real-footage path for "show it working": restart the Mac yourself while this runs.
+// Record what the KVM sees while the Mac restarts: numbered frames, the sitter's state beside each, a timeline. The
+// real-footage path for "show it working": restart the Mac yourself while this runs. Each frame is decoded and read on
+// the KVM; a JPEG leaves it only when the frame isn't a desktop (--all-frames to keep those too), so a recording never
+// carries your desktop or its notifications. Frames come at the KVM's full size (its ffmpeg can't scale); the video
+// command below scales them.
 async function proof(mac) {
   const dir = path.resolve(val('--record') || `proof-${mac.name}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`);
-  fs.mkdirSync(dir, { recursive: true });
   const sit = sitterClient(mac);
-  const h = await hands(mac);
+  if (!sit.routes.some((x) => x.via.startsWith('ssh'))) { say(`✗ proof reads frames on the KVM over SSH, and there is no SSH route to ${mac.name}'s KVM (housesitter adopt sets one up)`); return 2; }
+  fs.mkdirSync(dir, { recursive: true });
+  const sh = sitterSsh(mac);
   const end = Date.now() + (Number(val('--minutes')) || 15) * 60000;
+  const every = (Number(val('--every')) || 3) * 1000;
   const timeline = [];
   let wentDown = false;
   let backAt = null;
-  say(`recording into ${dir} (Ctrl+C to stop). Restart the Mac now (Apple menu > Restart); the sitter does the rest.`);
+  let kept = 0;
+  say(`recording into ${dir} (Ctrl+C to stop). Restart the Mac now (Apple menu > Restart); the sitter does the rest.${flag('--all-frames') ? ' Recording desktops too (--all-frames).' : ' Desktops are not recorded.'}`);
   for (let n = 1; Date.now() < end; n++) {
     const t = Date.now();
-    const [shot, st] = await Promise.all([h.screenshot({ maxWidth: 1280 }).catch((e) => ({ error: e.message })), sit.status().catch(() => ({}))]);
+    const [fr, st] = await Promise.all([
+      sh(onSitter(mac, `proof-frame${flag('--all-frames') ? ' --all-frames' : ''}`)).then((r) => JSON.parse(String(r.stdout).trim().split('\n').at(-1))).catch((e) => ({ error: e.message })),
+      sit.status().catch(() => ({})),
+    ]);
     const state = st.status?.state || '?';
-    const file = shot.image ? `frame-${String(n).padStart(4, '0')}.jpg` : null;
-    if (file) fs.writeFileSync(path.join(dir, file), shot.image);
+    const file = fr.jpeg ? `frame-${String(n).padStart(4, '0')}.jpg` : null;
+    if (file) { fs.writeFileSync(path.join(dir, file), Buffer.from(fr.jpeg, 'base64')); kept++; }
     const last = st.status?.actions?.map((a) => `${a.kind}: ${a.result}`).join('; ') || '';
-    timeline.push({ at: new Date(t).toISOString(), file, state, screen: st.status?.obs?.screen ?? null, actions: last || null, error: shot.error || null });
-    say(`${new Date(t).toLocaleTimeString()}  ${state.padEnd(9)} ${st.status?.obs?.screen || ''} ${last}`);
+    timeline.push({ at: new Date(t).toISOString(), file, reads_as: fr.reads_as ?? null, hdmi: fr.hdmi ?? null, prompt: fr.prompt ?? null, state, actions: last || null, error: fr.error || null });
+    say(`${new Date(t).toLocaleTimeString()}  ${String(fr.reads_as || '?').padEnd(11)} ${state.padEnd(9)} ${fr.prompt?.visible ? `lesson ${fr.prompt.kind} ${Math.round(fr.prompt.match * 100)}% ` : ''}${file ? '' : fr.withheld ? '(desktop: not recorded) ' : ''}${last}`);
     if (state !== 'healthy' && state !== '?') wentDown = true;
     if (wentDown && state === 'healthy' && !backAt) backAt = t;
     if (backAt && t - backAt > 30000) break;
-    await new Promise((r) => setTimeout(r, Math.max(0, 2000 - (Date.now() - t))));
+    await new Promise((r) => setTimeout(r, Math.max(0, every - (Date.now() - t))));
   }
-  fs.writeFileSync(path.join(dir, 'timeline.json'), `${JSON.stringify({ mac: mac.name, recorded_by: `housesitter ${VERSION}`, real: true, timeline }, null, 2)}\n`);
-  say(`\n${timeline.length} frames and timeline.json in ${dir}${backAt ? '' : ' (the Mac did not come back while recording)'}.\nA video: ffmpeg -framerate 4 -pattern_type glob -i '${dir}/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p ${dir}/proof.mp4`);
+  fs.writeFileSync(path.join(dir, 'timeline.json'), `${JSON.stringify({ mac: mac.name, recorded_by: `housesitter ${VERSION}`, real: true, desktops: flag('--all-frames') ? 'recorded' : 'not recorded', timeline }, null, 2)}\n`);
+  say(`\n${kept} frames and timeline.json (${timeline.length} looks) in ${dir}${backAt ? '' : ' (the Mac did not come back while recording)'}.\nA video: ffmpeg -framerate 4 -pattern_type glob -i '${dir}/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p ${dir}/proof.mp4`);
   return backAt ? 0 : 1;
+}
+
+// `housesitter plug <mac> find|adopt [ip]|status|prove`: see src/plug.mjs.
+async function plugCmd(mac) {
+  const sub = rest[0] || 'status';
+  const store = secretStore();
+  const ref = mac.plug_password || `keychain:housesitter/${mac.name}-plug`;
+  if (sub === 'find') {
+    const all = await Plug.find();
+    if (json) emit(all); else say(all.length ? all.map((d) => `${d.ip}  ${d.id}  ${d.model || ''} gen ${d.gen ?? '?'}  mac ${d.mac}${Plug.isPlug(d) ? '  (a plug)' : ''}${d.auth_en ? '  password set' : ''}`).join('\n') : 'no Shelly answered on this network (is the plug on this Wi-Fi yet? In the Shelly app: Add device, then this network)');
+    return all.length ? 0 : 1;
+  }
+  if (sub === 'adopt') {
+    const ip = rest[1];
+    const cands = ip ? [await Plug.shellyInfo(ip)].filter(Boolean) : (await Plug.find()).filter(Plug.isPlug);
+    if (cands.length !== 1) { say(cands.length ? `more than one plug answered (${cands.map((d) => d.ip).join(', ')}): name it, housesitter plug ${mac.name} adopt <ip>` : 'no Shelly plug answered on this network yet (Shelly app > Add device > this Wi-Fi, then run this again)'); return 2; }
+    const d = cands[0];
+    if (flag('--dry-run')) { say(`would adopt ${d.id} (${d.model || 'Shelly'}) at ${d.ip}: on after an outage, no auto-off, cloud off, Bluetooth RPC on, a password of its own at ${ref}; record it; hand it to the sitter. Nothing is switched.`); return 0; }
+    let pw = store.has(ref) ? store.get(ref) : null;
+    if (!pw) { pw = Plug.newPassword(); store.set(ref, pw); }
+    const c = await Plug.configure(d.ip, d, pw, { name: `${mac.name}-power` });
+    const marks = Object.entries(c.checks).map(([k, v]) => `${v ? '✓' : '✗'} ${k}`).join(' · ');
+    if (!c.ok) { say(`✗ the plug didn't read back as set: ${marks}`); return 1; }
+    const power = { kind: 'shelly', url: `http://${d.ip}`, mac: c.mac || d.mac, id: d.id, model: d.model || null, gen: d.gen ?? null, auth: true, ble_mac: null, adopted_at: new Date().toISOString() };
+    updateMac(mac.name, (m) => { m.power = power; m.plug_password = ref; });
+    const seen = await Plug.handToSitter(power, pw, sitterSsh(mac), { dir: sitterDir(mac) });
+    say(`✓ ${d.id} at ${d.ip}: ${marks}. From here: ${c.on ? 'on' : 'OFF'}, ${c.watts ?? '?'} W.\n  The sitter reads it: ${seen.ok ? `${seen.on ? 'on' : 'OFF'}, ${seen.watts ?? '?'} W` : `✗ ${seen.error}`}. Password at ${ref}, sealed on the KVM as "plug".\n  Next, with the Mac's cord (and only that) on the plug: housesitter plug ${mac.name} prove --attended`);
+    return seen.ok ? 0 : 1;
+  }
+  if (sub === 'status') {
+    const p = mac.power;
+    if (!p || p.kind !== 'shelly') { say(p ? `${mac.name}'s power is ${p.kind}; status reads Shelly plugs` : `${mac.name} has no plug yet; when it's on the Mac's cord: housesitter plug ${mac.name} adopt`); return 1; }
+    const pw = p.auth ? store.get(ref) : null;
+    const [here, there] = await Promise.all([
+      Plug.readPlug(p, pw).catch((e) => ({ error: e.message })),
+      sitterSsh(mac)(onSitter(mac, 'plug-status')).then((r) => JSON.parse(String(r.stdout).trim().split('\n').at(-1))).catch((e) => ({ ok: false, error: e.message })),
+    ]);
+    if (here.moved) updateMac(mac.name, (m) => { m.power.url = here.url; });
+    if (json) emit({ name: mac.name, plug: p.id, here, sitter: there });
+    else say(`${mac.name}'s plug ${p.id || ''}\n  from here:   ${here.error ? `✗ ${here.error}` : `${here.on ? 'on' : 'OFF'}, ${here.watts ?? '?'} W${here.moved ? ` (it moved: now ${here.url}, saved)` : ''}`}\n  the sitter:  ${there.ok ? `${there.on ? 'on' : 'OFF'}, ${there.watts ?? '?'} W at ${there.url || '?'}` : `✗ ${there.error}`}`);
+    return here.error || !there.ok ? 1 : 0;
+  }
+  if (sub === 'prove') {
+    if (!flag('--attended')) { say(`refused: this cuts ${mac.name}'s power for 10 s. Run it while you (or your agent) are watching, with --attended, and only once the Mac's cord alone is on the plug.`); return 2; }
+    if (!mac.power) { say(`${mac.name} has no plug yet: housesitter plug ${mac.name} adopt`); return 2; }
+    const r = await Plug.prove({ ssh: sitterSsh(mac), dir: sitterDir(mac), say });
+    if (json) emit(r); else say(r.ok ? `✓ power cut → boot seen in ${r.boot_s} s → desktop in ${r.desktop_s} s, unlocked by the sitter; the KVM stayed up` : `✗ ${r.why}`);
+    return r.ok ? 0 : 1;
+  }
+  throw new Refusal('input-invalid', `plug: unknown subcommand ${sub} (find, adopt, status, prove)`);
 }
 
 main().then((code) => process.exit(code ?? 0)).catch((e) => {

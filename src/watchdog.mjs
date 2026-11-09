@@ -23,6 +23,7 @@ export const DEFAULTS = {
   filevault_min: 0,
   filevault_wait_min: 10, // a watcher that can't unlock gives the sitter this long before telling you
   unlocks_per_hour: 3,    // password guard: at most three typed unlocks an hour, across incidents
+  attended_test_unlocks_per_hour: 30, // you, over SSH, locking and unlocking on purpose: a budget of its own
   settle_min: 4,          // after an action, wait this long before judging it
   cycle_gap_min: 30,      // at most one power cycle per 30 min...
   cycles_per_day: 3,      // ...and three a day
@@ -38,6 +39,9 @@ const minutes = (ms) => ms / 60000;
 export function rawState(o, cfg = DEFAULTS) {
   const up = o.answers === true || (o.beat_min != null && o.beat_min <= 3 && o.presence !== false);
   if (up) return o.screen === 'filevault' ? 'degraded' : 'healthy';
+  // No health probe and no heartbeat to ask: a desktop whose clock moves (and a network stack that answers, where the
+  // KVM can see it) is as up as this watcher can know. Without this an incident would never close.
+  if (o.answers == null && o.beat_min == null && o.presence == null && o.screen === 'desktop' && o.clock_ticking === true && o.arp !== false) return 'healthy';
   if (o.screen === 'filevault' || o.screen === 'login') return 'filevault';
   const powered = (o.watts != null && o.watts >= cfg.idle_watts) || o.video === true || o.arp === true;
   const unpowered = o.plug_on === false || (o.watts != null && o.watts < cfg.idle_watts);
