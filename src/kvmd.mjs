@@ -5,6 +5,7 @@
 
 import crypto from 'node:crypto';
 import https from 'node:https';
+import net from 'node:net';
 import tls from 'node:tls';
 
 export const fingerprint = (der) => crypto.createHash('sha256').update(der).digest('hex').toUpperCase().match(/.{2}/g).join(':');
@@ -19,15 +20,51 @@ export function refuseReshape(method, url) {
   return null;
 }
 
-// pin=null only for first contact (adopt), which records the fingerprint it saw.
-export function httpsRequest({ url, method = 'GET', headers = {}, body = null, pin = null, timeoutMs = 8000 }) {
+// One keep-alive agent per KVM and pin, so a burst of kvmd calls (typing, a click's move and buttons) shares one TLS
+// connection instead of a handshake each. The pin is checked on every NEW socket, in createConnection, before the
+// socket is handed to HTTP: no request byte (no X-KVMD-Passwd) reaches a peer that hasn't shown the pinned
+// certificate. Not checkServerIdentity: Node calls it only after chain verification passes, and a GL.iNet Comet's
+// certificate is self-signed and expired (1970-1979), so it never runs there (checked on a real GL-RM1PE, 2026-11-09).
+// maxCachedSessions 0 and no session passed: every new socket is a full handshake. A pooled, resumed TLS session can
+// report no peer certificate at all, and the pin would then be checked against nothing (seen on a real GL-RM1PE).
+const AGENTS = new Map();
+export function pinnedAgent({ host, port = 443, pin, connect = tls.connect, maxSockets = 4 }) {
+  const key = `${host}:${port}|${pin}`;
+  if (AGENTS.has(key)) return AGENTS.get(key);
+  const agent = new https.Agent({ keepAlive: true, maxSockets, maxFreeSockets: maxSockets, maxCachedSessions: 0, timeout: 30000 });
+  agent.createConnection = (options, done) => {
+    const sock = connect({ host: options.host || host, port: Number(options.port || port), rejectUnauthorized: false, ...(net.isIP(host) ? {} : { servername: host }) });
+    let settled = false;
+    const fail = (e) => { if (settled) return; settled = true; sock.destroy(); done(e); };
+    sock.once('secureConnect', () => {
+      const raw = sock.getPeerCertificate()?.raw;
+      if (!raw?.length) return fail(new Error(`${host} showed no TLS certificate; refusing`));
+      const fp = fingerprint(raw);
+      if (fp !== pin) return fail(new Error(`TLS fingerprint ${fp} isn't the pinned one; refusing (a different device, or it was reset: run adopt again)`));
+      settled = true;
+      sock.off('error', fail);
+      done(null, sock);
+    });
+    sock.once('error', fail);
+    return undefined;
+  };
+  AGENTS.set(key, agent);
+  return agent;
+}
+
+// Close every pooled KVM connection (tests; idle sockets are unref'd, so a CLI exits anyway).
+export function closeAgents() { for (const a of AGENTS.values()) a.destroy(); AGENTS.clear(); }
+
+// pin=null only for first contact (adopt), which records the fingerprint it saw, on its own connection.
+export function httpsRequest({ url, method = 'GET', headers = {}, body = null, pin = null, timeoutMs = 8000, connect }) {
   const refused = refuseReshape(method, url);
   if (refused) return Promise.reject(new Error(`kvmd: ${refused}`));
-  return new Promise((resolve, reject) => {
+  const once = (retry) => new Promise((resolve, reject) => {
     const u = new URL(url);
-    // agent: false gives every request its own connection and a full handshake. A pooled, resumed TLS session can
-    // report no peer certificate at all, and two requests in parallel then fail the pin (seen on a real GL-RM1PE).
-    const req = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method, headers, rejectUnauthorized: false, timeout: timeoutMs, agent: false }, (res) => {
+    const port = Number(u.port || 443);
+    const agent = pin ? pinnedAgent({ host: u.hostname, port, pin, ...(connect ? { connect } : {}) }) : false;
+    const req = https.request({ hostname: u.hostname, port, path: u.pathname + u.search, method, headers, rejectUnauthorized: false, timeout: timeoutMs, agent }, (res) => {
+      // A second look, on the socket this response came on (new or kept alive: the same TLS connection either way).
       const raw = res.socket.getPeerCertificate()?.raw;
       if (!raw?.length) { res.destroy(); return reject(new Error(`${u.host} showed no TLS certificate; refusing`)); }
       const fp = fingerprint(raw);
@@ -37,21 +74,49 @@ export function httpsRequest({ url, method = 'GET', headers = {}, body = null, p
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks), fingerprint: fp }));
     });
     req.on('timeout', () => req.destroy(new Error(`no answer from ${u.host} in ${timeoutMs} ms`)));
-    req.on('error', reject);
+    req.on('error', (e) => {
+      // The KVM closed a kept-alive connection just as it was reused: once more, on a fresh (freshly pinned) socket.
+      if (retry && req.reusedSocket && ['ECONNRESET', 'EPIPE'].includes(e.code)) return resolve(once(false));
+      reject(e);
+    });
     if (body != null) req.write(body);
     req.end();
   });
+  return once(true);
 }
 
-export function makeClient({ base, pin, user = 'admin', password, request = httpsRequest, warm = null }) {
-  let cookie = null;
+// kvmd checks the X-KVMD-Passwd header against its password file on every request (about 40 ms on a Comet); its
+// login cookie costs about 1 ms. So the real client logs in once per process and KVM, keeps the cookie in memory
+// only, and falls back to the header when the login is refused or the cookie stops working. On a real GL-RM1PE,
+// pixel typing went from 257 to 66 ms a character with this and the keep-alive agent (2026-11-09).
+const COOKIES = new Map();
+async function loginCookie({ base, pin, user, pw, request }) {
+  const login = await request({ url: `${base}/api/auth/login`, method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ user, passwd: pw() }).toString(), pin });
+  const set = [].concat(login.headers?.['set-cookie'] || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('auth_token='));
+  return login.status === 200 && set ? set : null;
+}
+
+export function makeClient({ base, pin, user = 'admin', password, request = httpsRequest, warm = null, preferCookie = request === httpsRequest }) {
+  const key = `${base}|${user}|${pin}`;
+  let cookie = preferCookie ? COOKIES.get(key) || null : null;
+  let triedLogin = false;
   const pw = typeof password === 'function' ? password : () => password;
   const call = async (method, p, { body = null, type = null, timeoutMs } = {}) => {
     const refused = refuseReshape(method, p);
     if (refused) throw new Error(`kvmd: ${refused}`);
+    if (preferCookie && !cookie && !triedLogin) {
+      triedLogin = true;
+      cookie = await loginCookie({ base, pin, user, pw, request }).catch(() => null);
+      if (cookie) COOKIES.set(key, cookie);
+    }
     const headers = cookie ? { Cookie: cookie } : { 'X-KVMD-User': user, 'X-KVMD-Passwd': pw() };
     if (type) headers['Content-Type'] = type;
     let r = await request({ url: base + p, method, headers, body, pin, timeoutMs });
+    if ((r.status === 401 || r.status === 403) && cookie && preferCookie) {
+      // The cookie expired, or the KVM restarted: the header once, and a fresh login next time.
+      COOKIES.delete(key); cookie = null; triedLogin = false;
+      r = await request({ url: base + p, method, headers: { 'X-KVMD-User': user, 'X-KVMD-Passwd': pw(), ...(type ? { 'Content-Type': type } : {}) }, body, pin, timeoutMs });
+    }
     if ((r.status === 401 || r.status === 403) && !cookie) {
       const login = await request({ url: `${base}/api/auth/login`, method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ user, passwd: pw() }).toString(), pin });
       const set = [].concat(login.headers?.['set-cookie'] || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('auth_token='));
