@@ -1,0 +1,36 @@
+at 23:11:16Z
+1485b8b989eba7b74eb0616087c90052623212bf3ba3e7910dab512a63457219  sitter.py
+before:
+-N HOUSESITTER_IN
+-A HOUSESITTER_IN -i lo -j RETURN
+-A HOUSESITTER_IN -i tailscale0 -j RETURN
+-A HOUSESITTER_IN -s 10.0.0.0/8 -j RETURN
+-A HOUSESITTER_IN -s 172.16.0.0/12 -j RETURN
+-A HOUSESITTER_IN -s 192.168.0.0/16 -j RETURN
+-A HOUSESITTER_IN -p tcp -m tcp --dport 22 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 80 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 443 -j DROP
+
+the transaction:
+  *filter
+  :HOUSESITTER_IN - [0:0]
+  -A HOUSESITTER_IN -i lo -j RETURN
+  -A HOUSESITTER_IN -i tailscale0 -j RETURN
+  -A HOUSESITTER_IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  -A HOUSESITTER_IN -p tcp --dport 22 -j DROP
+  COMMIT
+  stderr: Warning: Extension conntrack revision 0 not supported, missing kernel module?
+  stderr: iptables-restore: line 7 failed
+iptables-restore exit 1
+
+after:
+-N HOUSESITTER_IN
+-A HOUSESITTER_IN -i lo -j RETURN
+-A HOUSESITTER_IN -i tailscale0 -j RETURN
+-A HOUSESITTER_IN -s 10.0.0.0/8 -j RETURN
+-A HOUSESITTER_IN -s 172.16.0.0/12 -j RETURN
+-A HOUSESITTER_IN -s 192.168.0.0/16 -j RETURN
+-A HOUSESITTER_IN -p tcp -m tcp --dport 22 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 80 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 443 -j DROP
+after == before: unchanged

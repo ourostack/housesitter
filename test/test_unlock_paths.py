@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, os.path.join(ROOT, "device"))
 import sitter as W  # noqa: E402
+from fake_tables import FakeTables  # noqa: E402
 
 W.SLEEP = lambda sec: None
 
@@ -475,13 +476,14 @@ class Plug(unittest.TestCase):
 class Ipv6WithoutIp6tables(unittest.TestCase):
     """#12: a GL-RM1PE can't load ip6tables (no modules.dep)."""
 
-    def run_(self, cmd, **k):
-        ok = cmd[0] == "iptables"
-        return type("R", (), {"returncode": 0 if ok else 1, "stderr": "" if ok else "modprobe: can't open 'modules.dep'"})()
+    def setUp(self):
+        self.run_ = FakeTables(v6=False)
 
-    def test_at_home_there_is_nothing_for_ipv6_to_filter(self):
-        out = W.apply_ingress("lan", run=self.run_, v6=True)
-        self.assertIn("IPv6: nothing to filter at home", out)
+    def test_at_home_too_it_fails_closed_unless_ipv6_reads_back_off(self):
+        with self.assertRaises(RuntimeError):
+            W.apply_ingress("lan", run=self.run_, v6=True, v6_off=lambda: (False, {"eth0": False}))
+        out = W.apply_ingress("lan", run=self.run_, v6=True, v6_off=lambda: (True, {"eth0": True}))
+        self.assertIn("IPv6: off on eth0 (read back)", out)
 
     def test_away_it_fails_closed_unless_ipv6_reads_back_off(self):
         with self.assertRaises(RuntimeError) as e:

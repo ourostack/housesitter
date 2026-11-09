@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -416,7 +416,8 @@ def is_gl(exists=os.path.exists):
 
 def harden(kvmd, cfg=None, run=subprocess.run, gl=None):
     """GL.iNet's cloud binding (Astrowarp) off, read back as disabled or this fails; then ingress for where the KVM is
-    (location "home": the LAN may reach SSH and HTTPS; anywhere else: only tailscale0)."""
+    (location "home": the LAN's private addresses and the tailnet may reach SSH, HTTP and HTTPS; anywhere else: only
+    tailscale0)."""
     cfg = cfg or {}
     out = {}
     if gl if gl is not None else is_gl():
@@ -431,27 +432,103 @@ def harden(kvmd, cfg=None, run=subprocess.run, gl=None):
     return out
 
 
-INGRESS_PORTS = (22, 443)
+INGRESS_PORTS = (22, 80, 443)  # 80 only redirects to 443, but it is still nginx answering whoever asks
 CHAIN = "HOUSESITTER_IN"
+INGRESS_RECHECK_SEC = 300
+INGRESS_ALERT_SEC = 300
 
 
 def ingress_mode(cfg):
-    """At home, the LAN may reach the KVM's SSH and HTTPS (setup, and your own devices). Anywhere else (an office's
-    guest network, a colo) only the tailnet may."""
+    """At home, the LAN's private addresses and the tailnet may reach the KVM's SSH, HTTP and HTTPS (setup, and your own
+    devices). Anywhere else (an office's guest network, a colo) only the tailnet may."""
     return "lan" if (cfg.get("location") or "home") == "home" else "tailnet"
 
 
+PRIVATE_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+PRIVATE_V6 = ("fe80::/10", "fc00::/7")
+
+
 def ingress_rules(mode, ports=INGRESS_PORTS):
-    """The firewall commands for a mode, for iptables and ip6tables alike. Pure, so it is tested."""
+    """The firewall commands for a mode, for iptables and ip6tables alike. Pure, so it is tested. Both modes end in a
+    DROP for SSH, HTTP and HTTPS; home lets private (RFC 1918, link-local and ULA) sources through first."""
     rules = []
     for t in ("iptables", "ip6tables"):
         rules += [[t, "-N", CHAIN], [t, "-F", CHAIN]]
-        if mode == "tailnet":
-            rules += [[t, "-A", CHAIN, "-i", "lo", "-j", "RETURN"], [t, "-A", CHAIN, "-i", "tailscale0", "-j", "RETURN"],
-                      [t, "-A", CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"]]
-            rules += [[t, "-A", CHAIN, "-p", "tcp", "--dport", str(p), "-j", "DROP"] for p in ports]
+        rules += [[t, "-A", CHAIN, "-i", "lo", "-j", "RETURN"], [t, "-A", CHAIN, "-i", "tailscale0", "-j", "RETURN"],
+                  [t, "-A", CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"]]
+        if mode == "lan":
+            rules += [[t, "-A", CHAIN, "-s", net, "-j", "RETURN"] for net in (PRIVATE_V4 if t == "iptables" else PRIVATE_V6)]
+        rules += [[t, "-A", CHAIN, "-p", "tcp", "--dport", str(p), "-j", "DROP"] for p in ports]
         rules += [[t, "-C", "INPUT", "-j", CHAIN]]
     return rules
+
+
+def ingress_expected(t, mode, track=True, ports=INGRESS_PORTS):
+    """The chain's rules as `iptables -S` prints them back (`-m tcp` added, conntrack states reordered)."""
+    out = []
+    for cmd in ingress_rules(mode, ports):
+        if cmd[0] != t or cmd[1] != "-A" or (not track and "conntrack" in cmd):
+            continue
+        spec = list(cmd[2:])
+        if "--dport" in spec and "-m" not in spec:
+            spec[spec.index("-p") + 2:spec.index("-p") + 2] = ["-m", "tcp"]
+        out.append("-A " + " ".join(x.replace("ESTABLISHED,RELATED", "RELATED,ESTABLISHED") for x in spec))
+    return out
+
+
+def ingress_readback(t, mode, run=subprocess.run, ports=INGRESS_PORTS, track=True):
+    """Read the chain back from the kernel and compare it, line for line, with what ingress_rules meant; INPUT must jump
+    to it first, once. track=None accepts the chain with or without the replies rule. None when it holds, else why."""
+    chain = (run([t, "-S", CHAIN], capture_output=True, text=True, timeout=10).stdout or "").splitlines()
+    inp = [" ".join(x.split()) for x in (run([t, "-S", "INPUT"], capture_output=True, text=True, timeout=10).stdout or "").splitlines() if x.startswith("-A ")]
+    jump = "-A INPUT -j %s" % CHAIN
+    if jump not in inp:
+        return "INPUT doesn't jump to %s" % CHAIN
+    if inp[0] != jump:
+        return "INPUT checks %s before jumping to %s" % (inp[0][len("-A INPUT "):], CHAIN)
+    if inp.count(jump) > 1:
+        return "INPUT jumps to %s %d times" % (CHAIN, inp.count(jump))
+    have = [" ".join(x.split()) for x in chain if x.startswith("-A %s " % CHAIN)]
+    options = [ingress_expected(t, mode, k, ports) for k in ((True, False) if track is None else (track,))]
+    if have in options:
+        return None
+    want = options[-1] if track is None else options[0]
+    missing = [w[len("-A %s " % CHAIN):] for w in want if w not in have]
+    extra = [h[len("-A %s " % CHAIN):] for h in have if h not in want and not (track is None and "conntrack" in h)]
+    why = "; ".join(x for x in ("missing: %s" % ", ".join(missing) if missing else "", "rules we didn't write: %s" % ", ".join(extra) if extra else "") if x)
+    return "%s %s doesn't read back as written (%s)" % (t, CHAIN, why[:240] or ("a rule twice" if len(have) != len(want) else "in another order"))
+
+
+def ingress_restore(t, mode, current_input, track=True):
+    """One iptables-restore transaction: the chain's rules, and INPUT jumping to it first, once. The kernel takes all of
+    it or none of it, so a failure leaves the rules that were there (on the Comet: docs/proof/2026-11-09-ingress/7-…)."""
+    jump = "-A INPUT -j %s" % CHAIN
+    lines = ["*filter", ":%s - [0:0]" % CHAIN]
+    lines += [" ".join(c[1:]) for c in ingress_rules(mode) if c[0] == t and c[1] == "-A" and (track or "conntrack" not in c)]
+    lines += ["-D INPUT -j %s" % CHAIN] * sum(1 for x in current_input if " ".join(x.split()) == jump)
+    lines += ["-I INPUT 1 -j %s" % CHAIN, "COMMIT", ""]
+    return "\n".join(lines)
+
+
+def apply_family(t, mode, run=subprocess.run):
+    """Load the chain for one of iptables or ip6tables. Returns whether the replies rule is in (False on a kernel with no
+    connection tracking). Raises, with the old rules still in force, if the kernel refused."""
+    try:
+        cur = (run([t, "-S", "INPUT"], capture_output=True, text=True, timeout=10).stdout or "").splitlines()
+    except OSError as e:
+        raise RuntimeError("%s-restore refused it (%s isn't installed: %s); the rules from before are still in force" % (t, t, e))
+    err = ""
+    for track in (True, False):
+        try:
+            r = run([t + "-restore", "--noflush"], input=ingress_restore(t, mode, cur, track), capture_output=True, text=True, timeout=10)
+        except OSError as e:
+            raise RuntimeError("%s-restore refused it (not installed: %s); the rules from before are still in force" % (t, e))
+        if r.returncode == 0:
+            return track
+        err = ((r.stderr or "").strip().splitlines() or [""])[0][:120]
+        if "conntrack" not in (r.stderr or ""):
+            break
+    raise RuntimeError("%s-restore refused it (%s); the rules from before are still in force" % (t, err))
 
 
 def tailnet_running(run=subprocess.run):
@@ -500,36 +577,112 @@ def ipv6_off_except_tailnet(run=subprocess.run, ifaces=None, read=None, write=No
     return all(seen.values()), seen
 
 
-def apply_ingress(mode, run=subprocess.run, iface_up=lambda i: os.path.exists("/sys/class/net/%s" % i), joined=None, v6=None, v6_off=None):
-    """Put the firewall in place for a mode. ip6tables is optional on some KVMs (GL.iNet's firmware can't load its
-    module): at home there are no DROP rules, so there is nothing for IPv6 to filter; away it fails closed unless IPv6
-    is off, and read back as off, on every interface but tailscale0."""
-    if mode == "tailnet" and not (iface_up("tailscale0") and (joined if joined is not None else tailnet_running(run))):
-        raise RuntimeError("refusing tailnet-only SSH and HTTPS: this KVM hasn't joined a running tailnet, so nothing could reach it. Join first (adopt does, with a tagged auth key)")
-    v6note = None
-    for cmd in ingress_rules(mode):
-        if cmd[0] == "ip6tables" and v6note:
+def ingress_drift(mode, run=subprocess.run, v6=None, read=None, ifaces=None):
+    """What has changed since ingress was applied, or None. The iptables chain is read back as apply_ingress does; where
+    there's no ip6tables, every interface but lo and tailscale0 must still read IPv6 off (a new interface counts)."""
+    bad = ingress_readback("iptables", mode, run=run, track=None)
+    if bad:
+        return bad
+    try:
+        r = run(["ip6tables", "-S", CHAIN], capture_output=True, text=True, timeout=10)
+    except OSError:
+        r = None
+    if r is not None and r.returncode == 0:
+        return ingress_readback("ip6tables", mode, run=run, track=None)
+    if not (v6 if v6 is not None else ipv6_present()):
+        return None
+    root = "/proc/sys/net/ipv6/conf"
+    read = read or (lambda p: open(p).read())
+    if ifaces is None:
+        try:
+            ifaces = sorted(os.listdir(root))
+        except OSError:
+            return "can't list %s" % root
+    on = []
+    for i in ifaces:
+        if i in ("lo", "tailscale0", "all", "default"):
             continue
-        r = run(cmd, capture_output=True, text=True, timeout=10)
-        if cmd[1] == "-C" and r.returncode != 0:
-            r = run([cmd[0], "-I", "INPUT", "-j", CHAIN], capture_output=True, text=True, timeout=10)
-        if r.returncode != 0 and cmd[1] not in ("-N",):
-            if cmd[0] == "ip6tables":
-                why = ((r.stderr or "").strip().splitlines() or [""])[0][:120]
-                if not (v6 if v6 is not None else ipv6_present()):
-                    v6note = "IPv6: this kernel has none, so nothing to filter"
-                    continue
-                if mode == "lan":
-                    v6note = "IPv6: nothing to filter at home (ip6tables unavailable: %s)" % why
-                    continue
-                ok, seen = (v6_off or ipv6_off_except_tailnet)()
-                if not ok:
-                    raise RuntimeError("ip6tables unavailable (%s) and IPv6 is still on for %s: refusing to call it tailnet-only" % (why, ", ".join(i for i, v in seen.items() if not v) or "an interface"))
-                v6note = "IPv6: off on %s (read back), so only tailscale0 speaks it; ip6tables unavailable" % (", ".join(sorted(seen)) or "every interface")
-                continue
-            raise RuntimeError("%s failed: %s" % (" ".join(cmd), (r.stderr or "")[:120]))
-    out = "SSH and HTTPS: %s" % ("home, unfiltered (anything that reaches the KVM may connect)" if mode == "lan" else "the tailnet only (tailscale0)")
+        try:
+            if read("%s/%s/disable_ipv6" % (root, i)).strip() != "1":
+                on.append(i)
+        except OSError:
+            on.append(i)
+    return "IPv6 is on again for %s, and there's no ip6tables to filter it" % ", ".join(on) if on else None
+
+
+def apply_ingress(mode, run=subprocess.run, iface_up=lambda i: os.path.exists("/sys/class/net/%s" % i), joined=None, v6=None, v6_off=None):
+    """Put the firewall in place for a mode, in one transaction per family, and read it back. ip6tables is optional on
+    some KVMs (GL.iNet's firmware can't load its module): then, home or away, it fails closed unless IPv6 is off, and
+    read back as off, on every interface but lo and tailscale0."""
+    if mode == "tailnet" and not (iface_up("tailscale0") and (joined if joined is not None else tailnet_running(run))):
+        raise RuntimeError("refusing tailnet-only SSH, HTTP and HTTPS: this KVM hasn't joined a running tailnet, so nothing could reach it. Join first (adopt does, with a tagged auth key)")
+    tracked = {"iptables": apply_family("iptables", mode, run)}
+    v6note = None
+    try:
+        tracked["ip6tables"] = apply_family("ip6tables", mode, run)
+    except RuntimeError as e:
+        why = str(e)[len("ip6tables-restore refused it ("):].split(")")[0]
+        if not (v6 if v6 is not None else ipv6_present()):
+            v6note = "IPv6: this kernel has none, so nothing to filter"
+        else:
+            ok, seen = (v6_off or ipv6_off_except_tailnet)()
+            if not ok:
+                raise RuntimeError("ip6tables unavailable (%s) and IPv6 is still on for %s: refusing to call it filtered" % (why, ", ".join(i for i, v in seen.items() if not v) or "an interface"))
+            v6note = "IPv6: off on %s (read back), so only lo and tailscale0 speak it; ip6tables unavailable" % (", ".join(sorted(seen)) or "every interface")
+    for t, track in tracked.items():
+        bad = ingress_readback(t, mode, run=run, track=track)
+        if bad:
+            raise RuntimeError("not filtered as meant (%s): refusing to call it done" % bad)
+    out = "SSH, HTTP and HTTPS: %s" % ("home: the LAN's private addresses and the tailnet, read back" if mode == "lan" else "the tailnet only (tailscale0), read back")
+    if not all(tracked.values()):
+        # The GL-RM1PE's kernel has no connection tracking (2026-11-09, on the Comet: "Extension conntrack revision 0 not
+        # supported"). Nothing is lost: the DROPs are for SSH, HTTP and HTTPS only, and replies to the KVM's own
+        # connections arrive on other ports. A session open from where the new mode doesn't allow ends when it changes.
+        out += "; no connection tracking in this kernel, so an open session from where this mode doesn't allow ends now"
     return "%s; %s" % (out, v6note) if v6note else out
+
+
+def ingress_step(cfg, ing, now, log, apply=None, drift=None, tell=None, keep=None):
+    """One turn of the sitter's ingress duty: put the rules in place (at start, and until they hold), read them back
+    every 5 minutes and put them back if they changed, and tell you once if the KVM goes 5 minutes unfiltered. Its state
+    goes to ingress.json, and from there into status.json, so `housesitter status` shows it. Returns the new state."""
+    apply, drift = apply or apply_ingress, drift or ingress_drift
+    tell = tell or (lambda subject, body: notify(cfg, subject, body))
+    keep = keep or (lambda v: save("ingress.json", v))
+    mode, ing = ingress_mode(cfg), dict(ing)
+    if ing.get("ok"):
+        try:
+            why = drift(mode)
+        except Exception as e:  # noqa: BLE001
+            why = "couldn't read the rules back: %s" % str(e)[:120]
+        if not why:
+            ing.update(checked_at=now, next=now / 1000 + INGRESS_RECHECK_SEC)
+            keep(ing)
+            return ing
+        log("ingress drifted (%s); putting it back" % why[:240])
+        ing.update(ok=False, drifted=why[:240])
+    try:
+        detail = apply(mode)
+        log("ingress: %s" % detail)
+        if ing.get("alerted_at"):
+            try:
+                tell("%s's KVM filters again" % cfg.get("name", "the Mac"), "housesitter on the KVM has its rules for who may reach SSH, HTTP and HTTPS back in place, read back: %s." % detail)
+            except Exception as e:  # noqa: BLE001
+                log("ingress: couldn't say it's back: %s" % str(e)[:120])
+        ing = {"ok": True, "mode": mode, "detail": detail, "at": now, "checked_at": now, "next": now / 1000 + INGRESS_RECHECK_SEC}
+    except Exception as e:  # noqa: BLE001
+        log("ingress NOT applied (retrying every minute): %s" % str(e)[:160])
+        ing.update(ok=False, mode=mode, detail=str(e)[:240], since=ing.get("since") or now, next=now / 1000 + 60)
+        if not ing.get("alerted_at") and now - ing["since"] >= INGRESS_ALERT_SEC * 1000:
+            try:
+                r = tell("%s's KVM isn't filtering who reaches it" % cfg.get("name", "the Mac"),
+                         "For %d min housesitter on the KVM couldn't put its rules for who may reach SSH, HTTP and HTTPS in place: %s. Whatever rules were there before are still in force; after the KVM restarts, that is none. It keeps trying every minute. Look: housesitter doctor %s." % ((now - ing["since"]) // 60000, str(e)[:160], cfg.get("name", "")))
+                ing["alerted_at"] = now
+                log("ingress: told you (%s)" % r)
+            except Exception as e2:  # noqa: BLE001
+                log("ingress: couldn't tell you: %s" % str(e2)[:120])
+    keep(ing)
+    return ing
 
 
 CERT_PATHS = ("/etc/kvmd/nginx/ssl/server.crt", "/etc/kvmd/nginx/ssl/server.pem", "/etc/nginx/ssl/server.crt")
@@ -2835,7 +2988,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "watcher": st.get("watcher"), "emails_today": emails_today(st.get("ledger"), now),
-              "lock_policy": lock_policy(cfg), "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
+              "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
               "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "watched_by": bool((cfg.get("watched_by") or {}).get("url")) or bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
@@ -3107,18 +3260,12 @@ def main(argv):
     log("start: sitter %s watching %s every %ss; unlock %s; outbox %s" % (VERSION, cfg.get("name"), cfg.get("interval_sec", 60), "ready" if has_secret("mac") else "NOT provisioned", "on" if gh else "off"))
     interval, poll = cfg.get("interval_sec", 60), o.get("poll_sec", 2)
     boot_every = dict(BOOT, **cfg.get("boot", {}))["tick_sec"]
-    next_ingress, ingress_ok = 0, False
+    ing = {}
     next_look = 0
     next_boot = 0 if cfg.get("boot_watch", True) is not False else float("inf")
     while True:
-        if not ingress_ok and time.time() >= next_ingress:
-            # iptables rules don't survive the KVM's reboot: put them back at every start, and until they hold.
-            next_ingress = time.time() + 60
-            try:
-                log("ingress: %s" % apply_ingress(ingress_mode(cfg)))
-                ingress_ok = True
-            except Exception as e:  # noqa: BLE001
-                log("ingress NOT applied (retrying every minute): %s" % str(e)[:160])
+        if time.time() >= ing.get("next", 0):
+            ing = ingress_step(cfg, ing, int(time.time() * 1000), log)
         if cfg.get("boot_watch", True) is not False and time.time() >= next_boot:
             next_boot = time.time() + boot_every
             try:

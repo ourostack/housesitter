@@ -1,0 +1,6 @@
+read at 23:11:06Z
+dead-man.log written 23:10:48Z
+SSH, HTTP and HTTPS: home: the LAN's private addresses and the tailnet, read back; no connection tracking in this kernel, so an open session from where this mode doesn't allow ends now; IPv6: off on eth0, sit0 (read back), so only lo and tailscale0 speak it; ip6tables unavailable
+
+ingress.json:
+{"ok": true, "mode": "lan", "detail": "SSH, HTTP and HTTPS: home: the LAN's private addresses and the tailnet, read back; no connection tracking in this kernel, so an open session from where this mode doesn't allow ends now; IPv6: off on eth0, sit0 (read back), so only lo and tailscale0 speak it; ip6tables unavailable", "at": 1794265741501, "checked_at": 1794265741501, "next": 1794266041.501}

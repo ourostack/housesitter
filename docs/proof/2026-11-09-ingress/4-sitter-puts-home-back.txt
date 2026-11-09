@@ -1,0 +1,28 @@
+read at 23:09:14Z
+sitter.log, ingress lines, since this sitter started:
+2026-11-09T23:04:00 start: sitter 0.3.2 watching mini every 60s; unlock ready; outbox off
+2026-11-09T23:04:00 ingress: SSH, HTTP and HTTPS: home: the LAN's private addresses and the tailnet, read back; no connection tracking in this kernel, so an open session from where this mode doesn't allow ends now; IPv6: off on eth0, sit0 (read back), so only lo and tailscale0 speak it; ip6tables unavailable
+2026-11-09T23:09:01 ingress drifted (iptables HOUSESITTER_IN doesn't read back as written (missing: -s 10.0.0.0/8 -j RETURN, -s 172.16.0.0/12 -j RETURN, -s 192.168.0.0/16 -j RETURN)); putting it back
+2026-11-09T23:09:01 ingress: SSH, HTTP and HTTPS: home: the LAN's private addresses and the tailnet, read back; no connection tracking in this kernel, so an open session from where this mode doesn't allow ends now; IPv6: off on eth0, sit0 (read back), so only lo and tailscale0 speak it; ip6tables unavailable
+iptables -S HOUSESITTER_IN:
+-N HOUSESITTER_IN
+-A HOUSESITTER_IN -i lo -j RETURN
+-A HOUSESITTER_IN -i tailscale0 -j RETURN
+-A HOUSESITTER_IN -s 10.0.0.0/8 -j RETURN
+-A HOUSESITTER_IN -s 172.16.0.0/12 -j RETURN
+-A HOUSESITTER_IN -s 192.168.0.0/16 -j RETURN
+-A HOUSESITTER_IN -p tcp -m tcp --dport 22 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 80 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 443 -j DROP
+iptables -S INPUT:
+-P INPUT ACCEPT
+-A INPUT -j HOUSESITTER_IN
+-A INPUT -j ts-input
+-A INPUT -j MACW_IN
+IPv6 off (disable_ipv6) per interface:
+  all 0
+  default 0
+  eth0 1
+  lo 0
+  sit0 1
+  tailscale0 0

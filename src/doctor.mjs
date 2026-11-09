@@ -42,6 +42,12 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     kItems.push({ dot: kvm.hid?.keyboard_online && seen ? 'ok' : 'warn', text: `keyboard ${kvm.hid?.keyboard_online ? 'online' : 'OFFLINE'} · HDMI ${hdmi}` });
   }
   if (mac.kvm && !mac.kvm.tls_sha256) kItems.push({ dot: 'warn', text: 'its certificate is not pinned' });
+  const ing = st?.ingress;
+  if (ing?.ok) kItems.push({ dot: 'ok', text: `reached by ${ing.mode === 'tailnet' ? 'the tailnet only' : 'the LAN\'s private addresses and the tailnet'} (SSH, HTTP, HTTPS) · read back ${age(now - (ing.checked_at || ing.at))} ago` });
+  else if (ing) {
+    kItems.push({ dot: 'bad', text: `NOT filtering who reaches it${ing.since ? ` since ${clock(ing.since, now)}` : ''}: ${short(ing.detail || ing.drifted || 'unknown', 90)}` });
+    todo.push({ cmd: `housesitter adopt ${name}`, why: 'puts the KVM\'s rules back in place, and says why if it can\'t' });
+  }
   sec.push({ label: 'THE KVM', items: kItems });
 
   // the password gate

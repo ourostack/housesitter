@@ -1,0 +1,12 @@
+away, applied over the tailnet, 23:07:28Z
+laptop (on the LAN, not on the tailnet):
+  LAN :22 no answer (4 s)
+  LAN :80 no answer (4 s)
+  LAN :443 no answer (4 s)
+ouroboros-host (on the LAN and the tailnet):
+  LAN :22 no answer (4 s)
+  LAN :80 no answer (4 s)
+  LAN :443 no answer (4 s)
+  tailnet :22 OPEN
+  tailnet :80 OPEN
+  tailnet :443 OPEN

@@ -1,0 +1,12 @@
+home, before, 23:07:23Z
+laptop (on the LAN, not on the tailnet):
+  LAN :22 OPEN
+  LAN :80 OPEN
+  LAN :443 OPEN
+ouroboros-host (on the LAN and the tailnet):
+  LAN :22 OPEN
+  LAN :80 OPEN
+  LAN :443 OPEN
+  tailnet :22 OPEN
+  tailnet :80 OPEN
+  tailnet :443 OPEN
