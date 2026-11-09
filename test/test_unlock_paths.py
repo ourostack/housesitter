@@ -178,6 +178,33 @@ class WithOcr(Base):
         self.assertEqual(k.typed(), [])
 
 
+class Readopt(Base):
+    def test_storing_the_same_password_keeps_its_proof_and_a_new_one_resets_it(self):
+        saved = W.device_key
+        old_in, old_out = sys.stdin, sys.stdout
+        try:
+            W.device_key = lambda paths=None: (b"k" * 32, "given")
+            W.store_secret("mac", "correct horse")
+            armed("verified")
+            for value, trust in (("correct horse", "verified"), ("battery staple", "unverified")):
+                sys.stdin, sys.stdout = io.StringIO(value + "\n"), io.StringIO()
+                code = W.main(["store-secret", "mac"])
+                out = sys.stdout.getvalue()
+                sys.stdin, sys.stdout = old_in, old_out
+                self.assertEqual(code, 0)
+                self.assertEqual(W.password_gate()["trust"], trust, value)
+                self.assertEqual("unchanged" in out, trust == "verified")
+                self.assertNotIn(value, out)
+        finally:
+            W.device_key = saved
+            sys.stdin, sys.stdout = old_in, old_out
+
+    def test_look_counts_every_lesson(self):
+        self.teach()
+        W.save("config.json", {})
+        self.assertEqual(W.lesson_counts(), {"boot": 0, "lock": 1, "grid": 1})
+
+
 class TeachingSafely(Base):
     def test_a_list_of_users_is_never_taught_as_filevault(self):
         W.save("config.json", {"name": "mini"})

@@ -318,7 +318,8 @@ async function proof(mac) {
     const file = fr.jpeg ? `frame-${String(n).padStart(4, '0')}.jpg` : null;
     if (file) { fs.writeFileSync(path.join(dir, file), Buffer.from(fr.jpeg, 'base64')); kept++; }
     const last = st.status?.actions?.map((a) => `${a.kind}: ${a.result}`).join('; ') || '';
-    timeline.push({ at: new Date(t).toISOString(), file, reads_as: fr.reads_as ?? null, hdmi: fr.hdmi ?? null, prompt: fr.prompt ?? null, state, actions: last || null, error: fr.error || null });
+    // state is the rules' word: "filevault" means any login, lock or FileVault screen; screen is what the sitter's last look read.
+    timeline.push({ at: new Date(t).toISOString(), file, reads_as: fr.reads_as ?? null, hdmi: fr.hdmi ?? null, prompt: fr.prompt ?? null, screen: st.status?.obs?.screen ?? null, state, actions: last || null, error: fr.error || null });
     say(`${new Date(t).toLocaleTimeString()}  ${String(fr.reads_as || '?').padEnd(11)} ${state.padEnd(9)} ${fr.prompt?.visible ? `lesson ${fr.prompt.kind} ${Math.round(fr.prompt.match * 100)}% ` : ''}${file ? '' : fr.withheld ? '(desktop: not recorded) ' : ''}${last}`);
     if (state !== 'healthy' && state !== '?') wentDown = true;
     if (wentDown && state === 'healthy' && !backAt) backAt = t;
