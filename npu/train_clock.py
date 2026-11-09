@@ -95,13 +95,13 @@ class ClockNet(nn.Module):
     def __init__(self, n=len(CHARS) + 1):
         super().__init__()
         c = lambda i, o, k=3, p=1: nn.Sequential(nn.Conv2d(i, o, k, padding=p), nn.BatchNorm2d(o), nn.ReLU())
-        self.f = nn.Sequential(c(1, 16), nn.MaxPool2d(2), c(16, 32), nn.MaxPool2d(2), c(32, 64), c(64, 64), nn.MaxPool2d((2, 1)),
+        self.f = nn.Sequential(c(1, 16), nn.MaxPool2d(2), c(16, 32), nn.MaxPool2d((2, 1)), c(32, 64), c(64, 64), nn.MaxPool2d((2, 1)),
                                c(64, 128, (4, 3), (0, 1)))
         # Context along the line: each step sees about two characters either side (1x5 convolutions, NPU-friendly).
         self.ctx = nn.Sequential(c(128, 128, (1, 5), (0, 2)), c(128, 128, (1, 5), (0, 2)), c(128, 128, (1, 5), (0, 2)))
         self.head = nn.Conv2d(128, n, 1)
 
-    def forward(self, x):  # x: N,1,32,192 in [0,1] -> N,classes,1,48
+    def forward(self, x):  # x: N,1,32,192 in [0,1] -> N,classes,1,96 (two steps per 4 pixels of a 32-row line)
         f = self.f(x)
         return self.head(f + self.ctx(f))
 

@@ -120,17 +120,23 @@ def ctc(out_bytes, steps, classes, keys):
 
 class Reader:
     def __init__(self, det=os.path.join(HERE, "det.rknn"), rec=os.path.join(HERE, "rec.rknn"), keys=os.path.join(HERE, "ppocr_keys_v1.txt")):
-        self.det, self.rec = Model(det), Model(rec)
+        # The Comet's CMA heap (48 MiB) holds the detector or the recogniser, not both: --stage loads one.
+        stage = next((a.split("=")[1] for a in sys.argv if a.startswith("--stage=")), "both")
+        self.det = Model(det) if stage in ("both", "det") else None
+        self.rec = Model(rec) if stage in ("both", "rec") else None
+        self.stage = stage
         self.keys = [ln.rstrip("\n") for ln in open(keys, encoding="utf-8")] + [" "]
-        di = self.det.inputs[0]
-        d = list(di.dims[:di.n_dims])
-        self.dh, self.dw = (d[1], d[2]) if di.fmt == 1 else (d[2], d[3])
-        ri = self.rec.inputs[0]
-        r = list(ri.dims[:ri.n_dims])
-        self.rh, self.rw = (r[1], r[2]) if ri.fmt == 1 else (r[2], r[3])
-        o = self.rec.outputs[0]
-        od = list(o.dims[:o.n_dims])
-        self.steps, self.classes = od[-2], od[-1]
+        if self.det:
+            di = self.det.inputs[0]
+            d = list(di.dims[:di.n_dims])
+            self.dh, self.dw = (d[1], d[2]) if di.fmt == 1 else (d[2], d[3])
+        if self.rec:
+            ri = self.rec.inputs[0]
+            r = list(ri.dims[:ri.n_dims])
+            self.rh, self.rw = (r[1], r[2]) if ri.fmt == 1 else (r[2], r[3])
+            o = self.rec.outputs[0]
+            od = list(o.dims[:o.n_dims])
+            self.steps, self.classes = od[-2], od[-1]
         # A rec model built without mean/std takes floats: normalise here (pm1: PaddleOCR's own, 01: the zoo demo's).
         self.rec_norm = next((a.split("=")[1] for a in sys.argv if a.startswith("--rec-norm=")), None)
 
@@ -165,13 +171,22 @@ class Reader:
             mask = bytes(1 if v > thresh else 0 for v in prob)
         boxes = boxes_from_mask(mask, self.dw, self.dh)
         t["det_post_ms"] = (time.time() - t0) * 1000 - t["det_npu_ms"]
-        found, npu = [], 0.0
-        t0 = time.time()
+        sboxes = []
         for b in sorted(boxes, key=lambda b: (b[1], b[0]))[:max_boxes]:
             if b[0] >= ow or b[1] >= oh:
                 continue
             u = unclip(b)
-            sb = (cx0 + u[0] / scale, cy0 + u[1] / scale, cx0 + u[2] / scale, cy0 + u[3] / scale)
+            sboxes.append([int(cx0 + u[0] / scale), int(cy0 + u[1] / scale), int(cx0 + u[2] / scale) + 1, int(cy0 + u[3] / scale) + 1])
+        t["boxes"] = len(sboxes)
+        if not self.rec:
+            return [{"box": b} for b in sboxes], {k: round(v, 1) if isinstance(v, float) else v for k, v in t.items()}
+        return self.recognise(y, src_w, src_h, sboxes, t)
+
+    def recognise(self, y, src_w, src_h, sboxes, t=None):
+        t = t if t is not None else {}
+        found, npu = [], 0.0
+        t0 = time.time()
+        for sb in sboxes:
             px, _ = crop_resize(y, src_w, src_h, sb, self.rh, self.rw)
             if self.rec_norm:
                 lo, k = (-1.0, 2 / 255) if self.rec_norm == "pm1" else (0.0, 1 / 255)
@@ -184,7 +199,6 @@ class Reader:
                 found.append({"text": text, "conf": round(conf, 3), "box": [int(v) for v in sb]})
         t["rec_ms"] = (time.time() - t0) * 1000
         t["rec_npu_ms"] = npu
-        t["boxes"] = len(boxes)
         return found, {k: round(v, 1) if isinstance(v, float) else v for k, v in t.items()}
 
 
@@ -198,13 +212,22 @@ def rss_kb():
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     opt = {a.split("=")[0][2:]: a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--") and "=" in a}
+    if "--cma" in sys.argv:
+        import rknnrt
+        rknnrt.contiguous_heap()
     t0 = time.time()
     r = Reader(det=opt.get("det", os.path.join(HERE, "det.rknn")), rec=opt.get("rec", os.path.join(HERE, "rec.rknn")), keys=opt.get("keys", os.path.join(HERE, "ppocr_keys_v1.txt")))
     load_ms = (time.time() - t0) * 1000
     from rknn import attr_dict
-    print(json.dumps({"load_ms": round(load_ms), "versions": r.det.versions(), "det_in": attr_dict(r.det.inputs[0]), "det_out": attr_dict(r.det.outputs[0]),
-                      "rec_in": attr_dict(r.rec.inputs[0]), "rec_out": attr_dict(r.rec.outputs[0]), "det_mem": r.det.mem(), "rec_mem": r.rec.mem(), "rss_kb": rss_kb()}))
+    m0 = r.det or r.rec
+    print(json.dumps({"load_ms": round(load_ms), "stage": r.stage, "versions": m0.versions(), "mem": {"det": r.det.mem() if r.det else None, "rec": r.rec.mem() if r.rec else None}, "rss_kb": rss_kb()}))
     region = tuple(float(v) for v in opt["region"].split(",")) if opt.get("region") else None
+    boxes_in = {}
+    if opt.get("boxes"):
+        for ln in open(opt["boxes"]):
+            j = json.loads(ln)
+            if "file" in j:
+                boxes_in[j["file"]] = [f["box"] for f in j["found"]]
 
     def frames():
         # yuv420p frames on stdin, as the KVM's own decoder gives them (8-digit length, 64-char name, 16-char "w h"),
@@ -218,5 +241,8 @@ if __name__ == "__main__":
 
     for name, yuv, w, h in frames():
         t0 = time.time()
-        found, t = r.read(yuv[:w * h], w, h, region=region)
-        print(json.dumps({"file": name, "total_ms": round((time.time() - t0) * 1000), **t, "rss_kb": rss_kb(), "text": [f["text"] for f in found], "found": found}, ensure_ascii=False), flush=True)
+        if r.stage == "rec":
+            found, t = r.recognise(yuv[:w * h], w, h, boxes_in.get(name, []))
+        else:
+            found, t = r.read(yuv[:w * h], w, h, region=region)
+        print(json.dumps({"file": name, "total_ms": round((time.time() - t0) * 1000), **t, "rss_kb": rss_kb(), "text": [f.get("text") for f in found], "found": found}, ensure_ascii=False), flush=True)

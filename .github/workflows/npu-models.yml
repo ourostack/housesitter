@@ -48,6 +48,7 @@ jobs:
         if: false
         run: python npu/convert.py models dataset.txt
       - name: Clock reader (trained on synthetic menu bars, open fonts only)
+        if: false
         run: |
           pip install -q torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
           pip install -q pillow

@@ -109,6 +109,22 @@ def sample(n, every):
         time.sleep(max(0, every - (time.time() - t)))
 
 
+def evaluate(path):
+    """Spike: JSON lines on stdin, each {"id", "x": base64 of a ready 32 x W input}; prints what the NPU reads."""
+    import base64
+    if "--cma" in sys.argv:
+        import rknnrt
+        rknnrt.contiguous_heap()
+    r = ClockReader(path)
+    for ln in sys.stdin:
+        j = json.loads(ln)
+        (out, _), = r.m.run(base64.b64decode(j["x"]), want_float=True)
+        txt = decode(out, r.classes, r.steps)
+        print(json.dumps({"id": j["id"], "text": txt, "minutes": minutes(txt), "npu_ms": round(r.m.run_ms, 2)}), flush=True)
+
+
 if __name__ == "__main__":
     if sys.argv[1:2] == ["sample"]:
         sample(int(sys.argv[2]), float(sys.argv[3]))
+    if sys.argv[1:2] == ["eval"]:
+        evaluate(sys.argv[2])
