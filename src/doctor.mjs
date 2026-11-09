@@ -135,7 +135,11 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     scr.push(['THE SCREEN', '']);
     scr.push(['reads as', `${SCREEN[st.obs?.screen] || 'not read'}${st.obs?.eyes === 'frame' ? ' (from a decoded frame)' : ''}`]);
     if (st.prompt) scr.push(['taught prompt', st.prompt.visible ? `on the picture (${Math.round(st.prompt.match * 100)}%)` : 'not on the picture']);
-    if (st.obs?.screen === 'desktop') scr.push(['clock', st.obs.clock_ticking === false ? 'NOT moving' : st.obs.clock_ticking ? 'moving' : 'not read yet']);
+    if (st.obs?.screen === 'desktop') {
+      const c = st.obs.clock;
+      const read = c?.text ? `: reads ${c.text.replace(/^.*?(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)\s*$/, '$1')}, on the KVM's NPU${c.ms != null ? ` in ${c.ms} ms` : ''}` : '';
+      scr.push(['clock', `${st.obs.clock_ticking === false ? 'NOT moving' : st.obs.clock_ticking ? 'moving' : 'not read yet'}${read}`]);
+    }
     scr.push(['looked', `${age(ago)} ago${late ? ' (LATE: is the sitter running?)' : ''}`]);
     if (!late) scr.push(['next look', every - ago > 1000 ? `in ${age(every - ago)}` : 'due now']);
     const probeless = st.probes && !st.probes.health && !st.probes.watched_by && !st.probes.heartbeat;

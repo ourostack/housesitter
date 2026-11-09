@@ -4,6 +4,7 @@ import hashlib
 import json
 import urllib.error
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -687,6 +688,155 @@ class MutualWatch(unittest.TestCase):
         st = W.load("state.json", {})
         last = [e for e in st["ledger"] if e.get("kind") == "notify" and e.get("test") and e.get("by") != "watcher"]
         self.assertEqual(last, [])
+
+
+FAKE_WORKER = r"""
+import json, struct, sys
+mode = sys.argv[1]
+if mode == "slow-start":
+    import time; time.sleep(0.7)
+print(json.dumps({"ready": True, "classes": 66, "steps": 96}), flush=True)
+reads = sys.argv[2:]
+k = 0
+while True:
+    h = sys.stdin.buffer.read(4)
+    if len(h) < 4:
+        break
+    sys.stdin.buffer.read(struct.unpack("<I", h)[0])
+    if mode in ("hang", "slow-start"):
+        import time; time.sleep(30)
+    if mode == "error":
+        print(json.dumps({"error": "the NPU job failed"}), flush=True); continue
+    print(json.dumps({"text": reads[min(k, len(reads) - 1)], "ms": 1.07}), flush=True)
+    k += 1
+"""
+
+
+def fake_npu(mode="ok", reads=("Mon Nov 9 8:05 AM",), timeout=2.0):
+    def popen(args, **kw):
+        return subprocess.Popen([sys.executable, "-c", FAKE_WORKER, mode, *reads], **kw)
+    return W.NpuClock(model="/fake/clock.rknn", timeout=timeout, popen=popen, exists=lambda p: True)
+
+
+def desktop_frame(w=640, h=360):
+    """A luma plane that reads as a desktop: menu-bar edges at the top left."""
+    y = bytearray(b"\x60" * (w * h))
+    for row in range(2, 40, 2):
+        for x in range(0, int(w * 0.4), 4):
+            y[row * w + x] = 250
+    return bytes(y), w, h
+
+
+class NpuClockReading(unittest.TestCase):
+    """The menu-bar clock, read on the KVM's NPU: it only ever feeds the frozen test; it never decides the screen or types."""
+
+    def setUp(self):
+        self.dir = scratch()
+        W.HOME = self.dir
+        self.saved = W.NPU
+
+    def tearDown(self):
+        if W.NPU.proc:
+            W.NPU.proc.kill()
+        W.NPU = self.saved
+
+    def test_minutes_from_what_the_menu_bar_says(self):
+        self.assertEqual(W.clock_minutes("Mon Nov 9 8:05 AM"), 485)
+        self.assertEqual(W.clock_minutes("Sun Nov 8 5:59 PM"), 1079)
+        self.assertEqual(W.clock_minutes("12:30 AM"), 30)
+        self.assertEqual(W.clock_minutes("ue 15:43"), 943)
+        self.assertEqual(W.clock_minutes("10:37:04 PM"), 1357)
+        for bad in ("Sun Nov", "", None, "13:05 PM", "25:00", "8:61"):
+            self.assertIsNone(W.clock_minutes(bad), bad)
+
+    def test_ctc_decoding(self):
+        import array
+        classes, steps = len(W.CLOCK_CHARS) + 1, 12
+        seq = [W.CLOCK_CHARS.index(c) + 1 for c in "8:05"]
+        picks = [0, seq[0], seq[0], 0, seq[1], 0, seq[2], seq[3], seq[3], 0, 0, 0]
+        a = array.array("f", [0.0] * (classes * steps))
+        for t, k in enumerate(picks):
+            a[k * steps + t] = 1.0
+        self.assertEqual(W.clock_decode(a, classes, steps), "8:05")
+
+    def test_the_input_is_the_menu_bars_right_end_only(self):
+        w, h = 2560, 1440
+        y = bytearray(w * h)
+        x0, y1 = int(0.94 * w), int(0.0195 * h)
+        for r in range(y1):
+            y[r * w + x0:(r + 1) * w] = b"\xc8" * (w - x0)
+        px = W.clock_input(bytes(y), w, h)
+        self.assertEqual(len(px), 32 * 192)
+        ow = round((w - x0) * 32 / (y1 - int(0)))
+        self.assertTrue(all(b == 200 for b in px[:ow]), "the crop is all clock region")
+        self.assertTrue(all(b == 0 for b in px[ow:192]), "padded with black")
+
+    def test_a_worker_reads_and_a_frozen_clock_reads_as_stopped(self):
+        W.NPU = fake_npu(reads=("Mon Nov 9 8:05 AM",))
+        mem = {}
+        y, w, h = desktop_frame()
+        outs = [W.eyes_without_ocr({}, mem, (y, w, h), None) for _ in range(3)]
+        self.assertEqual(outs[0]["clock"]["text"], "Mon Nov 9 8:05 AM")
+        self.assertEqual(outs[0]["clock"]["on"], "npu")
+        self.assertIs(outs[2]["clock_ticking"], False, "three reads of the same time: stopped")
+
+    def test_a_moving_clock_reads_as_moving(self):
+        W.NPU = fake_npu(reads=("8:05 AM", "8:06 AM", "8:07 AM"))
+        mem = {}
+        y, w, h = desktop_frame()
+        outs = [W.eyes_without_ocr({}, mem, (y, w, h), None) for _ in range(3)]
+        self.assertIs(outs[2]["clock_ticking"], True)
+
+    def test_no_time_in_the_read_falls_back_to_the_fingerprint(self):
+        W.NPU = fake_npu(reads=("",))
+        y, w, h = desktop_frame()
+        out = W.eyes_without_ocr({}, {}, (y, w, h), None)
+        self.assertIsNone(out["clock"])
+        mem = {}
+        W.eyes_without_ocr({}, mem, (y, w, h), None)
+        self.assertEqual(mem["clock_seen"][-1], W.clock_sig(y, w, h))
+
+    def test_a_hung_worker_is_turned_off_for_an_hour(self):
+        W.NPU = fake_npu(mode="hang", timeout=1.0)
+        y, w, h = desktop_frame()
+        out = W.eyes_without_ocr({}, {}, (y, w, h), None)
+        self.assertIsNone(out["clock"])
+        self.assertIn("didn't answer", W.NPU.why)
+        self.assertFalse(W.NPU.available())
+        self.assertIsNone(W.NPU.proc)
+
+    def test_one_budget_covers_start_up_and_the_read(self):
+        W.NPU = fake_npu(mode="slow-start", timeout=1.0)
+        t = time.monotonic()
+        self.assertIsNone(W.NPU.read(b"\x00" * 6144))
+        self.assertLess(time.monotonic() - t, 1.6, "a slow start and a hung job share one timeout")
+        self.assertIn("didn't answer", W.NPU.why)
+
+    def test_a_failed_job_is_turned_off_too(self):
+        W.NPU = fake_npu(mode="error")
+        self.assertIsNone(W.NPU.read(b"\x00" * 6144))
+        self.assertEqual(W.NPU.why, "the NPU job failed")
+
+    def test_config_can_turn_it_off(self):
+        calls = []
+        W.NPU = fake_npu()
+        W.NPU.read = lambda px, now=None: calls.append(1)
+        y, w, h = desktop_frame()
+        W.eyes_without_ocr({"npu": False}, {}, (y, w, h), None)
+        self.assertEqual(calls, [])
+
+    def test_it_is_never_asked_about_anything_but_a_desktop(self):
+        calls = []
+        W.NPU = fake_npu()
+        W.NPU.read = lambda px, now=None: calls.append(1)
+        w, h = 640, 360
+        dark = (b"\x30" * (w * h), w, h)
+        out = W.eyes_without_ocr({}, {}, dark, None)
+        self.assertEqual(calls, [], "a non-desktop frame never reaches the NPU")
+        self.assertNotIn("clock", out)
+
+    def test_signs_say_what_the_clock_reads(self):
+        self.assertIn("its clock reads Mon Nov 9 8:05 AM", W.plain_signs({"clock": {"text": "Mon Nov 9 8:05 AM", "on": "npu"}}))
 
 
 if __name__ == "__main__":

@@ -24,6 +24,15 @@ test('a new KVM: password set, API checked, sitter installed, secrets sealed on 
   assert.ok(f.s.files['/etc/init.d/S99housesitter'] != null, 'BusyBox init script installed');
 });
 
+test('a KVM with an NPU gets the clock reader; one without gets nothing extra', async () => {
+  const comet = await run({ apiClosed: false });
+  assert.equal(comet.f.s.files['npu/clock.rknn'], 'model npu/clock.rknn');
+  assert.match(comet.results.find((r) => r.detail?.includes('BusyBox')).detail, /reads the Mac's clock on the KVM's NPU/);
+  const pikvm = await run({ apiClosed: false, comet: false });
+  assert.equal(pikvm.f.s.files['npu/clock.rknn'], undefined);
+  assert.ok(!pikvm.results.some((r) => r.detail?.includes('NPU')));
+});
+
 test('GL.iNet with its REST API shipped off: one first-run page, then the API is turned on over SSH', async () => {
   const { f, results } = await run({ apiClosed: true });
   assert.equal(f.s.firstRun, 1);
