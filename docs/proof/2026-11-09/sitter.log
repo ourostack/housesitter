@@ -1,0 +1,49 @@
+2026-11-09T05:05:06 start: sitter 0.1.0 watching mini every 60s; unlock ready; outbox off
+2026-11-09T05:05:06 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:05:53 start: sitter 0.1.0 watching mini every 60s; unlock ready; outbox off
+2026-11-09T05:05:53 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:06:46 start: sitter 0.1.0 watching mini every 60s; unlock ready; outbox off
+2026-11-09T05:06:46 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:07:46 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:08:46 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:09:46 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:10:46 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:11:46 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:12:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:13:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:14:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:15:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:16:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:17:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:18:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:19:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:20:29 boot-watch: boot seen (a restart, or a wake): the screen went dark, then the Mac enumerated the KVM's keyboard again
+2026-11-09T05:20:35 boot-watch: HDMI back after 20 s without signal (not a boot by itself)
+2026-11-09T05:20:47 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:20:53 boot-watch: no password prompt it was taught is on the KVM's own picture after the boot (it reads as prompt_like); blind unlock is unsupported, so it never types
+2026-11-09T05:21:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:22:09 boot-watch: the Mac booted and the FileVault prompt it was taught is on the KVM's picture (steady for 21 frames)
+2026-11-09T05:22:16 unlock: typed the password at the prompt_like prompt (frame, trial)
+2026-11-09T05:22:23 boot-watch: HDMI back after 4 s without signal (not a boot by itself)
+2026-11-09T05:22:31 boot-watch: the desktop is up after the boot
+2026-11-09T05:22:31 password verified: the trial try reached the desktop
+2026-11-09T05:22:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:23:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:24:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:25:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:26:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:27:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:28:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:29:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:30:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:31:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:32:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:33:00 boot-watch: boot seen (a restart, or a wake): the screen went dark, then the Mac enumerated the KVM's keyboard again
+2026-11-09T05:33:20 boot-watch: the Mac booted and the FileVault prompt it was taught is on the KVM's picture (steady for 4 frames)
+2026-11-09T05:33:27 unlock: typed the password at the prompt_like prompt (frame, verified)
+2026-11-09T05:33:33 boot-watch: HDMI back after 4 s without signal (not a boot by itself)
+2026-11-09T05:33:42 boot-watch: the desktop is up after the boot
+2026-11-09T05:33:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:34:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:35:48 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
+2026-11-09T05:36:49 ingress NOT applied (retrying every minute): ip6tables -F HOUSESITTER_IN failed: modprobe: can't open 'modules.dep': No such file or directory
