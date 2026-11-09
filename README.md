@@ -128,7 +128,7 @@ The point of housesitter is to type a password with nobody watching, so it is ca
 
 ## Eyes and hands for agents
 
-The KVM is the pixel layer: below the accessibility tree, before login, on a frozen app. housesitter speaks the computer-use actions agents already know.
+The KVM is the pixel layer: below the accessibility tree, on a frozen app, and eyes before login. housesitter speaks the computer-use actions agents already know.
 
 ```js
 import { open } from '@ouro.bot/housesitter';
