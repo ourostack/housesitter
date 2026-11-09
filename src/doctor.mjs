@@ -94,7 +94,12 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   const hItems = [];
   if (st?.incident) hItems.push({ dot: 'warn', text: `open since ${clock(st.incident.started, now)} (${age(now - st.incident.started)})${st.incident.notified_at ? ', and it told you' : ''}` });
   const li = st?.last_incident;
-  if (li) hItems.push({ dot: 'ok', text: `${clock(li.started, now)} to ${clock(li.ended, now)}: ${li.actions?.length ? li.actions.map((a) => a.replace(/_/g, ' ')).join(', ') : 'it came back by itself'}${li.told_you ? '; it told you' : '; nobody was woken'}` });
+  // A restart's FileVault, unlocked by the boot watch, never becomes a rules incident, yet it is the night that went right:
+  // show the newer of the two, so LAST INCIDENT and RECENT never disagree.
+  const boots = (st?.recent || []).filter((e) => e.kind === 'unlock' && /FileVault/.test(e.result || '') && /^typed/.test(e.result || ''));
+  const boot = boots.sort((a, b) => b.at - a.at)[0];
+  if (boot && (!li || boot.at > (li.ended || li.started))) hItems.push({ dot: 'ok', text: `${clock(boot.at, now)}: a restart's FileVault, unlocked by the sitter; nobody was woken` });
+  else if (li) hItems.push({ dot: 'ok', text: `${clock(li.started, now)} to ${clock(li.ended, now)}: ${li.actions?.length ? li.actions.map((a) => a.replace(/_/g, ' ')).join(', ') : 'it came back by itself'}${li.told_you ? '; it told you' : '; nobody was woken'}` });
   if (st && !hItems.length) hItems.push({ dot: 'ok', text: 'none seen by this sitter yet' });
   if (hItems.length) sec.push({ label: 'LAST INCIDENT', items: hItems });
   // Newest first, apart from the incident: a FileVault unlock after a boot is not an incident, and is often the best news.
@@ -106,7 +111,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   if (mac.notify?.kind) aItems.push({ dot: 'ok', text: `${mac.notify.kind}${mac.notify.email ? ` and email to ${mac.notify.email}` : ''}: it messages you only when it needs you, and when the Mac is back` });
   else { aItems.push({ dot: 'warn', text: 'nowhere to tell you' }); todo.push({ cmd: `housesitter adopt ${name} --notify ntfy`, why: 'a phone notification, no account needed' }); }
   if (mac.heartbeat?.url) aItems.push({ dot: 'ok', text: 'a heartbeat every look, so you hear if the KVM itself goes quiet' });
-  else { aItems.push({ dot: 'off', text: 'no heartbeat: if the KVM itself dies, nothing tells you' }); todo.push({ cmd: `housesitter adopt ${name} --heartbeat <url>`, why: 'a healthchecks.io ping URL, or any dead man\'s switch' }); }
+  else { aItems.push({ dot: 'off', text: 'nothing outside watches the KVM: if it dies, nobody hears' }); todo.push({ cmd: `housesitter adopt ${name} --heartbeat <url>`, why: 'a URL that alerts you when its pings stop (a dead man\'s switch, such as healthchecks.io)' }); }
   sec.push({ label: 'ALERTS', items: aItems });
 
   // the screen, beside the picture

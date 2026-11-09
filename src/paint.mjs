@@ -107,9 +107,11 @@ export function clock(ms, now = Date.now()) {
 }
 
 export function age(ms) {
-  const s = Math.max(0, Math.round(ms / 1000));
+  // Rounded down: doctor says "for at least …", and 92 minutes is not "2 h".
+  const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 90) return `${s} s`;
-  if (s < 5400) return `${Math.round(s / 60)} min`;
-  if (s < 172800) return `${Math.round(s / 3600)} h`;
-  return `${Math.round(s / 86400)} days`;
+  if (s < 5400) return `${Math.floor(s / 60)} min`;
+  if (s < 36000) return `${Math.floor(s / 3600)} h${Math.floor((s % 3600) / 60) ? ` ${Math.floor((s % 3600) / 60)} min` : ''}`;
+  if (s < 172800) return `${Math.floor(s / 3600)} h`;
+  return `${Math.floor(s / 86400)} days`;
 }
