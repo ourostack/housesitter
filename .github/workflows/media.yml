@@ -19,7 +19,10 @@ jobs:
       - uses: charmbracelet/vhs-action@v2
         with:
           path: docs/tapes/demo.tape
+      - run: vhs docs/tapes/night.tape
       - uses: actions/upload-artifact@v4
         with:
           name: media
-          path: docs/img/demo.gif
+          path: |
+            docs/img/demo.gif
+            docs/img/night.gif
