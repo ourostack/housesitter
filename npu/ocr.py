@@ -14,7 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rknn import FLOAT32, UINT8, Model, attr_dict  # noqa: E402
+from rknnrt import FLOAT32, UINT8, Model, attr_dict  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 

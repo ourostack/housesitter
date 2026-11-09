@@ -9,7 +9,7 @@ on:
 jobs:
   convert:
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,6 +30,25 @@ jobs:
           sha256sum models/*.onnx models/*.txt
       - name: Convert
         run: python npu/convert.py models dataset.txt
+      - name: Clock reader (trained on synthetic menu bars, open fonts only)
+        run: |
+          pip install -q torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q pillow
+          mkdir -p fonts
+          curl -fsSL -o inter.zip https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip && unzip -q -j inter.zip 'extras/ttf/Inter-Regular.ttf' 'extras/ttf/Inter-Medium.ttf' -d fonts
+          cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf fonts/ 2>/dev/null || true
+          cp /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf fonts/ 2>/dev/null || true
+          ls fonts
+          CLOCK_STEPS=3000 python npu/train_clock.py models fonts
+          python - <<'PY'
+          from rknn.api import RKNN
+          for name, q in (("clock_fp.rknn", False), ("clock_i8.rknn", True)):
+              r = RKNN(verbose=False)
+              r.config(mean_values=[[0]], std_values=[[255]], target_platform="rv1126b")
+              ret = r.load_onnx(model="models/clock.onnx") or r.build(do_quantization=q, dataset="models/clock-calib.txt" if q else None) or r.export_rknn("models/" + name)
+              print(name, "ok" if ret == 0 else ret)
+              r.release()
+          PY
       - name: Embedder (MobileNetV1 0.25, small enough for the Comet's NPU without its IOMMU)
         run: |
           pip install -q tensorflow-cpu==2.15.1 tf2onnx==1.16.1
@@ -45,3 +64,4 @@ jobs:
             models/ppocr_keys_v1.txt
             models/report.json
             models/embed*
+            models/clock*
