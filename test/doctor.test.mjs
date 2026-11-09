@@ -159,3 +159,13 @@ test('doctor says when the NPU read the clock, and how fast', () => {
   const lock = plain(buildDoctor({ name: 'mini', mac: {}, kvm: KVM, sit: { status: status({ obs: { screen: 'login', eyes: 'frame', lock_clock_ticking: false, clock: { text: '10:56', on: 'npu', ms: 1.4, where: 'lock' } } }) }, now: NOW }));
   assert.match(lock, /clock\s+NOT moving: reads 10:56 on the lock screen, on the KVM's NPU in 1\.4 ms/);
 });
+
+test('doctor: who can reach the KVM, read back, or loudly not (#27)', () => {
+  const at = (ingress) => plain(buildDoctor({ name: 'mini', mac: { notify: { kind: 'ntfy' }, heartbeat: { url: 'x' }, kvm: { tls_sha256: 'AA' } }, kvm: KVM, sit: { via: 'ssh kvm', status: status({ ingress }) }, now: NOW }));
+  assert.match(at({ ok: true, mode: 'lan', at: NOW - 600000, checked_at: NOW - 120000 }), /reached by the LAN's private addresses and the tailnet \(SSH, HTTP, HTTPS\) · read back 2 min ago/);
+  assert.match(at({ ok: true, mode: 'tailnet', at: NOW - 60000 }), /reached by the tailnet only/);
+  const m = buildDoctor({ name: 'mini', mac: { kvm: { tls_sha256: 'AA' } }, kvm: KVM, sit: { status: status({ ingress: { ok: false, mode: 'lan', since: NOW - 420000, detail: 'iptables-restore refused it (x); the rules from before are still in force' } }) }, now: NOW });
+  assert.match(plain(m), /NOT filtering who reaches it since/);
+  assert.ok(m.todo.some((t) => t.cmd === 'housesitter adopt mini'));
+  assert.doesNotMatch(at(undefined), /reached by|NOT filtering/, 'an older sitter says nothing, rather than guess');
+});

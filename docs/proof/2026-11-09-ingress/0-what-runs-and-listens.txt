@@ -1,0 +1,34 @@
+at 23:07:23Z
+1485b8b989eba7b74eb0616087c90052623212bf3ba3e7910dab512a63457219  /etc/kvmd/user/housesitter/sitter.py
+
+Listening sockets (netstat -tulnp):
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name    
+tcp        0      0 127.0.0.1:8081          0.0.0.0:*               LISTEN      988/python3
+tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN      1031/nginx.pid; use
+tcp        0      0 <tailnet>:65117     0.0.0.0:*               LISTEN      3045/tailscaled
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      1031/nginx.pid; use
+tcp        0      0 127.0.0.1:7771          0.0.0.0:*               LISTEN      1207/janus
+tcp        0      0 127.0.0.1:53            0.0.0.0:*               LISTEN      821/connmand
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      848/dropbear
+tcp        0      0 ::1:53                  :::*                    LISTEN      821/connmand
+tcp        0      0 :::443                  :::*                    LISTEN      1031/nginx.pid; use
+tcp        0      0 :::80                   :::*                    LISTEN      1031/nginx.pid; use
+tcp        0      0 :::22                   :::*                    LISTEN      848/dropbear
+tcp        0      0 <tailnet v6> :::*                    LISTEN      3045/tailscaled
+udp        0      0 0.0.0.0:34200           0.0.0.0:*                           1420/mDNSResponder
+udp        0      0 127.0.0.1:53            0.0.0.0:*                           821/connmand
+udp        0      0 <tailnet>:123       0.0.0.0:*                           1290/ntpd
+udp        0      0 <LAN>:123       0.0.0.0:*                           1290/ntpd
+udp        0      0 127.0.0.1:123           0.0.0.0:*                           1290/ntpd
+udp        0      0 0.0.0.0:123             0.0.0.0:*                           1290/ntpd
+udp        0      0 0.0.0.0:5353            0.0.0.0:*                           862/mdnsd
+udp        0      0 0.0.0.0:5353            0.0.0.0:*                           1420/mDNSResponder
+udp        0      0 0.0.0.0:55040           0.0.0.0:*                           3045/tailscaled
+udp        0      0 0.0.0.0:33025           0.0.0.0:*                           862/mdnsd
+udp        0      0 ::1:53                  :::*                                821/connmand
+udp        0      0 :::35382                :::*                                3045/tailscaled
+udp        0      0 <tailnet v6> :::*                                1290/ntpd
+udp        0      0 <link-local> :::*                                1290/ntpd
+udp        0      0 ::1:123                 :::*                                1290/ntpd
+udp        0      0 :::123                  :::*                                1290/ntpd

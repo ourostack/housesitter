@@ -1,0 +1,21 @@
+applied at 23:07:27Z
+SSH, HTTP and HTTPS: the tailnet only (tailscale0), read back; no connection tracking in this kernel, so an open session from where this mode doesn't allow ends now; IPv6: off on eth0, sit0 (read back), so only lo and tailscale0 speak it; ip6tables unavailable
+iptables -S HOUSESITTER_IN:
+-N HOUSESITTER_IN
+-A HOUSESITTER_IN -i lo -j RETURN
+-A HOUSESITTER_IN -i tailscale0 -j RETURN
+-A HOUSESITTER_IN -p tcp -m tcp --dport 22 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 80 -j DROP
+-A HOUSESITTER_IN -p tcp -m tcp --dport 443 -j DROP
+iptables -S INPUT:
+-P INPUT ACCEPT
+-A INPUT -j HOUSESITTER_IN
+-A INPUT -j ts-input
+-A INPUT -j MACW_IN
+IPv6 off (disable_ipv6) per interface:
+  all 0
+  default 0
+  eth0 1
+  lo 0
+  sit0 1
+  tailscale0 0

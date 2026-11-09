@@ -398,8 +398,16 @@ async function proof(mac) {
     if (backAt && t - backAt > 30000) break;
     await new Promise((r) => setTimeout(r, Math.max(0, every - (Date.now() - t))));
   }
-  fs.writeFileSync(path.join(dir, 'timeline.json'), `${JSON.stringify({ mac: mac.name, recorded_by: `housesitter ${VERSION}`, real: true, desktops: flag('--all-frames') ? 'recorded' : 'not recorded', timeline }, null, 2)}\n`);
-  say(`\n${kept} frames and timeline.json (${timeline.length} looks) in ${dir}${backAt ? '' : ' (the Mac did not come back while recording)'}.\nA video: ffmpeg -framerate 4 -pattern_type glob -i '${dir}/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p ${dir}/proof.mp4`);
+  // #27: the KVM's own record of who pressed what, taken now, because BusyBox keeps only about 45 minutes in memory.
+  // syslog.log is the whole buffer, unfiltered; kvmd-access.log is the extract, made by the command written beside it.
+  const ACCESS = "logread | grep 'kvmd: aiohttp.access'";
+  const raw = await sh('logread').then((r) => String(r.stdout)).catch(() => '');
+  if (raw) {
+    fs.writeFileSync(path.join(dir, 'syslog.log'), raw);
+    fs.writeFileSync(path.join(dir, 'kvmd-access.log'), raw.split('\n').filter((l) => l.includes('kvmd: aiohttp.access')).join('\n') + '\n');
+  }
+  fs.writeFileSync(path.join(dir, 'timeline.json'), `${JSON.stringify({ mac: mac.name, recorded_by: `housesitter ${VERSION}`, real: true, desktops: flag('--all-frames') ? 'recorded' : 'not recorded', kvm_log: raw ? { unfiltered: 'syslog.log (logread, the whole in-memory buffer; it holds addresses, so check against it rather than publish it whole)', access: 'kvmd-access.log', command: ACCESS } : null, timeline }, null, 2)}\n`);
+  say(`\n${kept} frames, timeline.json (${timeline.length} looks)${raw ? ', and the KVM\'s own log (syslog.log, which holds addresses, and kvmd-access.log from it)' : ''} in ${dir}${backAt ? '' : ' (the Mac did not come back while recording)'}.\nA video: ffmpeg -framerate 4 -pattern_type glob -i '${dir}/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p ${dir}/proof.mp4`);
   return backAt ? 0 : 1;
 }
 

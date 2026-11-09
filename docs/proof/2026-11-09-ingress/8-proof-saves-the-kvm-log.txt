@@ -1,0 +1,13 @@
+housesitter proof mini --minutes 0.15, run against the Comet at 22:10 UTC (this branch's bin/housesitter.mjs); what it wrote:
+
+timeline.json, kvm_log:
+{
+ "unfiltered": "syslog.log (logread, the whole in-memory buffer; it holds addresses, so check against it rather than publish it whole)",
+ "access": "kvmd-access.log",
+ "command": "logread | grep 'kvmd: aiohttp.access'"
+}
+
+syslog.log: 7865 lines, first Nov  9 21:25:53, last Nov  9 22:10:27
+kvmd-access.log: 478 lines, first Nov  9 21:25:53, last Nov  9 22:10:25
+
+kvmd-access.log equals the command's output on syslog.log: yes

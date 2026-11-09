@@ -14,6 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, os.path.join(ROOT, "device"))
 import sitter as W  # noqa: E402
+from fake_tables import FakeTables  # noqa: E402
 
 W.SLEEP = lambda sec: None  # the guard waits minutes between looks on a real KVM; tests never wait
 
@@ -1356,25 +1357,141 @@ class Safety(unittest.TestCase):
                 if isinstance(self.status, Exception):
                     raise self.status
                 return self.status
-        ok = lambda cmd, **k: type("R", (), {"returncode": 0, "stderr": ""})()  # noqa: E731
-        self.assertEqual(W.harden(K({"enabled": False}), {}, run=ok, gl=True)["gl_cloud"], "off (read back)")
+        self.assertEqual(W.harden(K({"enabled": False}), {}, run=FakeTables(), gl=True)["gl_cloud"], "off (read back)")
         for bad in ({"enabled": True}, {}, RuntimeError("HTTP 500")):
             with self.assertRaises(Exception):
-                W.harden(K(bad), {}, run=ok, gl=True)
+                W.harden(K(bad), {}, run=FakeTables(), gl=True)
 
     def test_ingress_is_lan_at_home_and_tailnet_only_elsewhere(self):
         self.assertEqual(W.ingress_mode({}), "lan")
         self.assertEqual(W.ingress_mode({"location": "home"}), "lan")
         self.assertEqual(W.ingress_mode({"location": "office"}), "tailnet")
         home = W.ingress_rules("lan")
-        self.assertFalse(any("DROP" in c for c in home))
+        for t, nets in (("iptables", W.PRIVATE_V4), ("ip6tables", W.PRIVATE_V6)):
+            for net in nets:
+                self.assertIn([t, "-A", W.CHAIN, "-s", net, "-j", "RETURN"], home)
+            for p in ("22", "80", "443"):
+                self.assertIn([t, "-A", W.CHAIN, "-p", "tcp", "--dport", p, "-j", "DROP"], home, "#27: home drops what isn't private too")
+        self.assertFalse(any("-s" in c for c in W.ingress_rules("tailnet")), "away: no address gets in, only tailscale0")
         away = W.ingress_rules("tailnet")
         for t in ("iptables", "ip6tables"):
             self.assertIn([t, "-A", W.CHAIN, "-i", "tailscale0", "-j", "RETURN"], away)
-            for p in ("22", "443"):
+            for p in ("22", "80", "443"):
                 self.assertIn([t, "-A", W.CHAIN, "-p", "tcp", "--dport", p, "-j", "DROP"], away)
         with self.assertRaises(RuntimeError):
             W.apply_ingress("tailnet", run=lambda c, **k: None, iface_up=lambda i: False)
+
+    def test_ingress_is_read_back_and_fails_closed(self):
+        t = FakeTables()
+        self.assertIn("home: the LAN's private addresses and the tailnet, read back", W.apply_ingress("lan", run=t))
+        rules = t.chains["iptables"][W.CHAIN]
+        self.assertEqual(rules[-1][-1], "DROP")
+        self.assertEqual(t.chains["iptables"]["INPUT"], [["-j", W.CHAIN]])
+        W.apply_ingress("lan", run=t)
+        self.assertEqual(t.chains["iptables"]["INPUT"], [["-j", W.CHAIN]], "applying twice jumps once")
+        for broken in (FakeTables(drop_rule=["-s", "192.168.0.0/16"]), FakeTables(drop_rule=["--dport", "443"]), FakeTables(lose_input=True)):
+            with self.assertRaises(RuntimeError) as e:
+                W.apply_ingress("lan", run=broken)
+            self.assertIn("refusing to call it done", str(e.exception))
+        self.assertIsNone(W.ingress_readback("iptables", "lan", run=t))
+        # The Comet's kernel, as found on hardware: no conntrack match. Both modes still apply, and say so.
+        for mode in ("lan", "tailnet"):
+            gl = FakeTables(conntrack=False)
+            out = W.apply_ingress(mode, run=gl, iface_up=lambda i: True, joined=True)
+            self.assertIn("no connection tracking", out)
+            self.assertEqual(gl.chains["iptables"][W.CHAIN][-1][-1], "DROP")
+        self.assertIsNotNone(W.ingress_readback("iptables", "tailnet", run=FakeTables()), "an empty chain never passes")
+
+    def test_ingress_that_drifts_after_it_was_read_back_is_noticed(self):
+        t = FakeTables()
+        W.apply_ingress("lan", run=t)
+        self.assertIsNone(W.ingress_drift("lan", run=t))
+        self.assertIsNotNone(W.ingress_drift("tailnet", run=t), "home rules aren't away rules")
+        t.chains["iptables"][W.CHAIN] = [r for r in t.chains["iptables"][W.CHAIN] if "80" not in r]
+        self.assertIn("doesn't read back", W.ingress_drift("lan", run=t))
+        t = FakeTables()
+        W.apply_ingress("lan", run=t)
+        t.chains["iptables"]["INPUT"] = []
+        self.assertIn("INPUT doesn't jump", W.ingress_drift("lan", run=t))
+        # The Comet: no ip6tables, so IPv6 must stay off on every interface but lo and tailscale0, new ones included.
+        gl = FakeTables(v6=False)
+        W.apply_ingress("tailnet", run=gl, iface_up=lambda i: True, joined=True, v6=True, v6_off=lambda: (True, {"eth0": True}))
+        off = {"eth0": "1", "lo": "0", "tailscale0": "0", "all": "0"}
+        read = lambda p: off[p.split("/")[-2]]  # noqa: E731
+        self.assertIsNone(W.ingress_drift("tailnet", run=gl, v6=True, read=read, ifaces=list(off)))
+        off["usb0"] = "0"
+        self.assertIn("usb0", W.ingress_drift("tailnet", run=gl, v6=True, read=read, ifaces=list(off)))
+
+    def test_weakened_rules_never_read_back_as_ours(self):
+        """Morgan, on the 0.3.2 draft: rules that only contain the right words passed the readback."""
+        weakenings = [
+            lambda c: c.__setitem__(0, ["!", "-i", "lo", "-j", "RETURN"]),
+            lambda c: [r.__setitem__(slice(0, 0), ["-i", "wg0"]) for r in c if r[-1] == "DROP"],
+            lambda c: c.__setitem__(len(c) - 3, ["-p", "tcp", "-m", "tcp", "!", "--dport", "22", "-j", "DROP"]),
+        ]
+        for weaken in weakenings:
+            t = FakeTables(conntrack=False)
+            W.apply_ingress("lan", run=t)
+            weaken(t.chains["iptables"][W.CHAIN])
+            self.assertIsNotNone(W.ingress_readback("iptables", "lan", run=t, track=False), t.chains["iptables"][W.CHAIN])
+            self.assertIsNotNone(W.ingress_drift("lan", run=t))
+        t = FakeTables(conntrack=False)
+        W.apply_ingress("lan", run=t)
+        t.chains["iptables"]["INPUT"].insert(0, ["-p", "tcp", "--dport", "22", "-j", "ACCEPT"])
+        self.assertIn("before jumping", W.ingress_drift("lan", run=t))
+        W.apply_ingress("lan", run=t)
+        self.assertEqual(t.chains["iptables"]["INPUT"][0], ["-j", W.CHAIN], "applying again puts the jump first")
+        t.chains["iptables"]["INPUT"].append(["-j", W.CHAIN])
+        self.assertIn("2 times", W.ingress_drift("lan", run=t))
+
+    def test_the_sitter_rechecks_puts_back_and_tells_you_once_when_it_cant(self):
+        told, kept, logs = [], [], []
+        cfg = {"name": "mini"}
+        step = lambda ing, now, apply, drift=lambda m: None: W.ingress_step(cfg, ing, now, logs.append, apply=apply, drift=drift, tell=lambda s, b: told.append(s) or "posted", keep=kept.append)  # noqa: E731
+        ing = step({}, 0, lambda m: "home, read back")
+        self.assertTrue(ing["ok"])
+        self.assertEqual(kept[-1]["detail"], "home, read back")
+        self.assertEqual(ing["next"], W.INGRESS_RECHECK_SEC)
+        ing = step(ing, 300000, lambda m: self.fail("no drift, so nothing to apply"))
+        self.assertEqual(ing["checked_at"], 300000)
+        ing = step(ing, 600000, lambda m: "home, read back", drift=lambda m: "INPUT doesn't jump to HOUSESITTER_IN")
+        self.assertTrue(ing["ok"])
+        self.assertTrue(any("drifted" in x for x in logs))
+
+        def broken(m):
+            raise RuntimeError("iptables-restore refused it (x); the rules from before are still in force")
+        for minute in range(7):
+            ing = step(ing if minute else {}, 1000000 + minute * 60000, broken)
+        self.assertFalse(ing["ok"])
+        self.assertEqual(told, ["mini's KVM isn't filtering who reaches it"], "once, after 5 minutes")
+        self.assertEqual(ing["since"], 1000000)
+        ing = step(ing, 1500000, lambda m: "home, read back")
+        self.assertEqual(told[-1], "mini's KVM filters again")
+        self.assertNotIn("alerted_at", ing)
+
+    def test_a_kvm_with_no_ip6tables_binary_is_handled_like_one_that_cant_load_it(self):
+        t = FakeTables()
+
+        def run(cmd, **k):
+            if cmd[0].startswith("ip6tables"):
+                raise FileNotFoundError(2, "No such file or directory", cmd[0])
+            return t(cmd, **k)
+        out = W.apply_ingress("lan", run=run, v6=True, v6_off=lambda: (True, {"eth0": True}))
+        self.assertIn("IPv6: off on eth0 (read back)", out)
+        self.assertIsNone(W.ingress_drift("lan", run=run, v6=True, read=lambda p: "1", ifaces=["eth0"]))
+        t.chains["iptables"][W.CHAIN].append(list(t.chains["iptables"][W.CHAIN][-1]))
+        self.assertIn("a rule twice", W.ingress_drift("lan", run=run, v6=True, read=lambda p: "1", ifaces=["eth0"]))
+
+    def test_a_refused_change_keeps_the_rules_that_were_there(self):
+        t = FakeTables(conntrack=False)
+        W.apply_ingress("lan", run=t)
+        before = [list(r) for r in t.chains["iptables"][W.CHAIN]]
+        t.refuse = ["--dport", "80"]
+        with self.assertRaises(RuntimeError) as e:
+            W.apply_ingress("tailnet", run=t, iface_up=lambda i: True, joined=True)
+        self.assertIn("still in force", str(e.exception))
+        self.assertEqual(t.chains["iptables"][W.CHAIN], before)
+        self.assertIsNone(W.ingress_drift("lan", run=t))
 
     def test_the_kvm_reads_its_own_certificate_fingerprint(self):
         der = b"0\x82fake-der"
@@ -1418,8 +1535,7 @@ class ReviewFixes(unittest.TestCase):
     def test_away_needs_a_running_tailnet_not_just_an_interface(self):
         with self.assertRaises(RuntimeError):
             W.apply_ingress("tailnet", run=lambda c, **k: None, iface_up=lambda i: True, joined=False)
-        ok = lambda c, **k: type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()  # noqa: E731
-        self.assertIn("tailnet only", W.apply_ingress("tailnet", run=ok, iface_up=lambda i: True, joined=True))
+        self.assertIn("tailnet only", W.apply_ingress("tailnet", run=FakeTables(), iface_up=lambda i: True, joined=True))
         self.assertIn(["iptables", "-A", W.CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"], W.ingress_rules("tailnet"))
         status = lambda c, **k: type("R", (), {"returncode": 0, "stdout": json.dumps({"BackendState": "NeedsLogin"})})()  # noqa: E731
         self.assertFalse(W.tailnet_running(run=status))
