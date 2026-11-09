@@ -30,6 +30,13 @@ jobs:
           sha256sum models/*.onnx models/*.txt
       - name: Convert
         run: python npu/convert.py models dataset.txt
+      - name: Embedder (MobileNetV1 0.25, small enough for the Comet's NPU without its IOMMU)
+        run: |
+          pip install -q tensorflow-cpu==2.15.1 tf2onnx==1.16.1
+          find docs/proof -name '*.jpg' | sed "s#^#$PWD/#" > calib.txt
+          cat dataset.txt >> calib.txt
+          wc -l calib.txt
+          python npu/build_embedder.py models calib.txt
       - uses: actions/upload-artifact@v4
         with:
           name: rknn-models
@@ -37,3 +44,4 @@ jobs:
             models/*.rknn
             models/ppocr_keys_v1.txt
             models/report.json
+            models/embed*
