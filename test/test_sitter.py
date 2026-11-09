@@ -744,7 +744,7 @@ class Safety(unittest.TestCase):
         W.set_password_trust("verified", "test")
         r = W.handle({"op": "unlock"}, {"name": "studio"}, self.kvmd, None, self.logs.append, 10**6, {"ledger": []})
         self.assertFalse(r["ok"])
-        self.assertIn("no password field visible", r["result"])
+        self.assertIn("no password prompt it was taught", r["result"])
         self.assertEqual(self.kvmd.typed(), [])
 
     def test_learn_prompt_takes_only_a_prompt_like_frame(self):
@@ -1327,7 +1327,7 @@ class AgentsHands(unittest.TestCase):
         finally:
             W.load_secret = saved
         self.assertFalse(r["ok"], r)
-        self.assertIn("no password field visible", r["result"])
+        self.assertIn("no password prompt it was taught", r["result"])
         self.assertFalse([p for p, _ in k.posts if "print" in p or "Enter" in p], "a lone Shift to wake the screen, nothing typed")
 
 
@@ -1382,3 +1382,27 @@ class OnlyTheBootLesson(unittest.TestCase):
         self.assertFalse(W.boot_recent({"pending": 1000}, now=1000 + 16 * 60000))
         self.assertTrue(W.boot_recent({"pending": 1000}, now=1000 + 60000))
         self.assertFalse(W.boot_recent({}, now=1000))
+
+    def test_a_lock_screen_cannot_be_filed_as_filevault(self):
+        # Morgan's review, round 5: after a wake looks like a boot, someone runs learn-prompt --filevault at the lock
+        # screen. If the sitter already knows that screen as the lock screen, it refuses.
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        with self.assertRaises(ValueError) as e:
+            W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-later"]], "wrong", kind="boot")
+        self.assertIn("can't tell your lock screen from FileVault", str(e.exception))
+        # The real FileVault screen is distinct, so it is learned.
+        self.assertEqual(W.learn_prompt([FV["filevault-023210"], FV["filevault-023218"], FV["filevault-023224"]], "boot", kind="boot"), 2)
+
+    def test_a_wake_reads_as_the_lock_screen_not_filevault(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "lock")
+        saved = W.LAST_FRAME
+        try:
+            raw = (bytes(2560 * 1440), 2560, 1440)
+            ff = W.frame_features
+            W.frame_features = lambda y, w, h: LUM["lock-later"]
+            o = W.eyes_without_ocr({"name": "studio"}, {}, raw, {"pending": int(time.time() * 1000)})
+        finally:
+            W.frame_features = ff
+            W.LAST_FRAME = saved
+        self.assertEqual(o["screen"], "login")
+

@@ -1000,7 +1000,7 @@ def type_at_field(cfg, kvmd, st, now, why, by, log=lambda m: None, secret=None, 
         return "refused: no password on the sitter (housesitter adopt <mac> provisions it)"
     seen, kind, how = visible if visible is not None else see_field(cfg, kvmd, need_boot=by != "request")
     if not seen:
-        return "refused: no password field visible on the KVM's own picture (it reads as %s, by %s); blind unlock is unsupported" % (kind, how)
+        return "refused: no password prompt it was taught is on the KVM's own picture (it reads as %s, by %s); blind unlock is unsupported" % (kind, how)
     if cfg.get("dry_run"):
         return "dry-run: would type at the %s prompt" % kind
     if g["trust"] == "trial":
@@ -1230,6 +1230,11 @@ def learn_prompt(frames, why, now=None, kind="lock"):
     if len(pts) < PROMPT_MIN_POINTS:
         raise ValueError("nothing steady and bright enough to learn (%d points); is the password prompt on the KVM's picture?" % len(pts))
     refs = [r for r in (load("prompt_refs.json", []) or []) if r.get("points")][-4:]
+    for r in refs:
+        other = r.get("kind") or "lock"
+        if other != kind and any(prompt_match(r["points"], f) >= PROMPT_RECALL for f in frames):
+            # If the two screens look alike to the sitter, a FileVault lesson would also open the lock screen.
+            raise ValueError("this screen matches the %s lesson it already has, so on this Mac the sitter can't tell your lock screen from FileVault; it won't learn it as %s. Is this the screen you meant (restart and teach it at FileVault, or forget the lessons and start again)?" % ("FileVault" if other == "boot" else "lock-screen", "FileVault" if kind == "boot" else "the lock screen"))
     refs.append({"points": pts, "frames": len(frames), "at": now if now is not None else int(time.time() * 1000), "why": why, "kind": kind})
     save("prompt_refs.json", refs)
     return len(refs)
@@ -1278,7 +1283,7 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
         dark = bw.get("dark_at")
         if dark is not None and now - dark <= cfg.get("boot_dark_sec", 180) * 1000:
             bw.update(usb_seen=obs["usb"], boot_at=now, pending=now, stable=0, last_thumb=None, stuck=None, blind_noted=None)
-            note = "boot seen: the screen went dark, then the Mac enumerated the KVM's keyboard again"
+            note = "boot seen (a restart, or a wake): the screen went dark, then the Mac enumerated the KVM's keyboard again"
         else:
             # A wake from sleep or a reseated cable re-enumerates too. A restart always darkens HDMI first.
             bw["usb_seen"] = obs["usb"]
@@ -1324,12 +1329,12 @@ def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
         bw["blind_noted"] = now
         return bw, "blind", bw["stuck"]
     if not obs.get("prompt_visible"):
-        bw["stuck"] = "no password field visible on the KVM's own picture after the boot (it reads as %s); blind unlock is unsupported, so it never types" % kind
+        bw["stuck"] = "no password prompt it was taught is on the KVM's own picture after the boot (it reads as %s); blind unlock is unsupported, so it never types" % kind
         if bw.get("blind_noted"):
             return bw, None, note
         bw["blind_noted"] = now
         return bw, "blind", bw["stuck"]
-    return bw, "type", "the Mac booted and its password field is on the KVM's picture (steady for %d frames)" % bw["stable"]
+    return bw, "type", "the Mac booted and the FileVault prompt it was taught is on the KVM's picture (steady for %d frames)" % bw["stable"]
 
 
 def kvm_boot_id(read=lambda: open("/proc/sys/kernel/random/boot_id").read()):
@@ -1547,8 +1552,9 @@ def eyes_without_ocr(cfg, mem, raw, boot):
     if seen[0]:
         out["screen"] = "filevault" if seen[3] == "boot" else "login"
     if boot_recent(boot):
-        # A boot that hasn't reached a desktop: the FileVault screen. The boot watch types; the rules only wait and tell.
-        out["screen"] = "filevault"
+        # A boot that hasn't reached a desktop: the FileVault screen, unless it is the lock screen it was taught (a wake
+        # looks like a boot). The boot watch types; the rules only wait and tell.
+        out["screen"] = "login" if seen[0] and seen[3] != "boot" else "filevault"
         if boot.get("stuck"):
             out["boot"] = boot["stuck"].replace("<mac>", cfg.get("name", "<mac>"))
     return out

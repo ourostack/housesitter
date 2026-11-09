@@ -81,7 +81,7 @@ sudo pmset -a autorestart 1 displaysleep 0 sleep 0  # on the Mac: back on with t
 Then teach it your FileVault screen and arm it, once, while you watch (about ten minutes, most of it one restart):
 
 4. **Arm one try and restart:** `housesitter unlock studio --trial`, then `housesitter proof studio --record ./proof`, then Apple menu › Restart.
-5. **At the FileVault screen, teach it once.** The sitter sees a screen it hasn't been taught, so it waits and tells you. When `housesitter look studio` shows the password field, run `housesitter learn-prompt studio --i-see-the-field --filevault`. It keeps the bright pixels that stay put across three frames (on our mini, the avatar and the name), so a moving wallpaper drops out. `--filevault` is accepted only within 15 minutes of a boot the sitter saw, and it is the only lesson it types at by itself.
+5. **At the FileVault screen, teach it once.** The sitter sees a screen it hasn't been taught, so it waits and tells you. When `housesitter look studio` shows the password field, run `housesitter learn-prompt studio --i-see-the-field --filevault`. It keeps the bright pixels that stay put across three frames (on our mini, the avatar and the name), so a moving wallpaper drops out. `--filevault` is accepted only within 15 minutes of a boot the sitter saw, never for a screen that matches its lock-screen lesson, and it is the only lesson it types at by itself.
 6. **Watch it type.** Within seconds it types its one armed try at the prompt it now knows.
 
 You're done when the proof ends at your desktop and `housesitter doctor studio` says the password is verified. If that try doesn't reach the desktop, the password goes back to unverified and nothing more is typed. Until then the sitter only watches and tells you. Want `housesitter unlock studio` to work at your lock screen too? Lock the Mac and teach that screen the same way, without `--filevault`; a lock-screen lesson never counts as a boot, and the GitHub outbox can't use it.
@@ -185,7 +185,7 @@ housesitter is experimental (0.1). Honest status, as of 8 November 2026. "Our wa
 | A macOS update | **Not yet tried.** An update can restart more than once; each restart is its own boot with its own two tries, and all of them share three unlocks an hour |
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
-| Rules, adopt, transports, Reins, demo | **Tested with fakes and real frames**: 143 tests in Node and Python on every push |
+| Rules, adopt, transports, Reins, demo | **Tested with fakes and real frames**: 145 tests in Node and Python on every push |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art
