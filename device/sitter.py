@@ -36,6 +36,7 @@ sitter.log. Python 3 standard library only: nothing to pip-install, so a firmwar
 https://github.com/ourostack/housesitter
 """
 import base64
+import datetime
 import hashlib
 import hmac
 import http.client
@@ -50,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -618,9 +619,17 @@ def arp_alive(ips, macs, run=subprocess.run, read=lambda: open("/proc/net/arp").
     return False
 
 
-def tcp_answers(health, connect=socket.create_connection):
-    """An optional health probe: True if the Mac accepts a TCP connection on host:port now (an SSH port, an agent's
-    own health endpoint). None when not configured."""
+LAST_PROBE = {}
+
+
+def tcp_answers(health, connect=socket.create_connection, opener=None, now=None):
+    """The optional health probe: True if the Mac answers now, False if it doesn't, None when there is no probe or the
+    probe itself can't tell. Two kinds:
+      {"host": h, "port": p}: a TCP connection to the Mac (an SSH port, an agent's own health endpoint);
+      {"kind": "json_age", "url": u, "field": "at", "max_age_min": 3}: a JSON document the Mac keeps rewriting (a
+        heartbeat), counted as answering while the timestamp at `field` is under max_age_min old."""
+    if (health or {}).get("kind") == "json_age":
+        return json_age(health, opener=opener, now=now)
     if not health or not health.get("host") or not health.get("port"):
         return None
     try:
@@ -629,6 +638,57 @@ def tcp_answers(health, connect=socket.create_connection):
         return True
     except OSError:
         return False
+
+
+def parse_when(v):
+    """A timestamp as epoch ms: epoch seconds or ms, or an ISO 8601 string (with Z or an offset). None if it isn't one."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return int(v if v > 1e11 else v * 1000)
+    if not isinstance(v, str) or not v:
+        return None
+    t = v.strip().replace("Z", "+00:00")
+    m = re.match(r"^(.*T\d\d:\d\d:\d\d)(\.\d+)?(.*)$", t)
+    if m and m.group(2):
+        t = m.group(1) + (m.group(2) + "000000")[:7] + m.group(3)
+    try:
+        d = datetime.datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        return None
+    return int(d.timestamp() * 1000)
+
+
+def json_age(health, opener=None, now=None):
+    """The json_age probe. A stale timestamp is False (the Mac stopped beating); a probe that can't fetch or read the
+    document is None (unknown), never False, so a dead internet link or a GitHub outage can't make a working Mac look
+    hung. The URL may hold a secret (a secret gist's id): it is never logged, shown or returned."""
+    now = now if now is not None else int(time.time() * 1000)
+    LAST_PROBE.clear()
+    url = health.get("url")
+    if not url:
+        return None
+    if health.get("bust_cache"):
+        url += ("&" if "?" in url else "?") + "hs=%d" % (now // 1000)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "housesitter-sitter", "Cache-Control": "no-cache", "Accept": "application/json"})
+        with (opener or urllib.request.urlopen)(req, timeout=5) as r:
+            doc = json.loads(r.read(262144).decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        LAST_PROBE["error"] = "couldn't fetch or read the heartbeat"
+        return None
+    v = doc
+    for part in str(health.get("field") or "at").split("."):
+        v = v.get(part) if isinstance(v, dict) else None
+    at = parse_when(v)
+    if at is None:
+        LAST_PROBE["error"] = "no timestamp at %s" % (health.get("field") or "at")
+        return None
+    age = max(0.0, (now - at) / 60000)
+    LAST_PROBE["age_min"] = round(age, 1)
+    return age <= float(health.get("max_age_min", 3))
 
 
 # ---------- power: pluggable adapters ----------
@@ -2250,6 +2310,8 @@ def clock_ticking(mem, clock):
 
 def observe(cfg, kvmd, power, mem, now):
     obs = {"answers": tcp_answers(cfg.get("health")), "beat_min": None, "presence": None}
+    if (cfg.get("health") or {}).get("kind") == "json_age" and "age_min" in LAST_PROBE:
+        obs["heartbeat_age_min"] = LAST_PROBE["age_min"]
     try:
         st = kvmd.json("/streamer")
         src = (st.get("streamer") or {}).get("source") or {}
@@ -2372,6 +2434,8 @@ def plain_signs(obs):
             out.append("answers its health check" if v else "doesn't answer its health check")
         elif k == "clock_ticking":
             out.append("its clock is moving" if v else "its clock has stopped")
+        elif k == "heartbeat_age_min":
+            out.append("its heartbeat is %s min old" % v)
         elif k == "beat_min":
             out.append("last heartbeat %s min ago" % v)
         elif k == "presence":
@@ -2497,7 +2561,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "lock_policy": lock_policy(cfg), "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
-              "probes": {"health": bool((cfg.get("health") or {}).get("port")), "heartbeat": bool((cfg.get("heartbeat") or {}).get("url"))},
+              "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "heartbeat": bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
     if gh and o.get("gist"):

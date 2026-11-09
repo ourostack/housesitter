@@ -188,6 +188,15 @@ If you'd rather get email than install an app, `adopt --notify ntfy --email you@
 
 A free ntfy.sh account may send 5 emails a day, counted per IP address. The sitter keeps to that: past 5 in a day it sends the push alone and says so in its ledger. If ntfy won't send the email for any other reason, the push still goes out. An email client that screens new senders (HEY, for one) needs `ntfy@ntfy.sh` let in once. To use your own ntfy server instead, point `--notify` at it.
 
+### Telling it the Mac is up
+
+Without a probe, "up" means a desktop whose clock moves. Give it one in the Mac's entry in `~/.config/housesitter/config.json`, then run `adopt` again:
+
+- `"health": {"host": "192.168.1.40", "port": 22}`: the Mac accepts a TCP connection (its SSH port, or an agent's health endpoint).
+- `"health": {"kind": "json_age", "url": "https://…/heartbeat.json", "field": "at", "max_age_min": 3}`: a JSON document the Mac keeps rewriting, such as a heartbeat in a secret gist. The Mac counts as answering while the timestamp at `field` is under `max_age_min` old. `field` can be nested (`beat.at`), and the timestamp can be ISO 8601 with a zone, or epoch seconds or milliseconds. Add `"bust_cache": true` for a URL behind a CDN cache.
+
+A stale heartbeat only ever counts against the Mac alongside a stopped clock: a moving desktop clock with a stale heartbeat reads as "up, but something is off", never as frozen. If the probe can't fetch or read the document (no internet, an outage), it counts as unknown, not down. The URL may be a secret; `doctor` and `status` show only the heartbeat's age.
+
 ## What's verified
 
 housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our watchdog" is the private code in our own setup that housesitter was generalised from; it runs the same rules.
@@ -205,7 +214,7 @@ housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our wa
 | A macOS update | **Not yet tried.** An update can restart more than once; each restart is its own boot with its own two tries, and all of them share three unlocks an hour |
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
-| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 221 tests in Node and Python on every push |
+| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 227 tests in Node and Python on every push |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art

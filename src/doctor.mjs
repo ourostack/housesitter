@@ -122,7 +122,8 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     scr.push(['looked', `${age(ago)} ago${late ? ' (LATE: is the sitter running?)' : ''}`]);
     if (!late) scr.push(['next look', every - ago > 1000 ? `in ${age(every - ago)}` : 'due now']);
     const probeless = st.probes && !st.probes.health && !st.probes.heartbeat;
-    scr.push(['answers', st.obs?.answers === true ? 'yes, on the network' : st.obs?.answers === false ? 'NO' : probeless ? 'no probe set: "up" is a desktop whose clock moves' : 'no probe set']);
+    const beat = st.obs?.heartbeat_age_min;
+    scr.push(['answers', st.obs?.answers === true ? (beat != null ? `yes: its heartbeat is ${beat} min old` : 'yes, on the network') : st.obs?.answers === false ? (beat != null ? `NO: its heartbeat is ${beat} min old` : 'NO') : probeless ? 'no probe set: "up" is a desktop whose clock moves' : 'the probe can\'t tell right now']);
   }
   return { name, glimpse: st?.glimpse || null, screen: scr, sections: sec, todo, sitter: st?.sitter, via: sit?.via };
 }

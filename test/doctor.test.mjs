@@ -110,3 +110,13 @@ test('--private keeps email addresses out of a screenshot', async () => {
   const { maskEmails } = await import('../src/doctor.mjs');
   assert.equal(maskEmails('ntfy and email to ada.lovelace@example.com; 23:30 notify: posted 200, emailed ada@example.com'), 'ntfy and email to a…@example.com; 23:30 notify: posted 200, emailed a…@example.com');
 });
+
+test('doctor: a heartbeat probe says how old the beat is, and never where it lives', () => {
+  const url = 'https://gist.githubusercontent.com/someone/secret0123/raw/mini.json';
+  const mac = { notify: { kind: 'ntfy' }, heartbeat: { url: 'x' }, kvm: { tls_sha256: 'AA' }, health: { kind: 'json_age', url, field: 'at' } };
+  const fresh = plain(buildDoctor({ name: 'mini', mac, kvm: KVM, sit: { via: 'ssh kvm', status: status({ obs: { screen: 'desktop', eyes: 'frame', answers: true, clock_ticking: true, heartbeat_age_min: 0.4 }, probes: { health: true } }) }, now: NOW }));
+  assert.match(fresh, /answers\s+yes: its heartbeat is 0.4 min old/);
+  assert.doesNotMatch(fresh, /secret0123|gist/);
+  const stale = plain(buildDoctor({ name: 'mini', mac, kvm: KVM, sit: { status: status({ obs: { screen: 'desktop', answers: false, clock_ticking: true, heartbeat_age_min: 9.1 }, probes: { health: true } }) }, now: NOW }));
+  assert.match(stale, /answers\s+NO: its heartbeat is 9.1 min old/);
+});
