@@ -100,11 +100,11 @@ export function render({ lines, incidents }, { color = false } = {}) {
   for (const l of lines) {
     if (l.tag === 'msg' || l.tag === 'msg-title') {
       // The message, as a block under its line, wrapped at a space so it reads like the notification it is.
-      for (const w of wrapAt(l.text, 72)) out.push(`         ${c('35', '│')} ${c(tint[l.tag], w)}`);
+      for (const w of wrapAt(l.text, 72)) out.push(`         ${c('32', '│')} ${c(tint[l.tag], w)}`);
     } else out.push(`${c('2', l.at)}  ${c(tint[l.tag] || '0', l.text)}`);
   }
   const fixed = incidents.filter((i) => i.fixed);
   const asked = incidents.filter((i) => !i.fixed);
-  out.push('', c('1;92', `${incidents.length} incidents overnight: ${fixed.length} fixed by itself (${fixed.map((i) => `${i.to - i.from} min`).join(', ')}), ${asked.length} needed you, and it said so once.`));
+  out.push('', c('1;97', `${incidents.length} incidents overnight: ${fixed.length} fixed by itself (${fixed.map((i) => `${i.to - i.from} min`).join(', ')}), ${asked.length} needed you, and it said so once.`));
   return out.join('\n');
 }
