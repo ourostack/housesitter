@@ -13,6 +13,9 @@ const SCREEN = {
   desktop: 'a desktop', filevault: 'the FileVault screen', login: 'a login or lock screen', blank: 'black: asleep, off or no picture', unknown: 'not a desktop',
 };
 
+// A ledger result, without its parenthetical detail, cut at a word and marked when cut.
+const short = (r, n = 70) => { const t = String(r).replace(/ \([^)]*\)?.*$/, ''); return t.length <= n ? t : `${t.slice(0, n).replace(/\s+\S*$/, '')}…`; };
+
 export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date.now() }) {
   const st = sit?.status || null;
   const todo = [];
@@ -92,7 +95,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   if (st?.incident) hItems.push({ dot: 'warn', text: `open since ${clock(st.incident.started, now)} (${age(now - st.incident.started)})${st.incident.notified_at ? ', and it told you' : ''}` });
   const li = st?.last_incident;
   if (li) hItems.push({ dot: 'ok', text: `${clock(li.started, now)} to ${clock(li.ended, now)}: ${li.actions?.length ? li.actions.map((a) => a.replace(/_/g, ' ')).join(', ') : 'it came back by itself'}${li.told_you ? '; it told you' : '; nobody was woken'}` });
-  for (const e of (st?.recent || []).slice(-3).reverse()) if (e.kind !== 'notify' || hItems.length < 2) hItems.push({ dot: null, text: `${clock(e.at, now)}  ${e.kind.replace(/_/g, ' ')}${e.result ? `: ${String(e.result).slice(0, 70)}` : ''}` });
+  for (const e of (st?.recent || []).slice(-3).reverse()) if (e.kind !== 'notify' || hItems.length < 2) hItems.push({ dot: null, text: `${clock(e.at, now)}  ${e.kind.replace(/_/g, ' ')}${e.result ? `: ${short(e.result)}` : ''}` });
   if (st && !hItems.length) hItems.push({ dot: 'ok', text: 'none seen by this sitter yet' });
   if (hItems.length) sec.push({ label: 'LAST INCIDENT', items: hItems });
 

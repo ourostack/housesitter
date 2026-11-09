@@ -26,7 +26,7 @@ Show
 
 Sleep 500ms
 Type "housesitter demo" Sleep 400ms Enter
-Sleep 16s
+Sleep 18s
 Hide
 Type "clear" Enter
 Sleep 300ms

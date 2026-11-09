@@ -25,7 +25,8 @@ test('demo: two incidents fixed by itself, one message for the one it could not 
   assert.equal(JSON.parse(r.stdout).rehearsal, true);
   const real = JSON.parse(cli(['demo', '--json']).stdout);
   assert.equal(real.replay, '2026-11-08');
-  assert.deepEqual(real.steps.map((s) => s.kind), ['prompt_like', 'desktop', 'prompt_like', 'prompt_like', 'desktop', 'prompt_like']);
+  assert.deepEqual(real.steps.map((s) => s.kind), ['prompt_like', 'desktop', 'prompt_like', 'prompt_like', 'desktop', 'prompt_like', 'prompt_like']);
+  assert.equal(real.steps.at(-1).key, 'handsoff');
 });
 
 test('CLI: help, adopt --fake, and refusal exit codes', () => {

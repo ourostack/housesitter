@@ -1,4 +1,4 @@
-"""Build assets/evening.json: the real evening of 2026-11-08, as `housesitter demo` replays it.
+"""Build assets/evening.json: the real day and night of 2026-11-08, as `housesitter demo` replays it.
 
 Each frame is a real picture our GL.iNet Comet took of our Mac mini that day. Only what the sitter itself keeps of a
 frame is written here (its brightness, menu-bar edges, the luma grid it matches the password prompt on, and a 40x22
@@ -24,6 +24,7 @@ FRAMES = [
     ("18:07", "comet-live-20261108/05-lock-screen-awake-learned.png", "awake"),
     ("18:15", "comet-live-20261108/06-after-comet-unlock.png", "unlocked"),
     ("18:32", "comet-restart-20261109/frames/023232.jpg", "restart"),
+    ("21:33", "docs/proof/2026-11-09/restart2-hands-off/frames/053312.jpg", "handsoff"),  # in this repo
 ]
 
 
@@ -33,7 +34,8 @@ def main(root):
     out = {"_why": __doc__.split("\n\n")[1].replace("\n", " "), "date": "2026-11-08", "mac": "Mac mini (M5 Pro), FileVault on",
            "kvm": "GL.iNet Comet GL-RM1PE, firmware V1.7.1, HDMI 2560x1440", "prompt_points": points, "frames": []}
     for at, rel, key in FRAMES:
-        yuv, w, h = S.decode_picture(os.path.join(root, rel))
+        mine = os.path.join(HERE, "..", rel)
+        yuv, w, h = S.decode_picture(mine if os.path.exists(mine) else os.path.join(root, rel))
         f = S.frame_features(yuv[:w * h], w, h)
         fr = {"at": at, "key": key, "source": os.path.basename(rel), "mean": f["mean"], "top_edges": f["top_edges"]}
         if S.classify_frame(f) == "desktop":

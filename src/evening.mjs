@@ -1,8 +1,8 @@
 // `housesitter demo`: the evening of 8 November 2026, replayed. Six real frames our GL.iNet Comet took of our Mac
 // mini (only what the sitter keeps of a frame: assets/evening.json, made by scripts/evening.py), read again right now
 // by the sitter's own rules (src/frames.mjs, held to device/sitter.py by test/parity.test.mjs). The times and what
-// happened between the frames come from the mini's own logs; the last block, a real restart, is the KVM's own log
-// beside its frame. No hardware needed, nothing leaves this computer.
+// happened between the frames come from the mini's own logs; the last two blocks, two real restarts, are the KVM's own
+// logs beside their frames (docs/proof/2026-11-09 for the second). No hardware needed, nothing leaves this computer.
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -26,8 +26,12 @@ const STORY = {
   locked: { before: [['18:07', 'We locked the mini and taught the sitter the lock screen, from three frames.']], did: 'waits. A plain lock screen is your lock: it types there only when you ask.' },
   unlocked: { before: [['18:15', 'We asked it to unlock, once. It typed the password at the prompt on its picture.']], did: 'the desktop followed, so the password is verified.' },
   restart: {
-    before: [['18:31', 'Then the real test: we restarted the mini with nobody at it. From the KVM\'s own log:']],
-    log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault: not a screen it was taught, so it waits'], ['18:32:18', 'an agent teaches it this screen, once'], ['18:32:35', 'the prompt it was taught is on its picture'], ['18:32:37', 'typed the password, once, by itself'], ['18:32:56', 'the desktop is up. Nobody at the Mac.']],
+    before: [['18:31', 'The first restart test, on our watchdog, the code housesitter grew from. From the KVM\'s own log:']],
+    log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault: not a screen it was taught, so it waits'], ['18:32:18', 'an agent teaches it this screen, once'], ['18:32:35', 'the prompt it was taught is on its picture'], ['18:32:37', 'typed the password, once, by itself'], ['18:32:56', 'the desktop is up, 1 min 44 s after the restart.']],
+  },
+  handsoff: {
+    before: [['21:32', 'That night, housesitter\'s own sitter, taught FileVault on one supervised restart. Then our agent pressed Restart, and nothing else touched the Mac. From the sitter\'s log and the KVM\'s frames:']],
+    log: [['21:32:23', 'Restart, pressed by our agent'], ['21:33:00', 'the screen went dark, then the Mac found its keyboard'], ['21:33:03', 'FileVault: the prompt it was taught, 100%'], ['21:33:20', 'steady, 20 s after the boot: it may type'], ['21:33:27', 'typed the password, once, by itself'], ['21:33:42', 'the desktop is up: 79 s, and nobody touched it.']],
   },
 };
 
@@ -64,7 +68,7 @@ export function renderEvening(steps, { color = false } = {}) {
     for (const [t, text] of s.story.before) say(t, text);
     right.push('');
     if (s.story.log) {
-      for (const [t, text] of s.story.log) right.push(`${p.dim(t)}  ${/desktop is up/.test(text) ? p.fg([158, 206, 106], text) : text}`);
+      for (const [t, text] of s.story.log) right.push(`${p.dim(t)}  ${/desktop is up/.test(text) && s.key === 'handsoff' ? p.fg([158, 206, 106], text) : text}`);
     } else {
       const pct = (x) => `${Math.round(x.seen.match * 100)}%`;
       const sees = s.seen.visible ? `${s.reads}: ${pct(s)}${s.also?.seen.visible ? `, then ${pct(s.also)} as the wallpaper moved` : ''}` : s.reads;
@@ -76,6 +80,6 @@ export function renderEvening(steps, { color = false } = {}) {
     const box = s.withheld ? [p.dim(`${head}${'─'.repeat(Math.max(0, 41 - head.length))}╮`)] : glimpse(p, s.glimpse, { title: `seen ${s.at}` });
     blocks.push([...beside(box.map((l) => `  ${l}`), right, 3), '']);
   }
-  blocks.push([`  ${p.dim('The morning: it refuses and tells you. The evening: our watchdog, on these same rules, unlocked it.')}`, `  ${p.dim('Your own Mac: housesitter adopt <mac> --address <kvm ip>     A rehearsed bad night: housesitter demo night')}`, '']);
+  blocks.push([`  ${p.dim('The morning: it refuses, and tells you. That night: housesitter itself, hands-off, 79 s.')}`, `  ${p.dim('Your own Mac: housesitter adopt <mac> --address <kvm ip>     A rehearsed bad night: housesitter demo night')}`, '']);
   return blocks;
 }
