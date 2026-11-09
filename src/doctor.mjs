@@ -110,8 +110,14 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   const aItems = [];
   if (mac.notify?.kind) aItems.push({ dot: 'ok', text: `${mac.notify.kind}${mac.notify.email ? ` and email to ${mac.notify.email}` : ''}: it messages you only when it needs you, and when the Mac is back` });
   else { aItems.push({ dot: 'warn', text: 'nowhere to tell you' }); todo.push({ cmd: `housesitter adopt ${name} --notify ntfy`, why: 'a phone notification, no account needed' }); }
-  if ((mac.watched_by || mac.heartbeat)?.url) aItems.push({ dot: 'ok', text: 'watched: it pings a dead man\'s switch every look, so you hear if the KVM itself goes quiet' });
-  else { aItems.push({ dot: 'off', text: 'nothing outside watches the KVM: if it dies, nobody hears' }); todo.push({ cmd: `housesitter adopt ${name} --watched-by <url>`, why: 'a URL that alerts you when its pings stop (a dead man\'s switch, such as healthchecks.io)' }); }
+  // Who watches the KVM: the Mac itself (housesitter watch-kvm, which checks in over SSH every minute), or a dead man's switch.
+  const w = st?.watcher;
+  const wAge = w?.at ? now - w.at : null;
+  const dms = (mac.watched_by || mac.heartbeat)?.url;
+  if (w && wAge < 180000) aItems.push({ dot: 'ok', text: `watched by the Mac itself (${w.by}): last check ${age(wAge)} ago; it tells you if the KVM goes silent` });
+  else if (w) aItems.push({ dot: 'warn', text: `the Mac's watch (${w.by}) last checked ${age(wAge)} ago: is housesitter watch-kvm running there?` });
+  if (dms) aItems.push({ dot: 'ok', text: 'watched by a dead man\'s switch: it pings every look, so you hear if the KVM itself goes quiet' });
+  if (!w && !dms) { aItems.push({ dot: 'off', text: 'nothing outside watches the KVM: if it dies, nobody hears' }); todo.push({ cmd: `housesitter watch-kvm ${name} --install`, why: 'on the Mac: it checks the KVM every minute and tells you if it goes silent (or adopt --watched-by <url>, a dead man\'s switch)' }); }
   sec.push({ label: 'ALERTS', items: aItems });
 
   // the screen, beside the picture

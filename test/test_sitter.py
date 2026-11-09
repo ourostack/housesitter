@@ -632,6 +632,55 @@ class Do(unittest.TestCase):
         self.assertEqual(len([p for p in K.posts if "state=true" in p]), 3)
 
 
+class MutualWatch(unittest.TestCase):
+    """The Mac's half of the mutual watch: `housesitter watch-kvm` asks `do watch_check` every minute over SSH."""
+
+    def setUp(self):
+        self.dir = scratch()
+        W.HOME = self.dir
+
+    def ask(self, args, now, via="ssh"):
+        st = W.load("state.json", {"mem": None, "ledger": []})
+        return W.handle({"op": "watch_check", "args": args}, {"name": "mini"}, None, None, print, now, st, via=via), st
+
+    def test_records_who_watches_and_answers_with_the_status(self):
+        W.save("status.json", {"at": 10**12 - 5000, "state": "healthy", "interval_sec": 60})
+        r, _ = self.ask({"by": "aris-mac-mini", "sent": []}, 10**12)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["result"]["status"]["state"], "healthy")
+        self.assertEqual(r["result"]["emails_today"], 0)
+        self.assertEqual(W.load("state.json", {})["watcher"], {"by": "aris-mac-mini", "at": 10**12})
+
+    def test_only_over_ssh(self):
+        r, _ = self.ask({"by": "x"}, 10**12, via="outbox")
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertNotIn("watcher", W.load("state.json", {}))
+
+    def test_the_macs_emails_join_the_ledger_once_and_count_against_the_cap(self):
+        now = 10**12
+        sent = [{"at": now - 120000, "title": "TEST: mini's KVM is silent", "emailed": True, "test": True}]
+        r, _ = self.ask({"by": "m", "sent": sent}, now)
+        self.assertEqual(r["result"]["emails_today"], 1)
+        r, _ = self.ask({"by": "m", "sent": sent}, now + 60000)
+        self.assertEqual(r["result"]["emails_today"], 1, "the same send handed over twice counts once")
+        led = [e for e in W.load("state.json", {})["ledger"] if e.get("by") == "watcher"]
+        self.assertEqual(len(led), 1)
+        self.assertIn("(TEST)", led[0]["result"])
+        self.assertEqual(W.emails_today(W.load("state.json", {})["ledger"], now), 1)
+
+    def test_the_status_says_who_watches(self):
+        self.ask({"by": "aris-mac-mini", "sent": []}, 10**12)
+        st = W.load("state.json", {})
+        self.assertEqual(st["watcher"]["by"], "aris-mac-mini")
+
+    def test_alert_test_ignores_the_macs_test_sends(self):
+        now = 10**12
+        self.ask({"by": "m", "sent": [{"at": now - 1000, "title": "TEST: x", "emailed": False, "test": True}]}, now)
+        st = W.load("state.json", {})
+        last = [e for e in st["ledger"] if e.get("kind") == "notify" and e.get("test") and e.get("by") != "watcher"]
+        self.assertEqual(last, [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

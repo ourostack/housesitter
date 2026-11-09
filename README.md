@@ -8,9 +8,11 @@
 
 **A $100 KVM beside your agents' Mac. When the Mac restarts, it unlocks FileVault. When it can't, it tells you.**
 
+**The Mac and its KVM watch each other.** The KVM watches the Mac; the Mac checks on the KVM every minute. If either goes quiet, you hear once, and once more when it's back. No outside service.
+
 **Status:** experimental. Hands-off on our Mac mini: 70 seconds from Restart to desktop. The smart plug and a real freeze are next.
 
-[Set it up](#three-cables-then-one-restart) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
+[Set it up](#three-cables-then-one-restart) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [Who watches the KVM](#who-watches-the-kvm) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
 
 ```sh
 npx github:ourostack/housesitter demo         # the day it was built for, real frames
@@ -78,11 +80,12 @@ Then, on the agent Mac (or any Mac on the same network), with Node 20 or later:
 ```sh
 npm install -g github:ourostack/housesitter
 housesitter secret studio mac-password            # once, into your Keychain; typed, never shown
-housesitter adopt studio --address 192.168.1.50 --this-mac --notify ntfy --watched-by <healthchecks.io URL>
+housesitter adopt studio --address 192.168.1.50 --this-mac --notify ntfy
+housesitter watch-kvm studio --install           # the Mac checks on its KVM every minute
 sudo pmset -a autorestart 1 displaysleep 0 sleep 0  # on the Mac: back on with the power, awake, picture kept alive
 ```
 
-`adopt` sets the KVM's admin password, turns its API on, pins its certificate, checks the picture and the keyboard, installs the sitter, seals the Mac's password on the KVM, hardens the KVM, and joins your tailnet if you give it a tagged auth key. `--notify ntfy` makes a private [ntfy](https://ntfy.sh) topic for your phone, and the sitter says hello on it before `adopt` finishes; `--notify <url>` posts to any webhook. Add `--email you@example.com` and ntfy forwards each message as an email too; see [Messages by email](#messages-by-email). `--watched-by` gives the KVM a dead man's switch, which tells you when the KVM itself goes quiet (`--heartbeat`, its 0.2 name, still works). On a new GL.iNet unit you paste one password into its first-run page; `adopt` puts it on your clipboard and opens the page. Rehearse it all with `housesitter adopt studio --fake --notify ntfy`. Start your agents at login, so they come back with the Mac. To undo everything on the KVM: `housesitter forget studio --yes`.
+`adopt` sets the KVM's admin password, turns its API on, pins its certificate, checks the picture and the keyboard, installs the sitter, seals the Mac's password on the KVM, hardens the KVM, and joins your tailnet if you give it a tagged auth key. `--notify ntfy` makes a private [ntfy](https://ntfy.sh) topic for your phone, and the sitter says hello on it before `adopt` finishes; `--notify <url>` posts to any webhook. Add `--email you@example.com` and ntfy forwards each message as an email too; see [Messages by email](#messages-by-email). `watch-kvm --install` has the Mac watch its KVM; see [Who watches the KVM](#who-watches-the-kvm). On a new GL.iNet unit you paste one password into its first-run page; `adopt` puts it on your clipboard and opens the page. Rehearse it all with `housesitter adopt studio --fake --notify ntfy`. Start your agents at login, so they come back with the Mac. To undo everything on the KVM: `housesitter forget studio --yes`.
 
 Then teach it your FileVault screen and arm it, once, while you watch (about ten minutes, most of it one restart):
 
@@ -103,7 +106,7 @@ You're done when the proof ends at your desktop and `housesitter doctor studio` 
 | **keeps falling back** to FileVault | three unlocks an hour at most, then it tells you | you decide |
 | **won't take the password** | two tries, then it stops and tells you exactly what to fix | you decide |
 | **is fine, but your agents can't reach it** | nothing; the desktop clock is ticking, so it never power-cycles a working Mac | — |
-| **is fine, but the KVM dies** (power, network, firmware) | can't tell you itself, so it pings a dead man's switch you choose ([healthchecks.io](https://healthchecks.io) or similar; `"watched_by"` in the config) every minute, and that service messages you when the pings stop | minutes |
+| **is fine, but the KVM dies** (power, network, firmware) | can't tell you itself, so the Mac does: `housesitter watch-kvm` on the Mac checks the sitter every minute and sends one message after 5 minutes of silence, and one when it's back | 5 min |
 
 Frozen means exactly what the table says, nothing looser. A Mac that has only lost its network still has a ticking clock, so it is never power-cycled: keep the clock in the menu bar (the default), and don't leave a full-screen app in front.
 
@@ -188,6 +191,20 @@ If you'd rather get email than install an app, `adopt --notify ntfy --email you@
 
 A free ntfy.sh account may send 5 emails a day, counted per IP address. The sitter keeps to that: past 5 in a day it sends the push alone and says so in its ledger. If ntfy won't send the email for any other reason, the push still goes out. An email client that screens new senders (HEY, for one) needs `ntfy@ntfy.sh` let in once. To use your own ntfy server instead, point `--notify` at it.
 
+### Who watches the KVM
+
+The sitter watches the Mac. Something has to watch the sitter, or a KVM that loses power, drops off the network or crashes leaves the Mac unguarded and nobody knows. The Mac does it:
+
+```sh
+housesitter watch-kvm studio --install    # on the agent Mac itself
+```
+
+That installs a LaunchAgent (`bot.ouro.housesitter.watch-kvm.studio`) that runs every minute. It asks the sitter over SSH for its status, the same way `doctor` does, and counts the KVM as quiet if it doesn't answer or its last look is more than 3 minutes old. After 5 minutes of quiet it sends one message, and one more when the sitter answers again. `--silent-min` changes the 5; `--test` marks both messages TEST, for trying it out.
+
+The messages go the way the sitter's do: the same ntfy topic, the same email address, with the token from the Mac's Keychain (`housesitter secret studio ntfy-token`). Both sides share one daily email cap: the sitter tells the Mac how many it has sent today, and the Mac hands over what it sent while the KVM was quiet, so they never go over 5 together. `doctor` shows the watch: "watched by the Mac itself, last check 40 s ago", or a warning when the Mac's checks stop. `--status` prints what the Mac last saw, `--uninstall` stops it, and its log is `~/Library/Logs/housesitter-watch-studio.log`.
+
+If the Mac and the KVM die together (a power cut to both), neither can tell you. For that, `adopt --watched-by <url>` also has the sitter ping a dead man's switch you choose, such as a [healthchecks.io](https://healthchecks.io) check, every minute.
+
 ### Telling it the Mac is up
 
 Without a probe, "up" means a desktop whose clock moves. Give it one in the Mac's entry in `~/.config/housesitter/config.json`, then run `adopt` again:
@@ -214,7 +231,8 @@ housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our wa
 | A macOS update | **Not yet tried.** An update can restart more than once; each restart is its own boot with its own two tries, and all of them share three unlocks an hour |
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
-| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 228 tests in Node and Python on every push |
+| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 243 tests in Node and Python on every push |
+| The Mac watching its KVM | **Tested with fakes** (silence, one message, one back message, the shared email cap, a stale status, TEST marking, the LaunchAgent). Live proof on our mini: pending |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art
