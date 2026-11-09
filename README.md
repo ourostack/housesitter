@@ -8,7 +8,7 @@
 
 **A $100 KVM beside your agents' Mac. When the Mac restarts, it unlocks FileVault. When it can't, it tells you.**
 
-**Status:** experimental. The restart below was unlocked by our private watchdog, the code housesitter was generalised from, with the same rules. housesitter's own first unlock on real hardware is next: [follow it](https://github.com/ourostack/housesitter/issues/11).
+**Status:** experimental. The restart below is housesitter's own sitter on our Mac mini, hands-off: 79 seconds from Restart to desktop. The smart plug and a real freeze are next.
 
 [Set it up](#three-cables-then-one-restart) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
 
@@ -17,9 +17,9 @@ npx github:ourostack/housesitter demo         # the day it was built for, real f
 npx github:ourostack/housesitter demo night   # a rehearsed bad night, all fakes
 ```
 
-<p align="center"><img src="docs/img/restart.gif" alt="A recording from the KVM's own picture of our Mac mini, with a caption bar under each frame. 18:31:55, restarted 43 seconds ago: the FileVault screen, a Golden Gate wallpaper with the clock at 6:31, and nobody home. 18:32:03: not a screen it was taught, so it won't type. 18:32:18: an agent teaches it this screen, once per Mac; amber dots mark the points that stay put across three frames, on the avatar and the name. 18:32:35: the prompt it was taught, on its own picture, zoomed twice. 18:32:39: it typed the password once, by itself, at 18:32:37; dark while it logs in. Then a card: 1 min 44 s from restart to desktop, nobody at the Mac, including 20 s to teach it the FileVault screen, once." width="100%"></p>
+<p align="center"><img src="docs/img/restart.gif" alt="A recording from the KVM's own picture of our Mac mini, with a caption bar under each frame. 21:32:24: Restart, the only touch; it shuts down to the Golden Gate wallpaper. 21:32:57: dark, the Mac is restarting. 21:33:00: boot seen, dark and then the Mac took its keyboard. 21:33:06: FileVault, with the clock at 9:33; the prompt it was taught, at 100 percent, zoomed twice: the avatar, Ari Mendelow, Enter Password, Your password is required to log in. 21:33:24: steady; its password was proven the restart before. 21:33:27: typed once, by itself. 21:33:39: logging in. Then a card: 79 s from Restart to desktop, nobody at the Mac, housesitter's own sitter on a $100 KVM, 8 November 2026, 21:33:42 PT, desktop not shown." width="100%"></p>
 
-*Our Mac mini, restarted on 8 November with nobody at it, filmed by the KVM through the Mac's own HDMI port. It had only been taught our lock screen, so at FileVault it refused at first. An agent watching the KVM's picture taught it that screen from three frames, a one-time step, and it typed by itself: 1 minute 44 seconds from restart to desktop. Only the FileVault frames are shown.*
+*Our Mac mini on the night of 8 November, filmed by the KVM through the Mac's own HDMI port. The only touch was Restart. housesitter's sitter saw the boot, recognised the FileVault prompt it had been taught on the restart before, and typed once: 79 seconds from Restart to desktop. Only the shutdown, boot and FileVault frames are shown; [every frame and the sitter's own log](docs/proof/2026-11-09/).*
 
 ## Why I built it
 
@@ -29,7 +29,7 @@ On Sunday morning one of our agents changed a display setting on the KVM beside 
 
 Our first key was Escape. At a macOS login window, Escape switches to the list of users, where no field has focus. And the display the KVM was watching didn't show the field at all. The mini sat locked from 10:11 until I logged in by hand at 17:54.
 
-So housesitter types only where it sees the password prompt on its own picture, and never presses Escape. That morning it would have refused and sent me one message. That evening our watchdog, the code housesitter grew from, restarted the mini with nobody at it. It refused the FileVault screen at first, because it had only learned our lock screen. An agent taught it that screen from three frames, and it typed by itself. The desktop was back 1 minute 44 seconds after the restart.
+So housesitter types only where it sees the password prompt on its own picture, and never presses Escape. That morning it would have refused and sent me one message. That night we put housesitter's own sitter on the KVM and restarted the mini twice. The first time we watched: it refused the FileVault screen, because it had never seen it, so we taught it that screen once, and its one supervised try reached the desktop. The second time nobody touched anything after Restart. It saw the boot, recognised FileVault, typed once, and the desktop was back 79 seconds after Restart.
 
 ## housesitter doctor
 
@@ -184,7 +184,7 @@ housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our wa
 
 | Part | Status |
 | --- | --- |
-| FileVault unlock after a restart | **Done on real hardware, hands-off, by housesitter's own sitter** ([#11](https://github.com/ourostack/housesitter/issues/11)). Mac mini (M5 Pro) on macOS 27.2 and a GL.iNet Comet (kvmd 4.82) at 2560×1440. First restart, supervised: it refused the screen it hadn't been taught, we taught it the FileVault screen once (`learn-prompt --filevault`), it typed its one trial try, and the desktop came back, so the password was verified. Second restart, 9 November 05:32 UTC: the only touch was Restart. It saw the boot, recognised the FileVault prompt, typed once, and the desktop was back **79 s after Restart**. The KVM stayed up throughout ([frames and the sitter's own log](https://github.com/ourostack/housesitter/tree/proof/2026-11-09-hardware/docs/proof/2026-11-09)) |
+| FileVault unlock after a restart | **Done on real hardware, hands-off, by housesitter's own sitter** ([#11](https://github.com/ourostack/housesitter/issues/11)). Mac mini (M5 Pro) on macOS 27.2 and a GL.iNet Comet (kvmd 4.82) at 2560×1440. First restart, supervised: it refused the screen it hadn't been taught, we taught it the FileVault screen once (`learn-prompt --filevault`), it typed its one trial try, and the desktop came back, so the password was verified. Second restart, 8 November 21:32 PT (05:32 UTC on the 9th): the only touch was Restart. It saw the boot, recognised the FileVault prompt, typed once, and the desktop was back **79 s after Restart**. The KVM stayed up throughout ([recording](docs/img/restart.gif), [every frame and the sitter's own log](docs/proof/2026-11-09/)) |
 | Unlocking a lock screen when an agent needs the UI | **Done on real hardware by our watchdog: 20 of 20 cycles**, from the lock screen (median 14.4 s), a sleeping display (15.6 s), the login window's list of users, clicking the account's tile (20.8 s), and its single-user form (19.7 s). Ported to housesitter's sitter (`unlock_lock_screen`, `want-desktop`, list-of-users lessons) and tested on those real frames; housesitter's own run on the Comet is next |
 | Refusing to type blind | **Real frames, replayed**: the KVM's frames from that morning read as "no password field", so the sitter refuses and tells you (`housesitter demo`) |
 | Learning the prompt without OCR | **Real frames, in tests**: taught at the FileVault screen of that restart, it matches every FileVault frame at 100% and the lock screen, a desktop and the morning's no-field wallpaper at under 10%. Taught at the lock screen, it matches the lock screen at 100% and 93% with an aerial wallpaper moving, and FileVault not at all, which is why setup teaches it at FileVault. Taught at the list of users, it matches every list-of-users frame and none of the lock-screen or login-window frames |
