@@ -1,0 +1,39 @@
+name: npu-models
+# Builds the RKNN models housesitter runs on the KVM's NPU (RV1126B). rknn-toolkit2 is Linux-only, so models are
+# converted here, never on the KVM or a Mac. Pinned to 2.3.2, the runtime version on the GL.iNet Comet.
+on:
+  push:
+    branches: [npu-spike]
+    paths: [npu/**, .github/workflows/npu-models.yml]
+  workflow_dispatch:
+jobs:
+  convert:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.10' }
+      - name: Toolkit
+        run: pip install -q rknn-toolkit2==2.3.2 onnx==1.16.1
+      - name: Source models (PP-OCRv4, from Rockchip's rknn_model_zoo)
+        run: |
+          mkdir -p models
+          curl -fsSL -o models/ppocrv4_det.onnx https://ftrg.zbox.filez.com/v2/delivery/data/95f00b0fc900458ba134f8b180b3f7a1/examples/PPOCR/ppocrv4_det.onnx
+          curl -fsSL -o models/ppocrv4_rec.onnx https://ftrg.zbox.filez.com/v2/delivery/data/95f00b0fc900458ba134f8b180b3f7a1/examples/PPOCR/ppocrv4_rec.onnx
+          curl -fsSL -o models/ppocr_keys_v1.txt https://raw.githubusercontent.com/airockchip/rknn_model_zoo/main/examples/PPOCR/PPOCR-Rec/model/ppocr_keys_v1.txt
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/airockchip/rknn_model_zoo zoo
+          git -C zoo sparse-checkout set datasets/PPOCR
+          ls zoo/datasets/PPOCR/imgs | head
+          (cd zoo/datasets/PPOCR/imgs && ls *.jpg *.png 2>/dev/null | sed "s#^#$PWD/#") > dataset.txt
+          wc -l dataset.txt
+          sha256sum models/*.onnx models/*.txt
+      - name: Convert
+        run: python npu/convert.py models dataset.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rknn-models
+          path: |
+            models/*.rknn
+            models/ppocr_keys_v1.txt
+            models/report.json
