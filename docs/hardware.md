@@ -24,7 +24,7 @@ macOS sees the KVM as one more display (the Comet shows up as "GLKVM", at 2560x1
 - **Extended, never mirrored**, so your own displays keep their modes.
 - **Touch your main display only at one outer corner** in the arrangement, so the pointer can't wander onto a screen nobody is looking at.
 
-**Never change the KVM's EDID, or the Mac's display mode, while the Mac is running.** On 2026-11-08 we wrote a 1080p EDID to our Comet while our Mac mini was up. The Mac switched modes and froze: no reboot and no panic, but nothing above the kernel answered. The keyboard, the force-restart chord and the password all went in through the KVM and changed nothing. Only a power cycle could bring it back, and that Mac had no smart plug yet. housesitter's client has no EDID call, and `adopt` accepts whatever mode arrives.
+**Never change the KVM's EDID, or the Mac's display mode, while the Mac is running.** On 2026-11-08 we wrote a 1080p EDID to our Comet while our Mac mini was up. The Mac reconfigured its displays, and ten seconds later its login window and its sign-in services (AppSSODaemon, coreautha) crashed, taking every agent on it with them. We read it as a freeze at the time; the Mac's own logs later showed a broken login window that never took our keys as a password. Escape, our first key, had also switched it to the list of users. It stayed locked until a person logged in. The sitter never presses Escape; it wakes a screen with a lone Shift. housesitter's client has no EDID call, and `adopt` accepts whatever mode arrives.
 
 ## The KVM
 

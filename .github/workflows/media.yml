@@ -1,0 +1,25 @@
+name: media
+# Renders the terminal recording (docs/tapes/*.tape) with vhs and uploads it, so nobody makes it by hand and
+# nobody runs a browser on a shared machine for it. Download the artifact and commit it with the change it shows.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['docs/tapes/**', 'src/evening.mjs', 'src/paint.mjs', 'assets/evening.json']
+permissions:
+  contents: read
+jobs:
+  vhs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: charmbracelet/vhs-action@v2
+        with:
+          path: docs/tapes/demo.tape
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media
+          path: docs/img/demo.gif

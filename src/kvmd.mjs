@@ -25,8 +25,12 @@ export function httpsRequest({ url, method = 'GET', headers = {}, body = null, p
   if (refused) return Promise.reject(new Error(`kvmd: ${refused}`));
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const req = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method, headers, rejectUnauthorized: false, timeout: timeoutMs }, (res) => {
-      const fp = fingerprint(res.socket.getPeerCertificate()?.raw || Buffer.alloc(0));
+    // agent: false gives every request its own connection and a full handshake. A pooled, resumed TLS session can
+    // report no peer certificate at all, and two requests in parallel then fail the pin (seen on a real GL-RM1PE).
+    const req = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method, headers, rejectUnauthorized: false, timeout: timeoutMs, agent: false }, (res) => {
+      const raw = res.socket.getPeerCertificate()?.raw;
+      if (!raw?.length) { res.destroy(); return reject(new Error(`${u.host} showed no TLS certificate; refusing`)); }
+      const fp = fingerprint(raw);
       if (pin && fp !== pin) { res.destroy(); return reject(new Error(`TLS fingerprint ${fp} isn't the pinned one; refusing (a different device, or it was reset: run adopt again)`)); }
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -109,10 +113,19 @@ export async function connect({ endpoints, pin, user, password, request = httpsR
   throw new Error(`no KVM endpoint answered: ${errors.join('; ')}`);
 }
 
+// What kind of KVM this is, from kvmd's /api/info. GL.iNet's GLKVM reports its Rockchip board as the platform base.
+export function kvmModel(info) {
+  const pl = info?.system?.platform || info?.hw?.platform || {};
+  if (/RV1126/i.test(pl.base || '')) return 'GL.iNet Comet (GLKVM)';
+  if (pl.model && pl.type === 'rpi' && !pl.base) return `PiKVM ${pl.model}`;
+  return pl.base ? pl.base.split(/\s+EVB|\s+Board/)[0] : pl.model ? `kvmd on ${pl.model}` : null;
+}
+
 export function summarise({ info, hid, streamer }) {
   const src = streamer?.streamer?.source || streamer?.source || {};
   return {
-    model: [info?.hw?.platform?.model, info?.system?.kvmd?.version].filter(Boolean).join(' ') || null,
+    model: kvmModel(info),
+    version: info?.system?.kvmd?.version || null,
     video: { online: src.online ?? null, resolution: src.resolution ? `${src.resolution.width}x${src.resolution.height}` : null },
     hid: { keyboard_online: Boolean(hid?.keyboard?.online ?? hid?.online), mouse_online: Boolean(hid?.mouse?.online ?? hid?.online) },
   };

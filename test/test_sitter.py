@@ -481,6 +481,8 @@ if __name__ == "__main__":
 
 
 FRAMES = json.load(open(os.path.join(HERE, "fixtures", "comet-frames-20261108.json")))
+# Luma grids (lum_grid) from real Comet frames of a Mac's lock screen, with a moving aerial wallpaper behind it.
+LUM = {k: dict(v, _lum=base64.b64decode(v["_lum"])) for k, v in json.load(open(os.path.join(HERE, "fixtures", "comet-lum-20261109.json"))).items() if not k.startswith("_")}
 
 
 class BootWatch(unittest.TestCase):
@@ -688,7 +690,7 @@ class Safety(unittest.TestCase):
         self.dir = scratch()
         W.HOME = self.dir
         self.saved = (W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.kvm_uptime_s, W.load_secret, W.arp_alive, W.tcp_answers)
-        self.usb, self.frame, self.logs = 16.8, FRAMES["lock-2560-later"], []
+        self.usb, self.frame, self.logs = 16.8, LUM["lock-later"], []
         W.usb_last_enum = lambda run=None: self.usb
         W.hdmi_mode = lambda read=None, kvmd=None: (2560, 1440)
         W.frame_raw = lambda kvmd, run=None: (b"", 2560, 1440)
@@ -701,7 +703,7 @@ class Safety(unittest.TestCase):
         (W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.kvm_uptime_s, W.load_secret, W.arp_alive, W.tcp_answers) = self.saved
 
     def teach(self):
-        W.learn_prompt(FRAMES["lock-2560-later"], "an operator saw the FileVault field on the KVM's picture")
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "an operator saw the FileVault field on the KVM's picture")
 
     def boot(self, cfg=None, start=1_000_000, ticks=20):
         cfg = cfg or {"name": "studio"}
@@ -731,11 +733,12 @@ class Safety(unittest.TestCase):
 
     def test_learn_prompt_takes_only_a_prompt_like_frame(self):
         with self.assertRaises(ValueError):
-            W.learn_prompt(FRAMES["desktop-2560"], "x")
-        self.assertFalse(W.prompt_visible(FRAMES["lock-2560-later"]))
+            W.learn_prompt([LUM["lock-a"], LUM["desktop"]], "x")
+        self.assertFalse(W.prompt_visible(LUM["lock-later"]))
         self.teach()
-        self.assertTrue(W.prompt_visible(FRAMES["lock-2560-later"]))
-        self.assertFalse(W.prompt_visible(FRAMES["desktop-2560"]))
+        self.assertTrue(W.prompt_visible(LUM["lock-later"]))
+        self.assertFalse(W.prompt_visible(LUM["desktop"]))
+        self.assertFalse(W.prompt_visible(LUM["third-display-lock"]))
 
     # 2. the password gate
     def test_unverified_by_default_never_types_even_at_a_visible_field(self):
@@ -751,7 +754,7 @@ class Safety(unittest.TestCase):
         t = self.boot(ticks=12)
         self.assertEqual(self.kvmd.typed(), [b"pw-from-keychain"])
         self.assertEqual(W.password_gate()["trust"], "trial")
-        self.frame = FRAMES["desktop-2560"]
+        self.frame = LUM["desktop"]
         W.boot_watch({"name": "studio"}, self.kvmd, self.logs.append, now=t + 3000)
         self.assertEqual(W.password_gate()["trust"], "verified")
 
@@ -765,7 +768,7 @@ class Safety(unittest.TestCase):
     def test_a_desktop_without_our_try_never_verifies(self):
         self.teach()
         W.set_password_trust("trial", "armed")
-        self.frame = FRAMES["desktop-2560"]
+        self.frame = LUM["desktop"]
         self.boot(ticks=5)
         self.assertEqual(self.kvmd.typed(), [])
         self.assertEqual(W.password_gate()["trust"], "trial")
@@ -1019,3 +1022,100 @@ class ReviewFixes(unittest.TestCase):
             self.assertEqual(W.load("state.json", {})["ledger"][-1]["kind"], "press_power")
         finally:
             W.arp_alive, W.tcp_answers = orig
+
+
+class LockScreenIsNotADesktop(unittest.TestCase):
+    """Real frames through the GLKVM mirror, 2026-11-08: the lock screen's top-right icons once read as a menu bar."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    def test_real_mirror_frames(self):
+        self.assertEqual(W.classify_frame(FRAMES["desktop-mirror-2560"]), "desktop")
+        self.assertEqual(W.classify_frame(FRAMES["lockscreen-mirror-2560"]), "prompt_like")
+        self.assertEqual(W.classify_frame(FRAMES["lockscreen-mirror-awake-2560"]), "prompt_like")
+
+    def test_status_icons_top_right_are_not_a_menu_bar(self):
+        w, h = 400, 60
+        y = bytearray([100] * (w * h))
+        for row in range(0, 40):
+            for x in range(300, 400, 4):
+                y[row * w + x] = 250
+        self.assertEqual(W.frame_features(bytes(y), w, h)["top_edges"], 0)
+        for row in range(0, 40):
+            for x in range(0, 120, 4):
+                y[row * w + x] = 250
+        self.assertGreater(W.frame_features(bytes(y), w, h)["top_edges"], 40)
+
+    def test_the_prompt_is_learned_through_a_moving_wallpaper(self):
+        W.learn_prompt([LUM["lock-a"], LUM["lock-b"], LUM["lock-c"]], "test")
+        seen, match, refs = W.prompt_seen(LUM["lock-later"])
+        self.assertTrue(seen)
+        self.assertGreaterEqual(match, W.PROMPT_RECALL)
+        self.assertEqual(refs, 1)
+        self.assertFalse(W.prompt_seen(LUM["desktop"])[0])
+
+
+class Look(unittest.TestCase):
+    """`housesitter look` and `doctor`: a read-only look and a tiny colour glimpse of the screen."""
+
+    def setUp(self):
+        W.HOME = scratch()
+
+    @staticmethod
+    def solid(w, h, y, u, v):
+        return bytes([y]) * (w * h) + bytes([u]) * ((w // 2) * (h // 2)) + bytes([v]) * ((w // 2) * (h // 2))
+
+    def test_glimpse_is_a_small_colour_picture(self):
+        g = W.glimpse(self.solid(160, 90, 81, 90, 240), 160, 90)  # BT.601 red
+        rgb = base64.b64decode(g["rgb"])
+        self.assertEqual((g["w"], g["h"], len(rgb)), (40, 22, 40 * 22 * 3))
+        r, gg, b = rgb[0], rgb[1], rgb[2]
+        self.assertGreater(r, 200)
+        self.assertLess(gg, 40)
+        self.assertLess(b, 40)
+        self.assertIsNone(W.glimpse(b"short", 160, 90))
+
+    def test_look_from_a_picture_reads_it_and_presses_nothing(self):
+        w, h = 2560, 1440
+        frame = self.solid(w, h, 120, 128, 128)
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            return type("R", (), {"stdout": frame})()
+
+        class NoKeys:
+            def post(self, *a, **k):
+                raise AssertionError("look must not press or type anything")
+
+        out = W.look(NoKeys(), "/some/where/shot.png", run=run, now=5)
+        self.assertEqual(out["from"], "shot.png")
+        self.assertEqual(out["size"], [w, h])
+        self.assertEqual(out["reads_as"], "prompt_like")
+        self.assertEqual(out["prompt"], {"taught": 0, "match": 0.0, "visible": False})
+        self.assertEqual(out["glimpse"]["w"], 40)
+        self.assertEqual(calls[0][0], "ffmpeg")
+        self.assertEqual(W.look(NoKeys(), "x.png", run=lambda c, **k: type("R", (), {"stdout": b""})())["reads_as"], "none")
+
+    def test_budgets_show_use_and_when_they_free_up(self):
+        now = 10_000_000
+        st = {"desktop_at": now - 50 * 60000, "ledger": [{"at": now - 40 * 60000, "kind": "unlock"}, {"at": now - 2 * 3600000, "kind": "power_cycle"}]}
+        b = W.budgets(st, now)
+        self.assertEqual(b["unlock_since_desktop"], [1, W.BOOT["per_boot"]])
+        self.assertEqual(b["unlock_hour"], [1, W.DEFAULTS["unlocks_per_hour"]])
+        self.assertEqual(b["unlock_hour_frees_at"], now - 40 * 60000 + 3600000)
+        self.assertEqual(b["cycles_day"], [1, W.DEFAULTS["cycles_per_day"]])
+        self.assertIsNone(b["blocked"])
+
+
+class NeverEscape(unittest.TestCase):
+    """At a macOS login window, Escape leaves the password field for the list of users (2026-11-08). The sitter's own
+    keys are a lone Shift to wake the screen, and the password, then Return, at a field it can see. (An agent's own
+    `key` request is that agent's choice, and passes through as asked.)"""
+
+    def test_the_only_key_the_sitter_presses_by_itself_is_shift(self):
+        src = open(os.path.join(HERE, "..", "device", "sitter.py")).read()
+        import re
+        self.assertEqual(sorted(set(re.findall(r"send_key\?key=(\w+)", src))), ["Enter", "ShiftLeft"])
+        self.assertNotIn("Escape", re.sub(r'"esc(ape)?": "Escape"', "", src.split("def key_names")[0] + src.split("def key_names")[1].split("\n\n\n", 1)[1]))
