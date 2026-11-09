@@ -33,7 +33,7 @@ Asked for tonight, while the mini was idle (HID idle for 1,370 s, no osascript, 
 
 Caveat: kvmd logs a WebSocket session, not the HID events sent inside one. None of our code sends HID over a WebSocket, but the log alone can't show that.
 
-**Frames:** the proof kept 15 frames out of 41 looks (14 are published here): shutdown, the Apple logo with a progress bar, the FileVault prompt, then the login progress. I removed one frame by hand: a logout frame still showing the Dock, with an unread badge. The sitter read it as `prompt_like` because it has no menu bar ([timeline.json](proof/timeline.json) marks it). Fixed in 0.2.1: proof now keeps a non-desktop frame only when it is black, shows a taught screen, or comes during a boot the sitter saw. `frame-0023.jpg` has its password field blurred after recording, because the dots give away the password's length.
+**Frames:** the proof kept 15 frames out of 41 looks (14 are published here): shutdown, the Apple logo with a progress bar, the FileVault prompt, then the login progress. I removed one frame by hand: a logout frame still showing the Dock, with an unread badge. The sitter read it as `prompt_like` because it has no menu bar ([timeline.json](proof/timeline.json) marks it). Fixed in 0.2.1: proof now keeps a non-desktop frame only when it is black, shows a taught screen, or is the Apple logo of a boot the sitter saw. `frame-0023.jpg` has its password field blurred after recording, because the dots give away the password's length.
 
 **After the restart** (from our private notes):
 - Hub: online.

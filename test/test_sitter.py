@@ -431,7 +431,7 @@ class NotifyEmail(unittest.TestCase):
 
         def op(req, timeout=10):
             self.reqs.append(req)
-            if self.refuse and req.get_header("Email"):
+            if self.refuse and (req.get_header("Email") or (self.refuse[0] == 401 and req.get_header("Authorization"))):
                 import io
                 raise urllib.error.HTTPError(req.full_url, self.refuse[0], "Bad Request", {}, io.BytesIO(json.dumps({"code": self.refuse[1], "error": self.refuse[2]}).encode()))
             return R()
@@ -450,6 +450,7 @@ class NotifyEmail(unittest.TestCase):
         cfg = {"notify": {"kind": "ntfy", "url": "https://ntfy.sh/t"}}
         self.assertEqual(W.notify(cfg, "s", "b", opener=self.op, now=1, ledger=[]), "posted 200")
         self.assertIsNone(self.reqs[0].get_header("Email"))
+        self.assertIsNone(self.reqs[0].get_header("Authorization"), "the token rides only with an email")
 
     def test_one_address_only(self):
         cfg = {"notify": dict(self.cfg["notify"], email="a@example.com, b@example.com")}
@@ -463,6 +464,7 @@ class NotifyEmail(unittest.TestCase):
         r = W.notify(self.cfg, "s", "b", opener=self.op, now=now, ledger=ledger)
         self.assertEqual(r, "posted 200 (no email: today's 5 are used; a push only)")
         self.assertIsNone(self.reqs[0].get_header("Email"))
+        self.assertIsNone(self.reqs[0].get_header("Authorization"))
         old = [dict(e, at=now - 25 * 3600000) for e in ledger]
         self.assertIn("emailed", W.notify(self.cfg, "s", "b", opener=self.op, now=now, ledger=old))
         cfg = {"notify": dict(self.cfg["notify"], email_per_day=1)}
@@ -474,7 +476,13 @@ class NotifyEmail(unittest.TestCase):
         self.assertEqual(r, "posted 200 (ntfy wouldn't email: invalid request: anonymous email sending is not allowed; a push only)")
         self.assertEqual(len(self.reqs), 2)
         self.assertIsNone(self.reqs[1].get_header("Email"))
-        self.assertEqual(self.reqs[1].get_header("Authorization"), "Bearer tk_fake")
+        self.assertIsNone(self.reqs[1].get_header("Authorization"))
+
+    def test_a_revoked_token_never_costs_the_push(self):
+        self.refuse = (401, 40101, "unauthorized")
+        r = W.notify(self.cfg, "s", "b", opener=self.op, now=1, ledger=[])
+        self.assertEqual(r, "posted 200 (ntfy wouldn't email: unauthorized; a push only)")
+        self.assertIsNone(self.reqs[-1].get_header("Authorization"))
 
     def test_a_server_error_is_not_swallowed(self):
         self.refuse = (502, 0, "bad gateway")

@@ -1793,18 +1793,29 @@ def look(kvmd, src=None, run=subprocess.run, now=None):
     return out
 
 
-def proof_withhold(kind, lesson_visible, boot, now):
+def boot_screen(f):
+    """The Apple logo and its progress bar: a dark frame whose few bright thumbnail points sit in the middle rows. A
+    desktop's Dock (the bottom rows), a menu bar or a notification (the top rows) never passes, even on a black
+    wallpaper."""
+    thumb = (f or {}).get("thumb") or []
+    if len(thumb) != 32 * 18 or f.get("mean", 255) >= 40:
+        return False
+    bright = [i // 32 for i, v in enumerate(thumb) if v >= 60]
+    return len(bright) <= 8 and all(3 <= row <= 14 for row in bright)
+
+
+def proof_withhold(kind, lesson_visible, boot, now, f=None):
     """Why a proof frame stays off the record, or None to keep it. "No menu bar" doesn't make a frame safe: a desktop
-    that is logging out has lost its menu bar but still shows the Dock and its badges (real, 2026-11-09). So a frame
-    is kept only when it is black, when a taught lesson (FileVault, lock screen, list of users) is on it, or while a
-    boot the boot watch saw is still under way (the Apple logo, FileVault, the login's progress bar)."""
+    that is logging out, or one whose menu bar hides, still shows the Dock and its badges (real, 2026-11-09). So a
+    frame is kept only when it is black, when a taught lesson (FileVault, lock screen, list of users) is on it, or
+    when it is the Apple logo of a boot the boot watch saw."""
     if kind in ("black", "none"):
         return None
     if kind == "desktop":
         return "a desktop: not recorded (--all-frames to include)"
-    if lesson_visible or boot_recent(boot, now):
+    if lesson_visible or (boot_recent(boot, now) and boot_screen(f)):
         return None
-    return "not a taught screen, and no boot under way (a desktop logging out reads like this): not recorded (--all-frames to include)"
+    return "not a taught screen or a boot's Apple logo (a desktop without its menu bar reads like this): not recorded (--all-frames to include)"
 
 
 def proof_frame(kvmd, all_frames=False, run=subprocess.run, now=None):
@@ -1820,7 +1831,7 @@ def proof_frame(kvmd, all_frames=False, run=subprocess.run, now=None):
     seen = prompt_seen(f)
     out = {"at": now, "reads_as": kind, "hdmi": "%dx%d" % (raw[1], raw[2]), "prompt": {"visible": seen[0], "match": seen[1], "kind": seen[3], "grid": grid_seen(f) is not None}}
     if not all_frames:
-        why = proof_withhold(kind, seen[0] or out["prompt"]["grid"], load("state.json", {}).get("boot"), now)
+        why = proof_withhold(kind, seen[0] or out["prompt"]["grid"], load("state.json", {}).get("boot"), now, f)
         if why:
             out["jpeg"] = None
             out["withheld"] = why
@@ -1990,9 +2001,6 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
         with opener(req, timeout=10) as r:
             return "posted %d" % r.status
     headers = {"Title": subject.encode("utf-8"), "Tags": "house"}
-    token = load_secret("ntfy")
-    if token:
-        headers["Authorization"] = "Bearer " + token
     email, note = n.get("email"), ""
     if email:
         now = now if now is not None else int(time.time() * 1000)
@@ -2004,6 +2012,10 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
             email, note = None, " (no email: today's %d are used; a push only)" % cap
         else:
             headers["Email"] = email
+            # The account token rides only with an email: a revoked or expired one must never cost the push.
+            token = load_secret("ntfy")
+            if token:
+                headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST")
     try:
         with opener(req, timeout=10) as r:
@@ -2018,7 +2030,8 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
             why = json.loads(e.read().decode("utf-8") or "{}").get("error", "")
         except Exception:  # noqa: BLE001
             pass
-        del headers["Email"]
+        headers.pop("Email", None)
+        headers.pop("Authorization", None)
         with opener(urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST"), timeout=10) as r:
             return "posted %d (ntfy wouldn't email: %s; a push only)" % (r.status, (why or "HTTP %d" % e.code)[:100])
 

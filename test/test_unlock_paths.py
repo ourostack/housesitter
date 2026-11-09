@@ -575,8 +575,8 @@ class ProofFrames(unittest.TestCase):
         self.assertEqual(calls, [])
         out = W.proof_frame(Keys(), all_frames=True, run=run, now=5)
         self.assertTrue(out["jpeg"])
+        W.learn_prompt([FV["filevault-023155"], FV["filevault-023203"], FV["filevault-023210"]], "FileVault", kind="boot")
         self.fake(FV["filevault-023232"])
-        W.save("state.json", {"boot": {"pending": 6, "boot_at": 6}})
         out = W.proof_frame(Keys(), run=run, now=6)
         self.assertEqual(base64.b64decode(out["jpeg"]), jpeg)
         self.assertNotIn("scale", " ".join(calls[-1]), "the Comet's ffmpeg has no scale filter")
@@ -591,12 +591,30 @@ class ProofFrames(unittest.TestCase):
         out = W.proof_frame(Keys(), run=run, now=now)
         self.assertEqual(out["reads_as"], "prompt_like")
         self.assertIsNone(out["jpeg"])
-        self.assertIn("no boot under way", out["withheld"])
+        self.assertIn("not a taught screen", out["withheld"])
         self.assertTrue(W.proof_frame(Keys(), all_frames=True, run=run, now=now)["jpeg"])
         W.save("state.json", {"boot": {"pending": now - 60000, "boot_at": now - 60000}})
-        self.assertTrue(W.proof_frame(Keys(), run=run, now=now)["jpeg"], "during a boot, the boot's own screens are the proof")
+        self.assertIsNone(W.proof_frame(Keys(), run=run, now=now)["jpeg"], "a bright frame isn't a boot screen, even during a boot")
+        # The fixture is full-range grey; the Comet's own luma is limited-range, where this frame's mean is 17 (not black).
+        self.fake(dict(V02["apple-logo"], mean=17.2))
+        self.assertEqual(W.proof_frame(Keys(), run=run, now=now)["reads_as"], "prompt_like")
+        self.assertTrue(W.proof_frame(Keys(), run=run, now=now)["jpeg"], "the boot's Apple logo is the proof")
         W.save("state.json", {"boot": {"pending": now - 16 * 60000, "boot_at": now - 16 * 60000}})
         self.assertIsNone(W.proof_frame(Keys(), run=run, now=now)["jpeg"], "a stale boot grants nothing")
+
+    def test_a_dock_on_a_black_wallpaper_is_not_a_boot_screen(self):
+        """Review, 2026-11-09: a desktop whose menu bar hides reads as prompt_like for the whole boot window."""
+        logo = V02["apple-logo"]
+        self.assertTrue(W.boot_screen(logo))
+        dock = dict(logo, thumb=list(logo["thumb"]))
+        for x in range(10, 22):
+            dock["thumb"][17 * 32 + x] = 200
+        self.assertFalse(W.boot_screen(dock))
+        banner = dict(logo, thumb=list(logo["thumb"]))
+        banner["thumb"][1 * 32 + 28] = 220
+        self.assertFalse(W.boot_screen(banner))
+        self.assertFalse(W.boot_screen(dict(logo, mean=80)))
+        self.assertFalse(W.boot_screen(None))
 
     def test_a_taught_screen_is_kept_without_a_boot(self):
         jpeg = b"\xff\xd8" + b"x" * 300 + b"\xff\xd9"

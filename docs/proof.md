@@ -7,7 +7,7 @@ housesitter proof studio --record ./proof-studio
 # then restart the Mac: Apple menu > Restart (or sudo shutdown -r now over SSH)
 ```
 
-Every three seconds the KVM decodes a frame and reads it itself. It sends a JPEG back only when the frame is black, shows a screen you taught it (FileVault, the lock screen, the list of users), or comes during a boot it saw. "No menu bar" isn't enough: a desktop that is logging out loses its menu bar but still shows the Dock and its badges. So your desktop, its windows and its notifications stay on the KVM (`--all-frames` keeps them too, for a private run). It saves those frames (`frame-0001.jpg`, …, at the KVM's full size) and a `timeline.json` with what each look read as, the lesson match, and the sitter's state and actions, until the Mac has been back for 30 seconds. It needs the SSH route to the KVM. Then:
+Every three seconds the KVM decodes a frame and reads it itself. It sends a JPEG back only when the frame is black, shows a screen you taught it (FileVault, the lock screen, the list of users), or is the Apple logo of a boot it saw. "No menu bar" isn't enough: a desktop that is logging out, or one whose menu bar hides, has no menu bar but still shows the Dock and its badges. So your desktop, its windows and its notifications stay on the KVM (`--all-frames` keeps them too, for a private run). It saves those frames (`frame-0001.jpg`, …, at the KVM's full size) and a `timeline.json` with what each look read as, the lesson match, and the sitter's state and actions, until the Mac has been back for 30 seconds. It needs the SSH route to the KVM. Then:
 
 ```sh
 ffmpeg -framerate 4 -pattern_type glob -i 'proof-studio/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p proof-studio/proof.mp4
