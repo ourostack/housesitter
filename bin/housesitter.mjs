@@ -28,7 +28,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter demo                         the real evening it was built for, replayed (no hardware)
   housesitter demo night                   one bad night, rehearsed: a panic, a freeze, a changed password
   housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
-      [--notify ntfy|<url>] [--email <you@example.com>] [--heartbeat <url>] [--location home|away] [--fingerprint <sha256>]
+      [--notify ntfy|<url>] [--email <you@example.com>] [--watched-by <url>] [--location home|away] [--fingerprint <sha256>]
       [--this-mac] [--outbox] [--dry-run] [--fake]
   housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token>   store a secret (read from stdin, no echo)
   housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
@@ -65,7 +65,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--heartbeat', '--location', '--fingerprint', '--every'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -143,14 +143,14 @@ async function main() {
   }
 
   if (cmd === 'adopt') {
-    need(name, 'housesitter adopt <mac> [--address <ip>] [--notify ntfy|<url>] [--heartbeat <url>] [--outbox] [--this-mac] [--dry-run] [--fake]');
+    need(name, 'housesitter adopt <mac> [--address <ip>] [--notify ntfy|<url>] [--watched-by <url>] [--outbox] [--this-mac] [--dry-run] [--fake]');
     const fake = flag('--fake') ? fakeDeps({ apiClosed: !flag('--api-open') }) : null;
     const store = secretStore();
     let mac;
     try { mac = macConfig(name); } catch { mac = { name, kvm: { endpoints: [] } }; }
     const x = {
       name, mac, refs: { ...defaultRefs(name), ...(mac.kvm?.admin_password ? { admin: mac.kvm.admin_password } : {}) }, address: val('--address') || (fake ? null : mac.kvm?.endpoints?.find((e) => e.fallback)?.url?.replace(/^https:\/\//, '') || null),
-      dryRun: flag('--dry-run'), outbox: flag('--outbox'), notify: val('--notify'), email: val('--email'), heartbeat: val('--heartbeat'), location: val('--location'), expectFingerprint: val('--fingerprint'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
+      dryRun: flag('--dry-run'), outbox: flag('--outbox'), notify: val('--notify'), email: val('--email'), watchedBy: val('--watched-by'), heartbeat: val('--heartbeat'), location: val('--location'), expectFingerprint: val('--fingerprint'), macIfconfig: flag('--this-mac') ? hostIfconfig() : '', say,
       deps: fake ? fake.deps : realDeps(name, { secrets: store, saveMac: (fn) => updateMac(name, fn) }), configFile: configPath(),
     };
     if (fake) x.mac = { name, kvm: { endpoints: [] }, user_names: ['Ada'] };

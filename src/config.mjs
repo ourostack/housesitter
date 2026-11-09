@@ -13,7 +13,7 @@
 //       "plug_password": "keychain:housesitter/studio-plug",      // made by plug adopt; or shelly-ble, fingerbot, command
 //       "health": { "kind": "json_age", "url": "https://…/heartbeat.json", "field": "at", "max_age_min": 3 },  // or { "host", "port" }
 //       "notify": { "kind": "ntfy", "url": "https://ntfy.sh/<your topic>", "email": "you@example.com" },  // or webhook; email needs an ntfy.sh account token
-//       "heartbeat": { "url": "https://hc-ping.com/<uuid>" },     // a dead man's switch, pinged every look
+//       "watched_by": { "url": "https://hc-ping.com/<uuid>" },    // a dead man's switch for the KVM, pinged every look
 //       "outbox": { "gist": "…", "inbox": "…", "token": "keychain:housesitter/studio-outbox" },
 //       "tailscale": { "tag": "tag:kvm", "hostname": "kvm-studio", "authkey": "keychain:housesitter/tailnet-kvm" } } } }
 //

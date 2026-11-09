@@ -2,7 +2,7 @@
 // the first thing that needs a person or a decision. It runs once from a computer on the KVM's network (the one LAN
 // step); after it, you and your agents reach the KVM over the tailnet or the outbox.
 //
-//   housesitter adopt <mac> [--address <kvm ip>] [--notify ntfy|<url>] [--heartbeat <url>] [--dry-run] [--outbox] [--fake [--api-open]] [--json]
+//   housesitter adopt <mac> [--address <kvm ip>] [--notify ntfy|<url>] [--watched-by <url>] [--dry-run] [--outbox] [--fake [--api-open]] [--json]
 //
 // Secrets, each copied once to the KVM over SSH stdin (never argv, logs or git), where the sitter seals it root-only
 // to the KVM's own hardware ids: the KVM's admin password (generated here if the KVM is new), the Mac's password (so
@@ -226,12 +226,14 @@ export function steps() {
           if (x.mac.notify?.kind !== 'ntfy') return { ok: false, stop: true, detail: '--email works through ntfy (it forwards each message as an email): add --notify ntfy' };
           x.mac.notify = { ...x.mac.notify, email: x.email };
         }
-        if (x.heartbeat) {
-          if (!/^https:\/\/\S+$/.test(x.heartbeat)) return { ok: false, stop: true, detail: `--heartbeat takes an https URL to ping every minute (got ${x.heartbeat})` };
-          x.mac.heartbeat = { url: x.heartbeat };
+        const watcher = x.watchedBy || x.heartbeat; // --heartbeat is the 0.2 name
+        if (watcher) {
+          if (!/^https:\/\/\S+$/.test(watcher)) return { ok: false, stop: true, detail: `--watched-by takes an https URL to ping every minute (got ${watcher})` };
+          x.mac.watched_by = { url: watcher };
         }
-        if ((x.notify || x.email || x.heartbeat) && !x.dryRun) x.deps.saveMac((m) => { if (x.mac.notify) m.notify = x.mac.notify; if (x.mac.heartbeat) m.heartbeat = x.mac.heartbeat; });
-        const dms = x.mac.heartbeat?.url ? `; it pings ${new URL(x.mac.heartbeat.url).host} every minute, which tells you if the KVM itself goes quiet` : '; for word when the KVM itself dies, add --heartbeat <a healthchecks.io ping URL>';
+        const watched = x.mac.watched_by || x.mac.heartbeat;
+        if ((x.notify || x.email || watcher) && !x.dryRun) x.deps.saveMac((m) => { if (x.mac.notify) m.notify = x.mac.notify; if (x.mac.watched_by) { m.watched_by = x.mac.watched_by; delete m.heartbeat; } });
+        const dms = watched?.url ? `; it pings ${new URL(watched.url).host} every minute, which tells you if the KVM itself goes quiet` : '; for word when the KVM itself dies, add --watched-by <a dead man\'s switch URL, such as healthchecks.io>';
         const n = x.mac.notify;
         if (!n?.url) return { ok: false, decision: true, detail: `nowhere yet, so it can fix things but can't tell you when it can't. Run adopt again with --notify ntfy (a private ntfy.sh topic for your phone) or --notify <webhook URL>${dms}` };
         const mail = n.email ? `; and as an email to ${n.email} (at most ${n.email_per_day || 5} a day, from your ntfy.sh account)` : '';
@@ -257,7 +259,7 @@ export function steps() {
         if (x.location) x.deps.saveMac((m) => { m.location = x.location; });
         const config = {
           name: x.name, interval_sec: 60, kvmd_user: 'admin', user_names: x.mac.user_names || [], mac_ips: net.ips, mac_macs: net.macs,
-          unlock: x.mac.unlock !== false, unlock_lock_screen: x.mac.unlock_lock_screen === true || x.mac.unlock_lock_screen === 'on_request' ? x.mac.unlock_lock_screen : false, location: x.location || x.mac.location || 'home', power: x.mac.power || null, notify: sitterNotify(x.mac.notify), health: x.mac.health || null, heartbeat: x.mac.heartbeat || null,
+          unlock: x.mac.unlock !== false, unlock_lock_screen: x.mac.unlock_lock_screen === true || x.mac.unlock_lock_screen === 'on_request' ? x.mac.unlock_lock_screen : false, location: x.location || x.mac.location || 'home', power: x.mac.power || null, notify: sitterNotify(x.mac.notify), health: x.mac.health || null, watched_by: x.mac.watched_by || x.mac.heartbeat || null,
           outbox: x.mac.outbox?.gist ? { gist: x.mac.outbox.gist, inbox: x.mac.outbox.inbox, poll_sec: 2, beat_min: 10 } : null,
         };
         let r = await x.deps.ssh(`mkdir -p ${DIR} && chmod 700 ${DIR} && cat > ${DIR}/sitter.py`, x.deps.readDevice('sitter.py'));
