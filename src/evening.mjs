@@ -31,7 +31,7 @@ const STORY = {
   },
   handsoff: {
     before: [['22:55', 'That night, housesitter 0.2, which had learned FileVault on one supervised restart. Our agent pressed Restart, and nothing else touched the Mac. From the sitter\'s log and the KVM\'s frames:']],
-    log: [['22:55:55', 'Restart, pressed by our agent'], ['22:56:24', 'the screen went dark, then the Mac found its keyboard'], ['22:56:44', 'FileVault: the prompt it was taught, steady for 6 looks: it may type'], ['22:56:51', 'typed the password, once, by itself'], ['22:57:06', 'the desktop is up: 70 s, and nobody touched it.']],
+    log: [['22:55:55', 'Restart, pressed by our agent'], ['22:56:24', 'the screen went dark, then the Mac found its keyboard'], ['22:56:44', 'FileVault: the prompt it was taught, steady'], ['22:56:51', 'typed the password, once, by itself'], ['22:57:06', 'the desktop is up: 70 s, and nobody touched it.']],
   },
 };
 
