@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -605,12 +606,12 @@ class EyesWithoutOcr(unittest.TestCase):
         return bytes([90]) * (self.w * self.h), self.w, self.h
 
     def test_after_a_boot_the_steady_prompt_is_filevault_and_the_rules_dont_type(self):
-        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": 1})
+        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": int(time.time() * 1000)})
         self.assertEqual(o["screen"], "filevault")
         self.assertEqual(W.raw_state(dict(o, answers=False, video=True)), "filevault")
 
     def test_stuck_at_the_prompt_says_why_in_the_message_signs(self):
-        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": 1, "stuck": "the password didn't take, 2 tries this boot. Fix: housesitter secret <mac> mac-password"})
+        o = W.eyes_without_ocr({"name": "studio"}, {}, self.lock(), {"pending": int(time.time() * 1000), "stuck": "the password didn't take, 2 tries this boot. Fix: housesitter secret <mac> mac-password"})
         self.assertIn("housesitter secret studio mac-password", o["boot"])
 
     def test_no_boot_and_no_menu_bar_while_not_answering_is_a_hang(self):
@@ -638,7 +639,7 @@ class EyesWithoutOcr(unittest.TestCase):
         old = W.HOME
         W.HOME = d
         try:
-            W.save("state.json", {"mem": None, "ledger": [], "boot": {"pending": 1}})
+            W.save("state.json", {"mem": None, "ledger": [], "boot": {"pending": int(time.time() * 1000)}})
 
             class K:
                 calls = []
@@ -1161,7 +1162,8 @@ class OnlyAfterABoot(unittest.TestCase):
 
     def test_the_rule(self):
         self.assertFalse(W.after_boot({}, {"screen": "login"}, {}))
-        self.assertTrue(W.after_boot({}, {"screen": "login"}, {"pending": 5}))
+        self.assertTrue(W.after_boot({}, {"screen": "login"}, {"pending": 5}, now=60000))
+        self.assertFalse(W.after_boot({}, {"screen": "login"}, {"pending": 5}, now=5 + 16 * 60000), "a boot older than the watch's window grants nothing")
         self.assertTrue(W.after_boot({}, {"screen": "filevault"}, {}))
         self.assertTrue(W.after_boot({"unlock_lock_screen": True}, {"screen": "login"}, {}))
 
@@ -1317,10 +1319,16 @@ class AgentsHands(unittest.TestCase):
 
     def test_the_outbox_cannot_unlock_a_lock_screen(self):
         k = FakeKvmd(text="Ari Mendelow Enter Password")
-        r = W.handle({"op": "unlock"}, {"name": "studio"}, k, None, lambda m: None, 10**6, {"ledger": []}, via="outbox")
-        self.assertEqual(r["code"], "action-unavailable")
-        self.assertIn("over SSH", r["result"])
-        self.assertEqual(k.posts, [])
+        W.set_password_trust("verified", "test")
+        saved = W.load_secret
+        W.load_secret = lambda name, key=None: "pw" if name == "mac" else None
+        try:
+            r = W.handle({"op": "unlock"}, {"name": "studio", "user_names": ["Ari Mendelow"]}, k, None, lambda m: None, 10**6, {"ledger": []}, via="outbox")
+        finally:
+            W.load_secret = saved
+        self.assertFalse(r["ok"], r)
+        self.assertIn("no password field visible", r["result"])
+        self.assertFalse([p for p, _ in k.posts if "print" in p or "Enter" in p], "a lone Shift to wake the screen, nothing typed")
 
 
 class OnlyTheBootLesson(unittest.TestCase):
@@ -1370,3 +1378,7 @@ class OnlyTheBootLesson(unittest.TestCase):
             self.assertEqual(r["code"], "action-unavailable", cmd)
         self.assertEqual(k.posts, [])
 
+    def test_filevault_lessons_need_a_recent_boot(self):
+        self.assertFalse(W.boot_recent({"pending": 1000}, now=1000 + 16 * 60000))
+        self.assertTrue(W.boot_recent({"pending": 1000}, now=1000 + 60000))
+        self.assertFalse(W.boot_recent({}, now=1000))

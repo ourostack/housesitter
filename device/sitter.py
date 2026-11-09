@@ -817,6 +817,8 @@ def see_field(cfg, kvmd, need_boot=False):
     never one taught at the lock screen."""
     try:
         kind = look_now(kvmd, cfg)
+        if need_boot:
+            return kind == "filevault", kind, "ocr"
         return kind in ("filevault", "login"), kind, "ocr"
     except Exception:  # noqa: BLE001
         pass
@@ -1239,6 +1241,15 @@ def type_password(kvmd, pw):
     kvmd.post("/hid/events/send_key?key=Enter", timeout=10)
 
 
+def boot_recent(boot, now=None, cfg=BOOT):
+    """A boot that hasn't reached a desktop and began within the boot watch's window (armed_min). An older one is
+    stale: a dark screen and a keyboard re-enumeration also come from a wake or a reseated cable, so it grants
+    nothing (no FileVault lesson, no automatic typing)."""
+    now = now if now is not None else int(time.time() * 1000)
+    p = (boot or {}).get("pending")
+    return bool(p) and now - p <= cfg.get("armed_min", 15) * 60000
+
+
 def boot_tick(bw, now, obs, cfg=BOOT, kvm_up_s=None):
     """Pure: given what was seen this tick and the boot-watch memory, decide. Returns (bw, action, note).
     obs: {"usb": last enumeration (kernel s), "mode": (w, h) or None, "frame": features or None, "prompt_visible": bool}.
@@ -1366,7 +1377,7 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
     else:
         settle_trial(now, False, log)
     if act == "type":
-        res = type_at_field(cfg, kvmd, st, now, note, "boot-watch", log, secret, visible=(True, obs["frame"] and classify_frame(obs["frame"]), "frame"))
+        res = type_at_field(cfg, kvmd, st, now, note, "boot-watch", log, secret)
         if res.startswith("refused"):
             b2["stuck"] = res[len("refused: "):]
         b2["stable"] = 0
@@ -1535,7 +1546,7 @@ def eyes_without_ocr(cfg, mem, raw, boot):
     out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown", "glimpse": g, "prompt": prompt}
     if seen[0]:
         out["screen"] = "filevault" if seen[3] == "boot" else "login"
-    if (boot or {}).get("pending"):
+    if boot_recent(boot):
         # A boot that hasn't reached a desktop: the FileVault screen. The boot watch types; the rules only wait and tell.
         out["screen"] = "filevault"
         if boot.get("stuck"):
@@ -1694,10 +1705,9 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
             kvmd.post("/hid/events/send_shortcut?keys=%s" % ",".join(names))
         return {"ok": True, "result": "pressed %s" % "+".join(names)}
     if op == "unlock":
-        boot = (st.get("boot") or load("state.json", {}).get("boot") or {})
-        if via != "ssh" and not boot.get("pending"):
-            return {"ok": False, "code": "action-unavailable", "result": "a plain lock screen is your lock: unlock it over SSH from your own machine (housesitter unlock <mac>); through the outbox only during a boot"}
-        res = type_at_field(cfg, kvmd, st, now, "asked for", "request", log)
+        # Over SSH, you: any prompt you taught. Through the outbox, an agent: only the FileVault screen taught at a boot,
+        # so a plain lock screen is never unlocked from GitHub.
+        res = type_at_field(cfg, kvmd, st, now, "asked for", "request" if via == "ssh" else "outbox", log)
         return {"ok": res.startswith("typed"), "code": None if res.startswith("typed") else "action-failed", "result": res}
     if a.get("attended") is True and via != "ssh":
         return {"ok": False, "code": "action-unavailable", "result": "attended is an operator's override, over SSH only (housesitter power-cycle <mac> --attended from your own machine), never through the outbox"}
@@ -1839,14 +1849,14 @@ def caps_of(cfg, power):
     return {"unlock": cfg.get("unlock") is not False and has_secret("mac") and armed, "plug": bool(power), "fingerbot": fingerbot, "notify": bool((cfg.get("notify") or {}).get("url"))}
 
 
-def after_boot(cfg, obs, boot):
+def after_boot(cfg, obs, boot, now=None):
     """May the sitter type by itself here? Only at a prompt that follows a boot: the boot watch saw the Mac enumerate the
     KVM's keyboard again and no desktop since, or OCR read the FileVault screen itself. A plain lock screen is the
     owner's lock, and the sitter can't tell it from a dead session, so it stays locked (and you hear about it) unless an
     operator asks (housesitter unlock <mac>) or the config says "unlock_lock_screen": true. Learned live, 2026-11-08."""
     # Without OCR, "filevault" is a matched picture; the boot watch alone decides when that follows a boot.
     ocr_filevault = obs.get("screen") == "filevault" and obs.get("eyes") != "frame"
-    return bool((boot or {}).get("pending")) or ocr_filevault or cfg.get("unlock_lock_screen") is True
+    return boot_recent(boot, now) or ocr_filevault or cfg.get("unlock_lock_screen") is True
 
 
 def once(cfg, kvmd, power, log, now=None, gh=None):
@@ -1859,7 +1869,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
         st["desktop_at"] = now
     settle_trial(now, obs.get("screen") == "desktop", log)
     caps = caps_of(cfg, power)
-    if not after_boot(cfg, obs, st.get("boot")):
+    if not after_boot(cfg, obs, st.get("boot"), now):
         caps["unlock"] = False
     if obs.get("eyes") == "frame":
         caps["unlock"] = False  # without OCR, only the boot watch types, and only at a field it can match
@@ -2049,8 +2059,13 @@ def main(argv):
             if i < 2:
                 SLEEP(4)
         try:
-            pending = bool((load("state.json", {}).get("boot") or {}).get("pending"))
-            kind = "boot" if pending else "lock"
+            kind = "lock"
+            if "--filevault" in argv:
+                if not boot_recent(load("state.json", {}).get("boot")):
+                    print("learn-prompt: --filevault is for the screen a boot shows, and this sitter hasn't seen the Mac boot in the last %d minutes (dark, then its keyboard again). Restart the Mac, and teach it at the FileVault screen." % BOOT["armed_min"], file=sys.stderr)
+                    return 2
+                kind = "boot"
+                argv = [a for a in argv if a != "--filevault"]
             print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator", kind=kind), "points": len(prompt_points(frames)), "kind": kind}))
             return 0
         except ValueError as e:

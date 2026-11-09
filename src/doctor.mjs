@@ -48,7 +48,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     else { pItems.push({ dot: 'off', text: 'unverified, so never typed' }); todo.push({ cmd: `housesitter unlock ${name} --trial`, why: 'arm one supervised try, then restart and watch' }); }
     const pr = st.prompt;
     if (pr) pItems.push({ dot: pr.taught ? 'ok' : 'off', text: pr.taught ? `taught the password prompt (${pr.taught} reference${pr.taught > 1 ? 's' : ''})` : 'not taught the password prompt yet' });
-    if (pr && !pr.taught) todo.push({ cmd: `housesitter learn-prompt ${name} --i-see-the-field`, why: 'at the FileVault screen, during one restart you watch' });
+    if (pr && !pr.taught) todo.push({ cmd: `housesitter learn-prompt ${name} --i-see-the-field --filevault`, why: 'at the FileVault screen, during one restart you watch' });
   }
   if (pItems.length) sec.push({ label: 'PASSWORD', items: pItems });
 

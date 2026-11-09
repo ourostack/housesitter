@@ -349,7 +349,7 @@ export function steps() {
     {
       id: 'next', title: 'Prove it: restart the Mac and watch the sitter unlock it',
       async run(x) {
-        return { ok: true, next: true, detail: `arm one try with housesitter unlock ${x.name} --trial, start housesitter proof ${x.name} --record ./proof, and restart the Mac (Apple menu > Restart). At the FileVault screen, once housesitter look ${x.name} shows the password field, teach it: housesitter learn-prompt ${x.name} --i-see-the-field. It types its one try within seconds, and the proof records what the KVM sees until the Mac is back` };
+        return { ok: true, next: true, detail: `arm one try with housesitter unlock ${x.name} --trial, start housesitter proof ${x.name} --record ./proof, and restart the Mac (Apple menu > Restart). At the FileVault screen, once housesitter look ${x.name} shows the password field, teach it: housesitter learn-prompt ${x.name} --i-see-the-field --filevault. It types its one try within seconds, and the proof records what the KVM sees until the Mac is back` };
       },
     },
   ];

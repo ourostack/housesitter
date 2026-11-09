@@ -41,7 +41,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter computer <mac> '<json>'      an Anthropic computer-use action, as-is
   housesitter unlock|power-cycle|power-on <mac>     ask the sitter (it keeps its own limits and checks)
   housesitter unlock <mac> --trial|--hold  arm one supervised try of the stored password, or disarm it
-  housesitter learn-prompt <mac> --i-see-the-field  teach it the password prompt while you see it on the KVM (at FileVault, during the restart)
+  housesitter learn-prompt <mac> --i-see-the-field [--filevault]  teach it the prompt you see on the KVM; --filevault during a restart
   housesitter power-cycle <mac> --attended  you have looked: skip the frozen-desktop check (never the budgets)
 
   housesitter ls <mac>                     the Mac as state + the actions available now (Ouro Reins)
@@ -83,7 +83,7 @@ function showLook(l) {
     : seen ? `the ${l.prompt.kind === 'boot' ? 'FileVault prompt it was taught at a boot' : 'password prompt it was taught'} (${Math.round(l.prompt.match * 100)}%)` : l.prompt?.taught ? 'no menu bar, and not the prompt it was taught' : 'no menu bar (no prompt taught yet)';
   const may = l.reads_as === 'desktop' ? ['never: a desktop'] : seen ? ['yes, once its password is verified:', 'by itself right after a boot, or when you ask'] : ['no: no password field it knows on the picture'];
   const right = ['', `${p.label('IT SEES  ')}${sees}`, ...may.map((m, i) => `${i ? '         ' : p.label('MAY TYPE ')}${seen ? p.fg([158, 206, 106], m) : m}`), ''];
-  if (l.prompt && !l.prompt.taught) right.push(p.dim('teach it: housesitter learn-prompt <mac> --i-see-the-field'));
+  if (l.prompt && !l.prompt.taught) right.push(p.dim('teach it: housesitter learn-prompt <mac> --i-see-the-field [--filevault at FileVault]'));
   right.push(p.dim(l.from === 'kvm' ? `from the KVM${l.mode ? `, HDMI ${l.mode.join('×')}` : ''}` : `from ${l.from}`));
   right.push(p.dim('pressed nothing, typed nothing, changed nothing'));
   console.log(['', ...beside(paintGlimpse(p, flag('--private') ? null : l.glimpse, { title: 'what the KVM sees', note: flag('--private') ? 'picture hidden (--private)' : '' }).map((x) => `  ${x}`), right), ''].join('\n'));
@@ -210,7 +210,7 @@ async function main() {
 
   if (cmd === 'learn-prompt') {
     if (!flag('--i-see-the-field')) { say(`Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`); return 2; }
-    const r = await sitterSsh(mac)('python3 /etc/kvmd/user/housesitter/sitter.py learn-prompt taught over SSH by an operator who saw the field');
+    const r = await sitterSsh(mac)(`python3 /etc/kvmd/user/housesitter/sitter.py learn-prompt${flag('--filevault') ? ' --filevault' : ''} taught over SSH by an operator who saw the field`);
     say(r.status === 0 ? `learned: ${String(r.stdout).trim()}. The sitter types only where a frame matches this.` : `✗ ${String(r.stderr || r.stdout).trim()}`);
     return r.status === 0 ? 0 : r.status === 2 ? 2 : 1;
   }

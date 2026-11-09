@@ -24,7 +24,7 @@ const STORY = {
   },
   mirror: { before: [['17:59', 'The KVM now sees the main display, so a login window would be on its picture.']], did: 'nothing to do.' },
   locked: { before: [['18:07', 'We locked the mini and taught the sitter the lock screen, from three frames.']], did: 'waits. A plain lock screen is your lock: it types there only when you ask.' },
-  unlocked: { before: [['18:15', 'We asked it to unlock, once. It typed the password at the field on its picture.']], did: 'the desktop followed, so the password is verified.' },
+  unlocked: { before: [['18:15', 'We asked it to unlock, once. It typed the password at the prompt on its picture.']], did: 'the desktop followed, so the password is verified.' },
   restart: {
     before: [['18:31', 'Then the real test: we restarted the mini with nobody at it. From the KVM\'s own log:']],
     log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault: not a screen it was taught, so it waits'], ['18:32:18', 'an agent teaches it this screen from three frames, once'], ['18:32:35', 'the password field is on its picture, steady'], ['18:32:37', 'typed the password, once, by itself'], ['18:32:56', 'the desktop is up. Nobody at the Mac.']],
@@ -72,8 +72,8 @@ export function renderEvening(steps, { color = false } = {}) {
       wrap(s.story.did, 50).forEach((l, i) => right.push(`${i ? '         ' : `${p.label('IT DOES')}  `}${s.kind === 'prompt_like' && !s.seen.visible ? p.fg([224, 175, 104], l) : l}`));
     }
     for (const [t, text] of s.story.then || []) { right.push(''); say(t, text); }
-    const head = `╭─ ${s.at} ─ a desktop, not shown `;
-    const box = s.withheld ? [p.dim(`${head}${'─'.repeat(Math.max(0, 41 - head.length))}╮`)] : glimpse(p, s.glimpse, { title: s.at });
+    const head = `╭─ seen ${s.at} ─ a desktop, not shown `;
+    const box = s.withheld ? [p.dim(`${head}${'─'.repeat(Math.max(0, 41 - head.length))}╮`)] : glimpse(p, s.glimpse, { title: `seen ${s.at}` });
     blocks.push([...beside(box.map((l) => `  ${l}`), right, 3), '']);
   }
   blocks.push([`  ${p.dim('The morning: it refuses and tells you. The evening: our watchdog, on these same rules, unlocked it.')}`, `  ${p.dim('Your own Mac: housesitter adopt <mac> --address <kvm ip>     A rehearsed bad night: housesitter demo night')}`, '']);
