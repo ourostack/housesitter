@@ -133,7 +133,7 @@ About $125-145 all in. The non-PoE Comet (GL-RM1) runs the same firmware and sho
 - **Smart plug (optional, for hangs):** a [Shelly Gen2+ or Gen4](https://us.shelly.com/) plug, over Wi-Fi or, where the plug can't join the network, Bluetooth from the KVM. Any plug you can drive from a shell works through the `command` adapter.
 - **Not for Macs:** ATX power boards. A Mac has no ATX header. A Fingerbot on the power button is supported if you have one.
 
-**Never change the KVM's EDID or the Mac's display mode while the Mac runs.** We did once, and our Mac mini froze until a power cycle. housesitter takes whatever the Mac sends. [docs/hardware.md](docs/hardware.md) has the wiring, that story, and what to buy.
+**Never change the KVM's EDID or the Mac's display mode while the Mac runs.** We did once: our Mac mini's login window and authentication services crashed, its session ended, and it took a person to log back in. housesitter takes whatever the Mac sends. [docs/hardware.md](docs/hardware.md) has the wiring, that story, and what to buy.
 
 ## What's verified
 
@@ -144,7 +144,7 @@ housesitter is experimental (0.1). Honest status, as of 2026-11-08:
 | Watchdog rules, sitter, adopt, transports, Reins, demo | **Tested with fakes**: 76 tests in Node and Python, on every push |
 | GL-RM1PE quirks (API off, idle encoder, H.264 snapshots, no OCR at 2K, ECDSA) | **Seen on real units**, by [kvm-pilot](https://github.com/DustinTrap/kvm-pilot) and on our own Comet (firmware V1.7.1, kvmd 4.82), and handled in code; housesitter itself has not run on it yet |
 | Knowing the FileVault screen without OCR | **Being rebuilt.** A boot plus a screen with no menu bar no longer authorises typing; the password field must be visible on the KVM's own pixels. Not yet seen on a real FileVault screen |
-| A frozen Mac | **Seen for real** on 2026-11-08: after an EDID change, our Mac mini froze. The KVM saw it, and keys, the force-restart chord and the password changed nothing. With no smart plug yet, it needed a person, which is exactly what the plug is for |
+| A frozen Mac | Not seen yet. On 2026-11-08 an EDID change made our Mac mini look frozen, but its logs showed otherwise: the login window and its authentication services had crashed, so it sat at a broken login window that took no password. That needed a person to log in, not a power cycle. A real hang (a frozen desktop clock) is what the smart plug is for |
 | FileVault unlock on a real Mac | **Not yet verified.** The first restart proof on a Mac mini (M5 Pro) is next, recorded with `housesitter proof` |
 | A Mac with other displays attached | **Blind unlock is unsupported.** If the password field isn't visible on the KVM's own picture, the sitter never types; it tells you. Our own Mac mini draws its login window on another display, so on that Mac today it would message you, not unlock. A headless Mac with only the KVM attached is the case housesitter supports |
 | Reading the screen | **With OCR: English macOS only** ("Enter Password"). **Without OCR:** a structure match of the password field, tested on synthetic frames only; no real FileVault frame yet |
