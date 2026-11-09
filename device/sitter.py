@@ -1955,6 +1955,9 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen):
     url = n.get("url")
     if not url:
         return "no notify target; recorded in status.json only"
+    if n.get("test"):
+        # alert-test: the same message the rules would send, marked in its first words so nobody acts on it.
+        subject, body = "TEST: %s" % subject, "TEST (housesitter alert-test; nothing is wrong). %s" % body
     if n.get("kind") == "ntfy":
         req = urllib.request.Request(url, data=body.encode("utf-8"), headers={"Title": subject.encode("utf-8"), "Tags": "house"}, method="POST")
     else:
@@ -2232,13 +2235,63 @@ def perform(act, cfg, kvmd, power, mem, obs, log, st=None, now=None):
     if cfg.get("dry_run"):
         return "dry-run: would %s" % k
     if k == "notify":
-        name = cfg.get("name", "your Mac")
-        if act.get("recovered"):
-            return notify(cfg, "%s is back" % name, "%s is healthy again (seen by its housesitter)." % name)
-        signs = ", ".join("%s=%s" % (a, b) for a, b in sorted(obs.items()) if b is not None and not a.endswith("_error"))
-        stuck = {"filevault": "is stuck at FileVault", "hung": "is frozen", "off": "is off", "down": "is not answering", "unknown": "is out of sight"}.get(mem["state"], "needs you (%s)" % mem["state"])
-        return notify(cfg, "%s %s" % (name, stuck), "Seen by the housesitter on its KVM.\nStuck because: %s.\nSigns: %s." % (act["why"].replace("<mac>", name), signs))
+        return perform_notify(cfg, act, mem, obs)
     return "nothing to do for %s here" % k
+
+
+ALERT_TEST_EVERY_H = 24
+
+
+def alert_test(cfg, kvmd, power, log, now=None, opener=None, again=False):
+    """One real "I'm stuck" message, end to end: the rules (tick and decide) are given a Mac that has sat at FileVault
+    past filevault_wait_min with nothing able to unlock it, the notify action they choose is performed by the same
+    code as a real one, and the message goes out through the configured channel marked TEST in its first words. The
+    sitter's real memory and incident are untouched; the message is ledgered as a notify (test: true), so it counts
+    like one. Operator-only, over SSH, at most once a day unless --again."""
+    now = now if now is not None else int(time.time() * 1000)
+    if not (cfg.get("notify") or {}).get("url"):
+        return {"ok": False, "result": "no notify target configured (housesitter adopt --notify ntfy|<url>)"}
+    st = load("state.json", {"mem": None, "ledger": []})
+    last = [e for e in st.get("ledger") or [] if e.get("kind") == "notify" and e.get("test")]
+    if last and not again and now - last[-1]["at"] < ALERT_TEST_EVERY_H * 3600000:
+        return {"ok": False, "result": "an alert test was sent %d min ago; one a day (--again to send another)" % ((now - last[-1]["at"]) // 60000)}
+    rules = dict(DEFAULTS, **cfg.get("rules", {}))
+    since = now - (rules["filevault_wait_min"] + 1) * 60000
+    mem = {"raw": "filevault", "raw_since": since, "state": "filevault", "since": since, "incident": {"started": since, "notified_at": None, "failed": {}}}
+    obs = {"video": True, "screen": "filevault", "eyes": "frame", "arp": True}
+    caps = {"unlock": False, "plug": False, "fingerbot": False, "notify": True}
+    mem2, actions = tick(mem, [], obs, now, caps, rules)
+    act = next((a for a in actions if a["kind"] == "notify"), None)
+    if not act:
+        return {"ok": False, "result": "the rules chose no message for a Mac stuck at FileVault (%s): a bug" % [a["kind"] for a in actions]}
+    tcfg = dict(cfg, notify=dict(cfg["notify"], test=True))
+    sent = {}
+
+    def capture(req, timeout=10):
+        sent["title"] = req.get_header("Title")
+        sent["title"] = sent["title"].decode("utf-8") if isinstance(sent["title"], bytes) else sent["title"]
+        sent["body"] = req.data.decode("utf-8")
+        return (opener or urllib.request.urlopen)(req, timeout=timeout)
+
+    try:
+        res = perform_notify(tcfg, act, mem2, obs, opener=capture)
+    except Exception as e:  # noqa: BLE001
+        res = "failed: %s" % str(e)[:160]
+    entry = {"at": now, "kind": "notify", "test": True, "state": "filevault", "result": res, "why": act["why"]}
+    st.setdefault("ledger", []).append(entry)
+    save_state(st)
+    log("alert-test: %s (%s)" % (res, act["why"]))
+    return {"ok": res.startswith("posted"), "result": res, "why": act["why"], "sent": sent}
+
+
+def perform_notify(cfg, act, mem, obs, opener=urllib.request.urlopen):
+    """The rules' notify action, as perform() sends it: a stuck message, or the one that says the Mac is back."""
+    name = cfg.get("name", "your Mac")
+    if act.get("recovered"):
+        return notify(cfg, "%s is back" % name, "%s is healthy again (seen by its housesitter)." % name, opener=opener)
+    signs = ", ".join("%s=%s" % (a, b) for a, b in sorted(obs.items()) if b is not None and not a.endswith("_error"))
+    stuck = {"filevault": "is stuck at FileVault", "hung": "is frozen", "off": "is off", "down": "is not answering", "unknown": "is out of sight"}.get(mem["state"], "needs you (%s)" % mem["state"])
+    return notify(cfg, "%s %s" % (name, stuck), "Seen by the housesitter on its KVM.\nStuck because: %s.\nSigns: %s." % (act["why"].replace("<mac>", name), signs), opener=opener)
 
 
 def load(name, default):
@@ -2563,6 +2616,10 @@ def main(argv):
             out["frame"], out["frame_error"] = None, str(e)[:120]
         print(json.dumps(out))
         return 0 if (out["ocr"] or out["frame"]) else 1
+    if argv[:1] == ["alert-test"]:
+        r = alert_test(cfg, kvmd, power, log, again="--again" in argv)
+        print(json.dumps(r))
+        return 0 if r["ok"] else 1
     if argv[:1] == ["hello"]:
         # Sent once by adopt, so the first message you get from the sitter is a calm one.
         name = cfg.get("name") or "your Mac"
