@@ -76,7 +76,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   if (b) {
     const [u, uMax] = b.unlock_hour;
     const [ub, ubMax] = b.unlock_since_desktop;
-    bItems.push({ dot: b.blocked ? 'warn' : 'ok', text: `unlock  ${Math.max(0, ubMax - ub)} of ${ubMax} tries left before it stops (resets at the desktop) · ${Math.max(0, uMax - u)} of ${uMax} left this hour${b.unlock_hour_frees_at ? ` (one back at ${clock(b.unlock_hour_frees_at, now)})` : ''}` });
+    bItems.push({ dot: b.blocked ? 'warn' : 'ok', text: `unlock  ${Math.max(0, ubMax - ub)} of ${ubMax} tries left before it stops (resets at the desktop) · ${Math.max(0, uMax - u)} of ${uMax} left this hour${b.unlock_hour_frees_at ? (b.unlock_hour_frees_at - now < 60000 ? ' (one back within a minute)' : ` (one back at ${clock(b.unlock_hour_frees_at, now)})`) : ''}` });
     if (b.unlock_test_hour?.[0]) bItems.push({ dot: 'ok', text: `tests   ${Math.max(0, b.unlock_test_hour[1] - b.unlock_test_hour[0])} of ${b.unlock_test_hour[1]} attended-test unlocks left this hour (their own budget)` });
     if (b.blocked) bItems.push({ dot: 'warn', text: `stopped: ${b.blocked}` });
   }
@@ -95,9 +95,11 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   if (st?.incident) hItems.push({ dot: 'warn', text: `open since ${clock(st.incident.started, now)} (${age(now - st.incident.started)})${st.incident.notified_at ? ', and it told you' : ''}` });
   const li = st?.last_incident;
   if (li) hItems.push({ dot: 'ok', text: `${clock(li.started, now)} to ${clock(li.ended, now)}: ${li.actions?.length ? li.actions.map((a) => a.replace(/_/g, ' ')).join(', ') : 'it came back by itself'}${li.told_you ? '; it told you' : '; nobody was woken'}` });
-  for (const e of (st?.recent || []).slice(-3).reverse()) if (e.kind !== 'notify' || hItems.length < 2) hItems.push({ dot: null, text: `${clock(e.at, now)}  ${e.kind.replace(/_/g, ' ')}${e.result ? `: ${short(e.result)}` : ''}` });
   if (st && !hItems.length) hItems.push({ dot: 'ok', text: 'none seen by this sitter yet' });
   if (hItems.length) sec.push({ label: 'LAST INCIDENT', items: hItems });
+  // Newest first, apart from the incident: a FileVault unlock after a boot is not an incident, and is often the best news.
+  const rItems = [...(st?.recent || [])].sort((a, b) => b.at - a.at).slice(0, 3).map((e) => ({ dot: null, text: `${clock(e.at, now)}  ${e.test ? 'TEST alert' : e.kind.replace(/_/g, ' ')}${e.result ? `: ${short(e.result)}` : ''}` }));
+  if (rItems.length) sec.push({ label: 'RECENT', items: rItems });
 
   // alerts
   const aItems = [];

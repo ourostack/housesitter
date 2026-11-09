@@ -2007,7 +2007,7 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
         cap = int(n.get("email_per_day", EMAIL_PER_DAY))
         used = emails_today(ledger if ledger is not None else load("state.json", {}).get("ledger"), now)
         if not EMAIL_RE.match(str(email)):
-            email, note = None, " (no email: %r is not one address)" % email
+            email, note = None, " (no email: notify.email is not one address)"
         elif used >= cap:
             email, note = None, " (no email: today's %d are used; a push only)" % cap
         else:
@@ -2495,7 +2495,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
     status = {"v": 1, "sitter": VERSION, "at": now, "name": cfg.get("name"), "state": mem["state"], "since": mem.get("since"), "obs": obs,
               "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in SECRET_NAMES},
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
-              "recent": [{k: e.get(k) for k in ("at", "kind", "result")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
+              "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "lock_policy": lock_policy(cfg), "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
               "probes": {"health": bool((cfg.get("health") or {}).get("port")), "heartbeat": bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}

@@ -456,6 +456,7 @@ class NotifyEmail(unittest.TestCase):
         cfg = {"notify": dict(self.cfg["notify"], email="a@example.com, b@example.com")}
         r = W.notify(cfg, "s", "b", opener=self.op, now=1, ledger=[])
         self.assertIn("no email", r)
+        self.assertNotIn("@", r, "an address never reaches the log or ledger")
         self.assertIsNone(self.reqs[0].get_header("Email"))
 
     def test_the_daily_cap_counts_the_ledger(self):
