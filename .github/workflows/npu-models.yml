@@ -44,7 +44,7 @@ jobs:
         with:
           name: smoke-models
           path: npu/smoke/*.rknn
-      - name: Convert (PP-OCRv4, kept for the record: too big for the Comet's NPU without its IOMMU)
+      - name: Convert (PP-OCRv4, kept for the record, too big for the Comet's NPU without its IOMMU)
         if: false
         run: python npu/convert.py models dataset.txt
       - name: Clock reader (trained on synthetic menu bars, open fonts only)

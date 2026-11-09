@@ -16,12 +16,12 @@ from rknnrt import Model  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHARS = "0123456789:. " + "abcdefghijklmnopqrstuvwxyz" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-H, W = 32, 416
-CROP = (0.86, 1.0, 0.0, 0.0195)
+H, W = 32, 192
+CROP = (0.94, 1.0, 0.0, 0.0195)  # the menu bar's right end, where the time is
 TIME = re.compile(r"(\d{1,2}):(\d{2})(?::\d{2})?\s*([AP]M)?")
 
 
-def crop_input(y, w, h, crop=CROP):
+def crop_input(y, w, h, crop=CROP, W=W):
     """The menu bar's right end as the network's input: nearest-neighbour to 32 rows by aspect, black-padded to 416."""
     x0, x1 = int(crop[0] * w), int(crop[1] * w)
     y0, y1 = int(crop[2] * h), max(int(crop[2] * h) + 8, int(crop[3] * h))
@@ -66,9 +66,11 @@ class ClockReader:
         self.m = Model(path)
         d = self.m.outputs[0].dims
         self.classes, self.steps = d[1], d[3]
+        i = self.m.inputs[0].dims
+        self.w = i[2]  # NHWC: 1, 32, W, 1
 
     def read(self, y, w, h):
-        px = crop_input(y, w, h)
+        px = crop_input(y, w, h, W=self.w, crop=CROP if self.w == 192 else (0.86, 1.0, 0.0, 0.0195))
         (out, _), = self.m.run(px, want_float=True)
         return decode(out, self.classes, self.steps), self.m.run_ms
 
@@ -97,7 +99,7 @@ def sample(n, every):
                 txt, npu = r.read(y, w, h)
                 rec.update(text=txt, minutes=minutes(txt), npu_ms=round(npu, 2), read_ms=round((time.time() - t1) * 1000, 1), size=[w, h])
                 if "--keep-crops" in sys.argv:
-                    rec["crop_b64"] = __import__("base64").b64encode(crop_input(y, w, h)).decode()
+                    rec["crop_b64"] = __import__("base64").b64encode(crop_input(y, w, h, W=r.w)).decode()
         except Exception as e:  # noqa: BLE001
             rec["error"] = str(e)[:160]
         for ln in open("/proc/self/status"):
