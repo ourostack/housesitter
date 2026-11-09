@@ -161,6 +161,7 @@ export function plainSigns(obs) {
     else if (k === 'arp') out.push(v ? 'on the network' : 'gone from the network');
     else if (k === 'answers') out.push(v ? 'answers its health check' : "doesn't answer its health check");
     else if (k === 'clock_ticking') out.push(v ? 'its clock is moving' : 'its clock has stopped');
+    else if (k === 'clock') out.push(typeof v === 'object' ? `its clock reads ${v.text}` : `clock=${v}`);
     else if (k === 'heartbeat_age_min') out.push(`its heartbeat is ${v} min old`);
     else if (k === 'beat_min') out.push(`last heartbeat ${v} min ago`);
     else if (k === 'presence') out.push(v ? 'someone is logged in' : 'nobody is logged in');

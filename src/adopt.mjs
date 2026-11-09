@@ -275,7 +275,14 @@ export function steps() {
           r = await x.deps.ssh('cat > /etc/init.d/S99housesitter && chmod 755 /etc/init.d/S99housesitter', x.deps.readDevice('S99housesitter'));
         }
         if (r.status !== 0) return { ok: false, stop: true, detail: `service install failed: ${String(r.stderr || r.stdout).slice(0, 200)}` };
-        return { ok: true, detail: `${init === 'systemd' ? 'systemd unit' : 'BusyBox init script'}; watching the screen${net.ips.length ? `, ${net.ips.join(', ')}${net.kept ? ' (kept from its config)' : ''}` : ''}${x.mac.power ? ' and the plug' : ''}${net.ips.length ? '' : ' (run adopt on the Mac itself with --this-mac to watch its network too)'}${x.mac.power ? '' : '; no smart plug, so a hang gets a message, not a power cycle'}` };
+        // The clock reader for a KVM with an NPU (the Comet's RV1126B): the sitter uses it when /dev/rknpu is there.
+        const model = x.deps.readDeviceB64?.('npu/clock.rknn');
+        let npu = '';
+        if (model) {
+          const m = await x.deps.ssh(`[ -e /dev/rknpu ] && [ -e /usr/lib/librknnrt.so ] && mkdir -p ${DIR}/npu && python3 -c "import sys,base64; open('${DIR}/npu/clock.rknn','wb').write(base64.b64decode(sys.stdin.read()))" && echo npu`, model);
+          npu = String(m.stdout).includes('npu') ? '; reads the Mac\'s clock on the KVM\'s NPU' : '';
+        }
+        return { ok: true, detail: `${init === 'systemd' ? 'systemd unit' : 'BusyBox init script'}${npu}; watching the screen${net.ips.length ? `, ${net.ips.join(', ')}${net.kept ? ' (kept from its config)' : ''}` : ''}${x.mac.power ? ' and the plug' : ''}${net.ips.length ? '' : ' (run adopt on the Mac itself with --this-mac to watch its network too)'}${x.mac.power ? '' : '; no smart plug, so a hang gets a message, not a power cycle'}` };
       },
     },
     {
@@ -426,6 +433,7 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
       secrets: { get: (r) => vault[r] ?? null, has: (r) => vault[r] != null, set: (r, v) => { vault[r] = v; } },
       sleep: async () => {},
       readDevice: (f) => `# ${f}\n`,
+      readDeviceB64: (f) => Buffer.from(`model ${f}`).toString('base64'),
       sshPublicKey: () => 'ecdsa-sha2-nistp256 AAAAfake housesitter studio',
       async firstRunPerson(x, pw) {
         x.say(`    Next, its admin password. The KVM's first-run page would open now. You'd paste (Cmd+V) into both password fields and save: the password is on the clipboard and stored at ${x.refs.admin}. (Rehearsal: pasted for you.)`);
@@ -459,6 +467,11 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
           return { status: 0, stdout: `{"gl_cloud": "off (read back)", "ingress": "SSH and HTTPS: ${away ? 'the tailnet only (tailscale0)' : 'home, unfiltered (anything that reaches the KVM may connect)'}"}\n`, stderr: '' };
         }
         if (cmd.includes('sitter.py eyes')) return { status: 0, stdout: `${JSON.stringify({ mode: [2560, 1440], ocr: null, frame: 'desktop', size: [2560, 1440] })}\n`, stderr: '' };
+        if (cmd.includes('/dev/rknpu')) {
+          if (!comet) return { status: 1, stdout: '', stderr: '' };
+          s.files['npu/clock.rknn'] = Buffer.from(input, 'base64').toString();
+          return { status: 0, stdout: 'npu\n', stderr: '' };
+        }
         if (cmd.includes('sitter.py hello')) { s.hello = (s.hello || 0) + 1; return { status: 0, stdout: '{"sent": "posted 200"}\n', stderr: '' }; }
         return { status: 0, stdout: '', stderr: '' };
       },
@@ -488,6 +501,7 @@ export function realDeps(name, { secrets, saveMac }) {
       return [...new Set(out)];
     },
     readDevice: (f) => fs.readFileSync(path.join(DEVICE, f), 'utf8'),
+    readDeviceB64: (f) => (fs.existsSync(path.join(DEVICE, f)) ? fs.readFileSync(path.join(DEVICE, f)).toString('base64') : null),
     sshPublicKey(n) {
       const key = sshKeyPath(n);
       if (!fs.existsSync(key)) { fs.mkdirSync(path.dirname(key), { recursive: true, mode: 0o700 }); sh('/usr/bin/ssh-keygen', [...KEYGEN, '-C', `housesitter ${n}`, '-f', key]); }

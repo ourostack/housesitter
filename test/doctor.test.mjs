@@ -150,3 +150,10 @@ test('doctor shows what the Mac\'s watch sent, by its title', () => {
   assert.match(out, /TEST from the Mac's watch: mini's KVM is silent, emailed/);
   assert.match(out, /from the Mac's watch: mini's KVM is back\n/);
 });
+
+test('doctor says when the NPU read the clock, and how fast', () => {
+  const out = plain(buildDoctor({ name: 'mini', mac: { notify: { kind: 'ntfy' }, kvm: { tls_sha256: 'AA' } }, kvm: KVM, sit: { status: status({ obs: { screen: 'desktop', eyes: 'frame', clock_ticking: true, clock: { text: 'Mon Nov 9 8:05 AM', on: 'npu', ms: 1.07 } } }) }, now: NOW }));
+  assert.match(out, /clock\s+moving: reads 8:05 AM, on the KVM's NPU in 1\.07 ms/);
+  const old = plain(buildDoctor({ name: 'mini', mac: {}, kvm: KVM, sit: { status: status({ obs: { screen: 'desktop', eyes: 'frame', clock_ticking: true } }) }, now: NOW }));
+  assert.match(old, /clock\s+moving\n/);
+});

@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.2.5"
+VERSION = "0.3.0"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -1853,6 +1853,187 @@ def look(kvmd, src=None, run=subprocess.run, now=None):
     return out
 
 
+# ---------- the KVM's NPU: the Mac's menu-bar clock, read ----------
+#
+# A frozen Mac is told from a live one by its clock. Without kvmd's OCR (none at 2560x1440 on a Comet), the sitter
+# used to fingerprint the clock's pixels (clock_sig), and H.264 noise changes that fingerprint even when the clock
+# hasn't moved: on our recorded frames it changed in 91 of 97 pairs of looks within the same minute. So on a KVM with
+# an NPU (the Comet's Rockchip RV1126B) a small text-line model reads the time itself (device/npu/clock.rknn, 414k
+# weights, trained on drawn menu bars only, about 1 ms on the NPU). Reading the clock only ever feeds the frozen test,
+# which still needs the health checks to fail and three fresh looks to agree before a power cycle; it never decides
+# what is on screen and never types. When it can't read a time, the fingerprint is used as before.
+
+NPU_MODEL = os.path.join(HOME, "npu", "clock.rknn")
+CLOCK_CROP = (0.94, 1.0, 0.0, 0.0195)  # the menu bar's right end, where the time is (fractions of the screen)
+CLOCK_IN = (32, 192)
+CLOCK_CHARS = "0123456789:. " + "abcdefghijklmnopqrstuvwxyz" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+CLOCK_TIME = re.compile(r"(\d{1,2}):(\d{2})(?::\d{2})?\s*([AP]M)?")
+
+
+def clock_input(y, w, h, crop=CLOCK_CROP, size=CLOCK_IN):
+    """The menu bar's right end as the clock model's input (uint8, one channel): nearest-neighbour to 32 rows by
+    aspect, black-padded to 192 columns."""
+    import operator
+    H, W = size
+    x0, x1 = int(crop[0] * w), int(crop[1] * w)
+    y0 = int(crop[2] * h)
+    y1 = max(y0 + 8, int(crop[3] * h))
+    cw, ch = x1 - x0, y1 - y0
+    ow = min(W, max(2, round(cw * H / ch)))
+    pick = operator.itemgetter(*[x0 + min(cw - 1, int((i + 0.5) * cw / ow)) for i in range(ow)])
+    pad = b"\x00" * (W - ow)
+    return b"".join(bytes(pick(y[(y0 + min(ch - 1, int((j + 0.5) * ch / H))) * w:(y0 + min(ch - 1, int((j + 0.5) * ch / H)) + 1) * w])) + pad for j in range(H))
+
+
+def clock_decode(floats, classes, steps):
+    """Greedy CTC over the model's output (classes x steps, channel-major): the text it reads."""
+    out, last = [], 0
+    for t in range(steps):
+        col = floats[t::steps]
+        k = col.index(max(col))
+        if k != 0 and k != last:
+            out.append(CLOCK_CHARS[k - 1] if k - 1 < len(CLOCK_CHARS) else "?")
+        last = k
+    return "".join(out)
+
+
+def clock_minutes(text):
+    """The time a read shows, as minutes since midnight, or None if it holds no time."""
+    m = CLOCK_TIME.search(text or "")
+    if not m:
+        return None
+    hh, mm, ap = int(m.group(1)), int(m.group(2)), m.group(3)
+    if ap:
+        if not 1 <= hh <= 12:
+            return None
+        hh = hh % 12 + (12 if ap == "PM" else 0)
+    return hh * 60 + mm if hh < 24 and mm < 60 else None
+
+
+def npu_worker(model):
+    """`sitter.py npu-worker <model>`: the NPU in a process of its own, so a hung job (the driver gives up after 6 s)
+    or a crash never stalls the sitter. Reads 4-byte-length-prefixed inputs on stdin, writes one JSON line each.
+
+    The Comet's device tree leaves the NPU's IOMMU off, so the NPU can only use physically contiguous buffers, and
+    Rockchip's runtime allocates from the system DMA heap (scattered pages): every job times out. In this process's own
+    mount namespace, Rockchip's CMA heap is bound over the system heap; its allocation ioctl is indexed by number alone,
+    so the runtime's standard call works on it. Nothing outside this process sees the change."""
+    import array
+    import ctypes
+    import struct
+    libc = ctypes.CDLL(None, use_errno=True)
+    cma, system = "/dev/rk_dma_heap/rk-dma-heap-cma", "/dev/dma_heap/system"
+    if os.path.exists(cma) and os.path.exists(system):
+        os.unshare(os.CLONE_NEWNS)
+        if libc.mount(None, b"/", None, 16384 | (1 << 18), None) != 0 or libc.mount(cma.encode(), system.encode(), None, 4096, None) != 0:
+            raise OSError(ctypes.get_errno(), "could not give the NPU contiguous memory")
+    lib = ctypes.CDLL("/usr/lib/librknnrt.so")
+
+    class Attr(ctypes.Structure):
+        _fields_ = [("index", ctypes.c_uint32), ("n_dims", ctypes.c_uint32), ("dims", ctypes.c_uint32 * 16), ("name", ctypes.c_char * 256),
+                    ("n_elems", ctypes.c_uint32), ("size", ctypes.c_uint32), ("fmt", ctypes.c_int), ("type", ctypes.c_int), ("qnt_type", ctypes.c_int),
+                    ("fl", ctypes.c_int8), ("zp", ctypes.c_int32), ("scale", ctypes.c_float), ("w_stride", ctypes.c_uint32),
+                    ("size_with_stride", ctypes.c_uint32), ("pass_through", ctypes.c_uint8), ("h_stride", ctypes.c_uint32)]
+
+    class Inp(ctypes.Structure):
+        _fields_ = [("index", ctypes.c_uint32), ("buf", ctypes.c_void_p), ("size", ctypes.c_uint32), ("pass_through", ctypes.c_uint8),
+                    ("type", ctypes.c_int), ("fmt", ctypes.c_int)]
+
+    class Out(ctypes.Structure):
+        _fields_ = [("want_float", ctypes.c_uint8), ("is_prealloc", ctypes.c_uint8), ("index", ctypes.c_uint32), ("buf", ctypes.c_void_p), ("size", ctypes.c_uint32)]
+
+    data = open(model, "rb").read()
+    blob = ctypes.create_string_buffer(data, len(data))
+    ctx = ctypes.c_uint64(0)
+    if lib.rknn_init(ctypes.byref(ctx), blob, len(data), 0, None) != 0:
+        raise RuntimeError("rknn_init failed")
+    oa = Attr()
+    oa.index = 0
+    lib.rknn_query(ctx, 2, ctypes.byref(oa), ctypes.sizeof(oa))
+    classes, steps = oa.dims[1], oa.dims[3]
+    sys.stdout.write(json.dumps({"ready": True, "classes": classes, "steps": steps}) + "\n")
+    sys.stdout.flush()
+    while True:
+        head = sys.stdin.buffer.read(4)
+        if len(head) < 4:
+            return 0
+        px = sys.stdin.buffer.read(struct.unpack("<I", head)[0])
+        buf = ctypes.create_string_buffer(px, len(px))
+        inp = (Inp * 1)()
+        inp[0].index, inp[0].buf, inp[0].size, inp[0].pass_through, inp[0].type, inp[0].fmt = 0, ctypes.cast(buf, ctypes.c_void_p), len(px), 0, 3, 1
+        t0 = time.time()
+        ok = lib.rknn_inputs_set(ctx, 1, inp) == 0 and lib.rknn_run(ctx, None) == 0
+        ms = (time.time() - t0) * 1000
+        outs = (Out * 1)()
+        outs[0].want_float = 1
+        if ok and lib.rknn_outputs_get(ctx, 1, outs, None) == 0:
+            a = array.array("f")
+            a.frombytes(ctypes.string_at(outs[0].buf, outs[0].size))
+            lib.rknn_outputs_release(ctx, 1, outs)
+            rep = {"text": clock_decode(a, classes, steps), "ms": round(ms, 2)}
+        else:
+            rep = {"error": "the NPU job failed"}
+        sys.stdout.write(json.dumps(rep) + "\n")
+        sys.stdout.flush()
+
+
+class NpuClock:
+    """The sitter's handle on its NPU worker. Any failure (no NPU, no model, a hung job) turns it off for an hour, and
+    the sitter falls back to the clock fingerprint."""
+
+    def __init__(self, model=NPU_MODEL, timeout=8.0, popen=subprocess.Popen, exists=os.path.exists):
+        self.model, self.timeout, self.popen, self.exists = model, timeout, popen, exists
+        self.proc, self.off_until, self.why, self.last = None, 0, None, None
+
+    def available(self, now=None):
+        now = now if now is not None else time.time()
+        return now >= self.off_until and self.exists(self.model) and self.exists("/dev/rknpu") and self.exists("/usr/lib/librknnrt.so")
+
+    def _off(self, why, now=None):
+        self.why, self.off_until = why, (now if now is not None else time.time()) + 3600
+        if self.proc:
+            try:
+                self.proc.kill()  # its own PID, from Popen
+                self.proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+        self.proc = None
+        return None
+
+    def _line(self):
+        import select
+        r, _, _ = select.select([self.proc.stdout], [], [], self.timeout)
+        if not r:
+            raise TimeoutError("the NPU worker didn't answer in %ds" % self.timeout)
+        ln = self.proc.stdout.readline()
+        if not ln:
+            raise RuntimeError("the NPU worker stopped")
+        return json.loads(ln)
+
+    def read(self, px, now=None):
+        """The clock text the NPU reads from one clock_input(), or None (and the reason in .why)."""
+        if not self.available(now):
+            return None
+        import struct
+        try:
+            if not self.proc:
+                self.proc = self.popen([sys.executable, os.path.abspath(__file__), "npu-worker", self.model], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                if not self._line().get("ready"):
+                    raise RuntimeError("the NPU worker didn't start")
+            self.proc.stdin.write(struct.pack("<I", len(px)) + px)
+            self.proc.stdin.flush()
+            rep = self._line()
+        except Exception as e:  # noqa: BLE001
+            return self._off(str(e)[:120], now)
+        if "error" in rep:
+            return self._off(rep["error"], now)
+        self.why, self.last = None, rep
+        return rep["text"]
+
+
+NPU = NpuClock()
+
+
 def boot_screen(f):
     """The Apple logo and its progress bar: a dark frame whose few bright thumbnail points sit in the middle rows. A
     desktop's Dock (the bottom rows), a menu bar or a notification (the top rows) never passes, even on a black
@@ -2021,7 +2202,13 @@ def eyes_without_ocr(cfg, mem, raw, boot):
     counts = lesson_counts()
     prompt = {"taught": sum(counts.values()), "match": seen[1], "visible": seen[0], "kind": seen[3], "grid": grid, "lessons": counts}
     if kind == "desktop":
-        return {"screen": "desktop", "eyes": "frame", "clock_ticking": clock_ticking(mem, clock_sig(y, w, h)), "glimpse": g, "prompt": prompt}
+        whole = len(y) >= w * h and h >= 64
+        read = NPU.read(clock_input(y, w, h)) if whole and cfg.get("npu", True) is not False else None
+        at = clock_minutes(read)
+        clock = {"text": read.strip(), "on": "npu", "ms": (NPU.last or {}).get("ms")} if at is not None else None
+        # The time itself when the NPU can read it; otherwise the clock's pixel fingerprint, as before.
+        tick = clock_ticking(mem, "npu:%d" % at if at is not None else clock_sig(y, w, h))
+        return {"screen": "desktop", "eyes": "frame", "clock_ticking": tick, "clock": clock, "glimpse": g, "prompt": prompt}
     out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown", "glimpse": g, "prompt": prompt}
     if seen[0]:
         out["screen"] = "filevault" if seen[3] == "boot" else "login"
@@ -2455,6 +2642,8 @@ def plain_signs(obs):
             out.append("answers its health check" if v else "doesn't answer its health check")
         elif k == "clock_ticking":
             out.append("its clock is moving" if v else "its clock has stopped")
+        elif k == "clock":
+            out.append("its clock reads %s" % v.get("text") if isinstance(v, dict) else "clock=%s" % v)
         elif k == "heartbeat_age_min":
             out.append("its heartbeat is %s min old" % v)
         elif k == "beat_min":
@@ -2659,6 +2848,8 @@ def watch_only(command):
 
 
 def main(argv):
+    if argv[:1] == ["npu-worker"] and len(argv) == 2:
+        return npu_worker(argv[1])
     if argv[:1] == ["watch-only"]:
         rest = watch_only(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
         if rest is None:
