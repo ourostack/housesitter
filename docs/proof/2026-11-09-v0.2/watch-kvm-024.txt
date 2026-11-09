@@ -1,0 +1,74 @@
+housesitter 0.2.4 watch-kvm: the mini watches its KVM. Live proof 2026-11-09 (UTC). Desk agent.
+
+Comet: sitter.py 0.2.4 (main 81ab63d, md5 c7d17f82…), previous kept as sitter.py.0.2.3.
+Mini: housesitter cloned at 81ab63d into ~/Library/Application Support/housesitter/app; its own ECDSA key
+  (~/.ssh/housesitter-mini-ecdsa), on the Comet with a forced command (setup/comet/watch-only.py): watch_check and status only.
+  The ntfy token is the mini's own (minted for it on the ouro-housesitter account, label "aris-mac-mini watch-kvm (housesitter)", no expiry),
+  sent sealed with ./mac secret (Hub saw ciphertext only), in the mini's login Keychain at housesitter/mini-ntfy-token.
+
+Timeline (UTC):
+  09:12:07  watch-kvm --install --test --silent-min 2 on the mini; first tick ok
+  09:13:32  STOP: /etc/init.d/S99housesitter stop on the Comet (the sitter only; kvmd, the Comet and the mini untouched)
+  09:16:13  the watch first reads silent (status.json counts as fresh for 3 min after the sitter's last look)
+  09:18:15.97  SENT "TEST: mini's KVM is silent": posted 200, emailed  (4 min 44 s after the stop; 2 min of silence)
+  09:18:44  START: /etc/init.d/S99housesitter start
+  09:19:17.6  SENT "TEST: mini's KVM is back": posted 200, emailed  (34 s after the start)
+  09:19:27  reinstalled for real (first tick): watch-kvm mini --install (5 min, no --test)
+
+== watch log
+2026-11-09T09:12:07.558Z ok
+2026-11-09T09:13:08.916Z ok
+2026-11-09T09:14:10.307Z ok
+2026-11-09T09:15:11.692Z ok
+2026-11-09T09:16:13.029Z silent (the sitter's last look was 4 min ago)
+2026-11-09T09:17:14.362Z silent (the sitter's last look was 5 min ago)
+2026-11-09T09:18:15.970Z silent (the sitter's last look was 6 min ago); said silent: posted 200, emailed
+2026-11-09T09:19:17.605Z ok; said back: posted 200, emailed
+2026-11-09T09:19:27.369Z ok
+2026-11-09T09:20:28.649Z ok
+== watch-kvm mini --status
+{
+  "sent": [
+    {
+      "at": 1794215894474,
+      "title": "TEST: mini's KVM is silent",
+      "emailed": true,
+      "test": true,
+      "reported": true
+    },
+    {
+      "at": 1794215956097,
+      "title": "TEST: mini's KVM is back",
+      "emailed": true,
+      "test": true,
+      "reported": true
+    }
+  ],
+  "last_check_at": 1794216027501,
+  "last_ok_at": 1794216027501,
+  "last_error": null,
+  "sitter_emails_today": 3,
+  "sitter_emails_today_at": 1794216027501,
+  "silent_since": null,
+  "alerted_at": null,
+  "last_result": "posted 200, emailed"
+}
+== launchd
+	state = not running
+	last exit code = 0
+		state = active
+		state = active
+	run interval = 60 seconds
+
+== the sitter's ledger, by: watcher
+{"id": "watcher-1794215894474", "at": 1794215894474, "kind": "notify", "by": "watcher", "test": true, "result": "posted by the Mac's watch (TEST): TEST: mini's KVM is silent, emailed"}
+{"id": "watcher-1794215956097", "at": 1794215956097, "kind": "notify", "by": "watcher", "test": true, "result": "posted by the Mac's watch (TEST): TEST: mini's KVM is back, emailed"}
+status.json: sitter 0.2.4 watcher {"by": "aris-mac-mini", "at": 1794216029508} emails_today 3
+
+== the mini's key on the Comet is restricted (from the mini)
+  id -> {"ok": false, "code": "action-unavailable", "result": "this key may only ask watch_check or status"}
+  sitter.py do unlock {} -> the same refusal
+  sitter.py do status -> {"ok": true, …, "sitter": "0.2.4", …}
+
+== doctor (laptop, --private), 09:12
+  ● watched by the Mac itself (aris-mac-mini): last check 76 s ago; it tells you if the KVM goes silent
