@@ -38,7 +38,7 @@ test('message: says what, since when, why it is stuck and where to look; no null
   const m = W.message('studio', { state: 'filevault', since: 0 }, { kind: 'notify', why: 'unlock failed twice (housesitter adopt <mac>)' }, { screen: 'filevault', video: true, answers: null });
   assert.equal(m.subject, 'studio is stuck at FileVault');
   assert.match(m.body, /housesitter adopt studio/);
-  assert.match(m.body, /screen=filevault/);
-  assert.doesNotMatch(m.body, /answers=null/);
+  assert.match(m.body, /Signs: the screen shows FileVault; picture on HDMI./);
+  assert.doesNotMatch(m.body, /answers|null|=/);
   assert.equal(W.message('studio', { since: 0 }, { recovered: true }, {}).subject, 'studio is back');
 });

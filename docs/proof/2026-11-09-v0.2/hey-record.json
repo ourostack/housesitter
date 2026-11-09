@@ -1,0 +1,10 @@
+{
+  "read_with": "hey search \"mini is stuck\" (the hey CLI), 2026-11-09 07:31 UTC, and hey box imbox",
+  "box": "Imbox (first posting)",
+  "subject": "🏠 TEST: mini is stuck at FileVault",
+  "created_at": "2026-11-09T07:30:26Z",
+  "from": "ntfy@ntfy.sh",
+  "sender_name_shown": "ntfy.sh/<the topic>",
+  "to": "<the owner's HEY address>",
+  "body_starts": "TEST (housesitter alert-test; nothing is wrong). Seen by the housesitter on its KVM. Stuck becaus..."
+}

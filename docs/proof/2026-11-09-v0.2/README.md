@@ -8,7 +8,7 @@ Asked for tonight, while the mini was idle (HID idle for 1,370 s, no osascript, 
 - Re-storing the same Mac password answered `{"unchanged": true, "trust": "verified"}`. The password stayed **verified** throughout.
 - The sitter log at start reads `ingress: SSH and HTTPS from the LAN and the tailnet; IPv6: nothing to filter at home (ip6tables unavailable…)`.
 - Rules read back from the Comet ([ingress-readback.txt](ingress-readback.txt)): `INPUT` jumps to `HOUSESITTER_IN`, then `ts-input`, then `MACW_IN`.
-  - **At home `HOUSESITTER_IN` is applied and empty by design:** the LAN and the tailnet may reach SSH and HTTPS.
+  - **At home `HOUSESITTER_IN` is applied and empty by design, so it filters nothing:** anything that reaches the KVM may use SSH and HTTPS. Here that is the home LAN and the tailnet, behind the home router; the rules themselves don't enforce it.
   - The DROPs for 22/443, which leave only `tailscale0`, appear in `--location away`. That isn't exercised here, because it would cut off this laptop, which isn't on the tailnet.
   - `ip6tables` has no filter table on this firmware. eth0 has only a link-local IPv6 address.
 
@@ -31,7 +31,7 @@ Asked for tonight, while the mini was idle (HID idle for 1,370 s, no osascript, 
 - the sitter's 3 (Shift, the password `print` with no body logged, and Enter);
 - 68 `/ws?stream=1` sessions: 66 from the sitter and the proof warming the encoder, and 2 from the laptop's menu and dialog checks.
 
-Caveat: kvmd logs a WebSocket session, not the HID events sent inside one. None of our code sends HID over a WebSocket, but the log alone can't show that.
+Caveats: kvmd logs a WebSocket session, not the HID events sent inside one. None of our code sends HID over a WebSocket, but the log alone can't show that. [kvmd-access-hid-0654-0702.log](kvmd-access-hid-0654-0702.log) holds the `aiohttp.access` lines taken from the KVM's syslog for the window; its last entry is 06:59:15, and the unfiltered syslog and the extraction command aren't published, so "only" rests on that extract.
 
 **Frames:** the proof kept 15 frames out of 41 looks (14 are published here): shutdown, the Apple logo with a progress bar, the FileVault prompt, then the login progress. I removed one frame by hand: a logout frame still showing the Dock, with an unread badge. The sitter read it as `prompt_like` because it has no menu bar ([timeline.json](proof/timeline.json) marks it). Fixed in 0.2.1: proof now keeps a non-desktop frame only when it is black, shows a taught screen, or is the Apple logo of a boot the sitter saw. `frame-0023.jpg` has its password field blurred after recording, because the dots give away the password's length.
 
@@ -59,4 +59,15 @@ Sent at 07:05:31; ntfy's own record ([ntfy-record.jsonl](ntfy-record.jsonl)) has
 > Stuck because: at the FileVault screen for 10+ min and the sitter has not unlocked it. Look: housesitter status mini.
 > Signs: arp=True, eyes=frame, screen=filevault, video=True.
 
-Only one was sent. The channel is ntfy alone, because HEY isn't wired into housesitter. Ari's phone gets it only if it is subscribed to that topic.
+Only one was sent that way, by ntfy alone.
+
+### 3b. The same TEST by email (0.2.1, 07:30 UTC)
+
+Ari reads alerts in HEY, not the ntfy app, so 0.2.1 added `notify.email`: ntfy forwards each message as an email. ntfy.sh refuses email from anonymous publishers (400, code 40053), so the sitter posts with the access token of a free ntfy.sh account that has verified the address, sealed on the KVM like the Mac's password.
+
+- 07:30:05: sitter 0.2.1 started, with `notify.email` set and the token sealed (receipt `{"stored": "ntfy", "bound_to": "hardware"}`, no length).
+- 07:30:24: `housesitter alert-test mini --again`. The sitter's log: `alert-test: posted 200, emailed <the owner's HEY address>` ([alert-test-email.txt](alert-test-email.txt)).
+- 07:30:24: ntfy's own record of the message ([ntfy-record.jsonl](ntfy-record.jsonl), third line).
+- 07:30:26: the email, "🏠 TEST: mini is stuck at FileVault", from ntfy@ntfy.sh, at the top of the owner's HEY Imbox, read back with the `hey` CLI ([hey-record.json](hey-record.json); the address is redacted).
+
+That was the day's first ntfy email; a free ntfy.sh account may send 5 a day, and the sitter keeps to that.

@@ -28,3 +28,13 @@ print(json.dumps({"screens": [S.classify_screen(t, ["Ada"]) for t in d["texts"]]
   assert.deepEqual(got.keys, COMBOS.map(keyNames));
   assert.deepEqual(got.points, POINTS.map((p) => absPoint(...p)));
 });
+
+test('a message says what the sitter saw in words, the same in Node and on the KVM', async () => {
+  const { plainSigns } = await import('../src/watchdog.mjs');
+  const obs = { video: true, screen: 'filevault', eyes: 'frame', arp: true, ocr_error: 'x', answers: false, clock_ticking: null };
+  const want = "answers its health check".replace('answers', "doesn't answer") + '; on the network; the screen shows FileVault; picture on HDMI';
+  assert.equal(plainSigns(obs), want);
+  const { execFileSync } = await import('node:child_process');
+  const py = execFileSync('python3', ['-c', `import sys,json; sys.path.insert(0,'device'); import sitter; print(sitter.plain_signs(json.loads(sys.argv[1])))`, JSON.stringify(obs)], { encoding: 'utf8' }).trim();
+  assert.equal(py, want);
+});
