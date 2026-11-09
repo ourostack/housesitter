@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2643,7 +2643,28 @@ def make_logger():
     return log
 
 
+def watch_only(command):
+    """The SSH forced command for a Mac's watch key (`command="python3 …/sitter.py watch-only"` in authorized_keys):
+    that key may ask `do watch_check '<json>'` or `do status`, and nothing else, so watching the KVM never means root on it."""
+    import shlex
+    try:
+        words = shlex.split(command or "")
+    except ValueError:
+        words = []
+    at = next((i for i, w in enumerate(words) if w.endswith("sitter.py")), None)
+    rest = words[at + 1:] if at is not None else []
+    if rest[:2] == ["do", "watch_check"] and len(rest) == 3 or rest == ["do", "status"]:
+        return rest
+    return None
+
+
 def main(argv):
+    if argv[:1] == ["watch-only"]:
+        rest = watch_only(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+        if rest is None:
+            print(json.dumps({"ok": False, "code": "action-unavailable", "result": "this key may only ask watch_check or status"}))
+            return 2
+        return main(rest)
     if argv[:1] == ["version"]:
         print(json.dumps({"sitter": VERSION}))
         return 0

@@ -673,6 +673,14 @@ class MutualWatch(unittest.TestCase):
         st = W.load("state.json", {})
         self.assertEqual(st["watcher"]["by"], "aris-mac-mini")
 
+    def test_a_watch_key_may_ask_only_watch_check_or_status(self):
+        ok = W.watch_only("python3 /etc/kvmd/user/housesitter/sitter.py do watch_check '{\"by\": \"m\", \"sent\": []}'")
+        self.assertEqual(ok[:2], ["do", "watch_check"])
+        self.assertEqual(W.watch_only("HOUSESITTER_HOME='/x' python3 /etc/kvmd/user/housesitter/sitter.py do status"), ["do", "status"])
+        for bad in ["id", "python3 /etc/kvmd/user/housesitter/sitter.py do unlock '{}'", "python3 sitter.py do status; id",
+                    "python3 sitter.py do watch_check '{}' extra", "python3 sitter.py store-secret mac", "", "python3 sitter.py do 'unterminated"]:
+            self.assertIsNone(W.watch_only(bad), bad)
+
     def test_alert_test_ignores_the_macs_test_sends(self):
         now = 10**12
         self.ask({"by": "m", "sent": [{"at": now - 1000, "title": "TEST: x", "emailed": False, "test": True}]}, now)
