@@ -37,7 +37,7 @@ test('doctor: says what is missing, and the command that fixes it', () => {
   assert.match(out, /no plug: a frozen Mac is reported, never cycled/);
   assert.match(out, /its certificate is not pinned/);
   assert.match(out, /4 THINGS TO DO/);
-  assert.match(out, /no heartbeat: if the KVM itself dies, nothing tells you/);
+  assert.match(out, /nothing outside watches the KVM: if it dies, nobody hears/);
 });
 
 test('doctor: honest timers and unreachable parts', () => {
@@ -119,4 +119,18 @@ test('doctor: a heartbeat probe says how old the beat is, and never where it liv
   assert.doesNotMatch(fresh, /secret0123|gist/);
   const stale = plain(buildDoctor({ name: 'mini', mac, kvm: KVM, sit: { status: status({ obs: { screen: 'desktop', answers: false, clock_ticking: true, heartbeat_age_min: 9.1 }, probes: { health: true } }) }, now: NOW }));
   assert.match(stale, /answers\s+NO: its heartbeat is 9.1 min old/);
+});
+
+test('doctor: "at least" rounds down, and a restart unlocked by itself is the last incident when it is newer', async () => {
+  const { age } = await import('../src/paint.mjs');
+  assert.equal(age(92 * 60000), '1 h 32 min');
+  assert.equal(age(89 * 60000 + 59000), '89 min');
+  assert.equal(age(2 * 3600000), '2 h');
+  const recent = [{ at: NOW - 3600000, kind: 'unlock', result: 'typed the password at the FileVault prompt it was taught (frame, password verified)' }, { at: NOW - 60000, kind: 'notify', result: 'posted 200', test: true }];
+  const li = { started: NOW - 7200000, ended: NOW - 7140000, actions: ['unlock'], told_you: false };
+  const out = plain(buildDoctor({ name: 'mini', mac: { notify: { kind: 'ntfy' }, heartbeat: { url: 'x' }, kvm: { tls_sha256: 'AA' } }, kvm: KVM, sit: { status: status({ recent, last_incident: li }) }, now: NOW }));
+  assert.match(out, /LAST INCIDENT\s+● \d\d:\d\d: a restart's FileVault, unlocked by the sitter; nobody was woken/);
+  assert.match(out, /RECENT\s+\d\d:\d\d\s+TEST alert: posted 200/);
+  const older = plain(buildDoctor({ name: 'mini', mac: { notify: { kind: 'ntfy' }, heartbeat: { url: 'x' }, kvm: { tls_sha256: 'AA' } }, kvm: KVM, sit: { status: status({ recent: [], last_incident: li }) }, now: NOW }));
+  assert.match(older, /LAST INCIDENT\s+● \d\d:\d\d to \d\d:\d\d: unlock; nobody was woken/);
 });
