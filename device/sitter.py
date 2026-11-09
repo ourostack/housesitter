@@ -1787,7 +1787,7 @@ def look(kvmd, src=None, run=subprocess.run, now=None):
     visible, match, refs, kind = prompt_seen(f)
     g = grid_seen(f)
     out.update(size=[w, h], reads_as=classify_frame(f), mean=f["mean"], menu_edges=f["top_edges"],
-               prompt={"taught": refs, "match": match, "visible": visible, "kind": kind, "grid": g is not None, "click": g["click"] if g else None, "lessons": lesson_counts()},
+               prompt={"taught": sum(lesson_counts().values()), "match": match, "visible": visible, "kind": kind, "grid": g is not None, "click": g["click"] if g else None, "lessons": lesson_counts()},
                glimpse=glimpse(yuv, w, h))
     return out
 
@@ -1930,7 +1930,8 @@ def eyes_without_ocr(cfg, mem, raw, boot):
     g = glimpse(*last) if last and last[1:] == (w, h) else None
     seen = prompt_seen(f)
     grid = grid_seen(f) is not None
-    prompt = {"taught": seen[2], "match": seen[1], "visible": seen[0], "kind": seen[3], "grid": grid, "lessons": lesson_counts()}
+    counts = lesson_counts()
+    prompt = {"taught": sum(counts.values()), "match": seen[1], "visible": seen[0], "kind": seen[3], "grid": grid, "lessons": counts}
     if kind == "desktop":
         return {"screen": "desktop", "eyes": "frame", "clock_ticking": clock_ticking(mem, clock_sig(y, w, h)), "glimpse": g, "prompt": prompt}
     out = {"eyes": "frame", "screen": "blank" if kind == "black" else "unknown", "glimpse": g, "prompt": prompt}
@@ -2416,9 +2417,12 @@ def main(argv):
         if value.endswith("\n"):
             value = value[:-1]
         try:
-            print(json.dumps(store_secret(argv[1], value)))
-            if argv[1] == "mac":
+            same = argv[1] == "mac" and load_secret("mac") == value
+            out = store_secret(argv[1], value)
+            if argv[1] == "mac" and not same:
                 set_password_trust("unverified", "a new password was stored")
+            # The same password again (adopt run to update the sitter) keeps what it has proven.
+            print(json.dumps(dict(out, unchanged=True, trust=password_gate()["trust"]) if same else out))
             return 0
         except (ValueError, RuntimeError) as e:
             print("store-secret: %s" % e, file=sys.stderr)

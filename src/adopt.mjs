@@ -267,6 +267,7 @@ export function steps() {
         if (!x.deps.secrets.has(ref)) return { ok: false, decision: true, detail: `no Mac password stored at ${ref}. Store it with: housesitter secret ${x.name} mac-password, then run adopt again` };
         if (x.dryRun) return { ok: true, detail: `would copy ${ref} to the sitter over SSH stdin (sealed, root-only)` };
         const r = await storeSecret(x, 'mac', x.deps.secrets.get(ref));
+        if (r.ok && r.unchanged) return { ok: true, detail: `the same password the sitter already holds, so it keeps what it has proven (${r.trust}); sealed to the KVM's ${r.bound_to} ids` };
         return r.ok ? { ok: true, detail: `stored, sealed to the KVM's ${r.bound_to} ids, root-only; never in argv or logs. Typing stays disarmed until one supervised trial works: housesitter unlock ${x.name} --trial` } : { ok: false, detail: r.detail };
       },
     },
