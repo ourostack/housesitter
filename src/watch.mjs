@@ -100,6 +100,12 @@ export async function watchOnce({ name, by, notify, ask, send, state = {}, now =
   return { state: s, ok: false, said: null, why: f.why };
 }
 
+// A node path that survives `brew upgrade`: Homebrew's versioned Cellar path disappears, its bin/ link doesn't.
+export function stableNode(execPath, exists = fs.existsSync) {
+  if (!/\/Cellar\//.test(execPath)) return execPath;
+  return ['/opt/homebrew/bin/node', '/usr/local/bin/node'].find((p) => exists(p)) || execPath;
+}
+
 // The LaunchAgent: every minute, `housesitter watch-kvm <mac> --once`.
 export const agentLabel = (name) => `bot.ouro.housesitter.watch-kvm.${name.replace(/[^A-Za-z0-9.-]/g, '-')}`;
 export function plist({ name, node, bin, args = [], home = os.homedir(), pathEnv = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' }) {

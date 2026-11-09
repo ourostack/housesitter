@@ -2,7 +2,7 @@
 // email cap shared with the sitter. All fakes: a pretend sitter that answers or doesn't, a pretend ntfy.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fresh, plist, sendNtfy, watchOnce } from '../src/watch.mjs';
+import { fresh, plist, sendNtfy, stableNode, watchOnce } from '../src/watch.mjs';
 
 const T0 = Date.UTC(2026, 10, 9, 9, 0);
 const MIN = 60000;
@@ -113,4 +113,11 @@ test('a failed alert is tried again next minute, and a "back" is sent only for a
   quiet.send = async () => { throw new Error('offline'); };
   const r = await run(quiet, 8, { silentMin: 2, each: (x, i) => { x.up = !(i >= 1 && i < 6); } });
   assert.deepEqual(r.said, [], 'never delivered, so no back message either');
+});
+
+test('the LaunchAgent names a node that survives brew upgrade', () => {
+  const has = (p) => p === '/opt/homebrew/bin/node';
+  assert.equal(stableNode('/opt/homebrew/Cellar/node@22/22.23.4_2/bin/node', has), '/opt/homebrew/bin/node');
+  assert.equal(stableNode('/Users/a/.nvm/versions/node/v22.1.0/bin/node', has), '/Users/a/.nvm/versions/node/v22.1.0/bin/node');
+  assert.equal(stableNode('/opt/homebrew/Cellar/node/23.1/bin/node', () => false), '/opt/homebrew/Cellar/node/23.1/bin/node');
 });

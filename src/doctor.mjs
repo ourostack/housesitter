@@ -103,7 +103,13 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   if (st && !hItems.length) hItems.push({ dot: 'ok', text: 'none seen by this sitter yet' });
   if (hItems.length) sec.push({ label: 'LAST INCIDENT', items: hItems });
   // Newest first, apart from the incident: a FileVault unlock after a boot is not an incident, and is often the best news.
-  const rItems = [...(st?.recent || [])].sort((a, b) => b.at - a.at).slice(0, 3).map((e) => ({ dot: null, text: `${clock(e.at, now)}  ${e.test ? 'TEST alert' : e.kind.replace(/_/g, ' ')}${e.result ? `: ${short(e.result)}` : ''}` }));
+  // The Mac's own watch hands its sends to the sitter's ledger as "posted by the Mac's watch (TEST): <title>, emailed".
+  const fromMac = (e) => /^posted by the Mac's watch(?: \(TEST\))?: (.*?)(, emailed)?$/.exec(String(e.result || ''));
+  const rItems = [...(st?.recent || [])].sort((a, b) => b.at - a.at).slice(0, 3).map((e) => {
+    const m = fromMac(e);
+    if (m) return { dot: null, text: `${clock(e.at, now)}  ${e.test ? 'TEST ' : ''}from the Mac's watch: ${m[1].replace(/^TEST: /, '')}${m[2] ? ', emailed' : ''}` };
+    return { dot: null, text: `${clock(e.at, now)}  ${e.test ? 'TEST alert' : e.kind.replace(/_/g, ' ')}${e.result ? `: ${short(e.result)}` : ''}` };
+  });
   if (rItems.length) sec.push({ label: 'RECENT', items: rItems });
 
   // alerts

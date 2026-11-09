@@ -143,3 +143,10 @@ test('the mutual watch: doctor says the Mac itself watches the KVM, and warns wh
   const quiet = plain(buildDoctor({ name: 'mini', mac, kvm: KVM, sit: { status: status({ watcher: { by: 'aris-mac-mini', at: NOW - 900000 } }) }, now: NOW }));
   assert.match(quiet, /the Mac's watch \(aris-mac-mini\) last checked 15 min ago: is housesitter watch-kvm running there\?/);
 });
+
+test('doctor shows what the Mac\'s watch sent, by its title', () => {
+  const recent = [{ at: NOW - 300000, kind: 'notify', test: true, result: "posted by the Mac's watch (TEST): TEST: mini's KVM is silent, emailed" }, { at: NOW - 200000, kind: 'notify', result: "posted by the Mac's watch: mini's KVM is back" }];
+  const out = plain(buildDoctor({ name: 'mini', mac: { notify: { kind: 'ntfy' }, kvm: { tls_sha256: 'AA' } }, kvm: KVM, sit: { status: status({ recent }) }, now: NOW }));
+  assert.match(out, /TEST from the Mac's watch: mini's KVM is silent, emailed/);
+  assert.match(out, /from the Mac's watch: mini's KVM is back\n/);
+});

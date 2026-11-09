@@ -124,7 +124,7 @@ async function watchKvm(mac) {
     fs.mkdirSync(path.dirname(agent), { recursive: true });
     fs.mkdirSync(path.join(os.homedir(), 'Library', 'Logs'), { recursive: true });
     const extra = [...(val('--silent-min') ? ['--silent-min', String(silentMin)] : []), ...(test ? ['--test'] : [])];
-    fs.writeFileSync(agent, Watch.plist({ name, node: process.execPath, bin: fileURLToPath(import.meta.url), args: extra }));
+    fs.writeFileSync(agent, Watch.plist({ name, node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), args: extra }));
     spawnSync('/bin/launchctl', ['bootout', `gui/${uid}/${label}`], { encoding: 'utf8' });
     const r = spawnSync('/bin/launchctl', ['bootstrap', `gui/${uid}`, agent], { encoding: 'utf8' });
     if (r.status !== 0) { say(`✗ launchctl bootstrap failed: ${String(r.stderr).trim()}`); return 1; }

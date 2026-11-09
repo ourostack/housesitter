@@ -35,9 +35,9 @@ So housesitter types only where it sees the password prompt on its own picture, 
 
 ## housesitter doctor
 
-<p align="center"><img src="docs/img/doctor.png" alt="housesitter doctor mini --private, a real run at 00:40 on 9 November against our mini and its Comet, with the gradient pixel wordmark. The picture is hidden; it reads as a desktop from a decoded frame, the taught prompt not on the picture, the clock moving, and it answers: the Mac's own heartbeat is 0.9 minutes old. The Mac is up at its desktop, for at least 1 hour 43 minutes (since 22:57). The KVM is a GL.iNet Comet on kvmd 4.82 over the LAN, keyboard online, HDMI 2560 by 1440. The password is verified; it has been taught FileVault, the lock screen and the list of users; the lock screen is unlocked when an agent asks. Budgets: 2 of 2 tries left before it stops, 3 of 3 this hour; no plug, so a frozen Mac is reported, never cycled. Last incident 22:56: a restart's FileVault, unlocked by the sitter, nobody woken. Recent, newest first: 23:30, a TEST alert, posted and emailed; 23:05, a TEST alert; 22:56, the FileVault unlock of the hands-off restart. Alerts go to ntfy and by email, the address shortened to its first letter; nothing outside watches the KVM itself, an open dot. One thing to do: add a dead man's switch for the KVM." width="100%"></p>
+<p align="center"><img src="docs/img/doctor.png" alt="housesitter doctor mini --private, a real run at 01:23 on 9 November against our mini and its Comet, with the gradient pixel wordmark. The picture is hidden; it reads as a desktop from a decoded frame, the taught prompt not on the picture, the clock moving, looked 66 seconds ago, and it answers: the Mac's own heartbeat is 1 minute old. The Mac is up at its desktop for at least 2 hours 26 minutes (since 22:57). The KVM is a GL.iNet Comet on kvmd 4.82 over the LAN, keyboard online, HDMI 2560 by 1440. The password is verified; it has been taught FileVault, the lock screen and the list of users; the lock screen is unlocked when an agent asks. Budgets: 2 of 2 tries left before it stops, 3 of 3 this hour; no plug, so a frozen Mac is reported, never cycled, an open dot. Last incident 22:56: a restart's FileVault, unlocked by the sitter, nobody woken. Recent, newest first: 01:19, TEST from the Mac's watch: mini's KVM is back, emailed; 01:18, TEST from the Mac's watch: mini's KVM is silent, emailed; 23:30, a TEST alert, posted and emailed. Alerts go to ntfy and by email, the address shortened to its first letter; and the KVM is watched by the Mac itself, aris-mac-mini, last check 82 seconds ago." width="100%"></p>
 
-*The real `housesitter doctor` of our mini and its Comet at 00:40 on 9 November, an hour and a half after the 70-second restart, drawn with `--private` so my desktop and my address stay out. Its last incident is the restart it unlocked at 22:56, by itself; it reads the Mac's own heartbeat (its age, never where it lives). The two open dots are true: no plug yet, and nothing outside watches the KVM itself.*
+*The real `housesitter doctor` of our mini and its Comet at 01:23 on 9 November, drawn with `--private` so my desktop and my email address stay out. Its last incident is the 70-second restart it unlocked at 22:56, by itself. The two newest lines are the other half of the watch: we stopped the sitter, and the Mac told us the KVM had gone silent, then that it was back. The one open dot is true: no plug yet.*
 
 One screen: a glimpse of what the KVM sees (40 by 22 pixels of its own picture, too small to read anything on), what that reads as, when it last looked and when it looks next; the Mac; the KVM; the password gate; what's left of each budget; the last bad stretch; where it tells you; and the command for anything missing. It exits 3 when it can't reach the KVM or the sitter.
 
@@ -106,7 +106,7 @@ You're done when the proof ends at your desktop and `housesitter doctor studio` 
 | **keeps falling back** to FileVault | three unlocks an hour at most, then it tells you | you decide |
 | **won't take the password** | two tries, then it stops and tells you exactly what to fix | you decide |
 | **is fine, but your agents can't reach it** | nothing; the desktop clock is ticking, so it never power-cycles a working Mac | — |
-| **is fine, but the KVM dies** (power, network, firmware) | can't tell you itself, so the Mac does: `housesitter watch-kvm` on the Mac checks the sitter every minute and sends one message after 5 minutes of silence, and one when it's back | 5 min |
+| **is fine, but the KVM dies** (power, network, firmware) | can't tell you itself, so the Mac does: `housesitter watch-kvm` on the Mac checks the sitter every minute and sends one message after 5 minutes of silence (about 8 after the sitter's last look), and one when it's back | about 8 min |
 
 Frozen means exactly what the table says, nothing looser. A Mac that has only lost its network still has a ticking clock, so it is never power-cycled: keep the clock in the menu bar (the default), and don't leave a full-screen app in front.
 
@@ -199,7 +199,15 @@ The sitter watches the Mac. Something has to watch the sitter, or a KVM that los
 housesitter watch-kvm studio --install    # on the agent Mac itself
 ```
 
-That installs a LaunchAgent (`bot.ouro.housesitter.watch-kvm.studio`) that runs every minute. It asks the sitter over SSH for its status, the same way `doctor` does, and counts the KVM as quiet if it doesn't answer or its last look is more than 3 minutes old. After 5 minutes of quiet it sends one message, and one more when the sitter answers again. `--silent-min` changes the 5; `--test` marks both messages TEST, for trying it out.
+That installs a LaunchAgent (`bot.ouro.housesitter.watch-kvm.studio`) that runs every minute. It asks the sitter over SSH for its status, the same way `doctor` does, and counts the KVM as quiet if it doesn't answer or its last look is more than 3 minutes old. After 5 minutes of quiet it sends one message, and one more when the sitter answers again: about 8 minutes after the sitter's last look, and within a minute of its return. `--silent-min` changes the 5; `--test` marks both messages TEST, for trying it out. It's a LaunchAgent, so it runs while someone is logged in to the Mac; at the FileVault screen or a login window, watching the Mac is the sitter's half.
+
+Give the Mac its own SSH key for this, one that can't do anything else. In the KVM's `/root/.ssh/authorized_keys` (with `--this-mac`, `adopt` already put the Mac's key there with full access; replace that line):
+
+```
+command="python3 /etc/kvmd/user/housesitter/sitter.py watch-only",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ecdsa-sha2-nistp256 AAAA… aris-mac-mini watch
+```
+
+With that line, the key may ask `watch_check` or `status` and nothing else, so watching the KVM never means root on it. Point the Mac's config at it with `"kvm": {"ssh_key": "~/.ssh/housesitter-watch"}`.
 
 The messages go the way the sitter's do: the same ntfy topic, the same email address, with the token from the Mac's Keychain (`housesitter secret studio ntfy-token`). Both sides share one daily email cap: the sitter tells the Mac how many it has sent today, and the Mac hands over what it sent while the KVM was quiet, so they never go over 5 together. `doctor` shows the watch: "watched by the Mac itself, last check 40 s ago", or a warning when the Mac's checks stop. `--status` prints what the Mac last saw, `--uninstall` stops it, and its log is `~/Library/Logs/housesitter-watch-studio.log`.
 
@@ -231,8 +239,8 @@ housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our wa
 | A macOS update | **Not yet tried.** An update can restart more than once; each restart is its own boot with its own two tries, and all of them share three unlocks an hour |
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
-| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 243 tests in Node and Python on every push |
-| The Mac watching its KVM | **Tested with fakes** (silence, one message, one back message, the shared email cap, a stale status, TEST marking, the LaunchAgent). Live proof on our mini: pending |
+| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 246 tests in Node and Python on every push |
+| The Mac watching its KVM | **Done on real hardware, by housesitter 0.2.4** on 9 November: our mini's LaunchAgent, with its own watch-only key and its own ntfy token. We stopped only the sitter on the Comet at 01:13:32 PT (kvmd, the Comet and the mini untouched). With `--test --silent-min 2` (the quiet limit cut from 5 minutes to 2 for the test), the mini sent "TEST: mini's KVM is silent" at 01:18:16, 4 min 44 s later, and it reached the owner's HEY Imbox at 01:18:18. We started the sitter at 01:18:44; "TEST: mini's KVM is back" went at 01:19:18 and reached HEY at 01:19:20. Both are in the sitter's ledger, counted against the shared email cap ([the log](https://github.com/ourostack/housesitter/blob/proof/2026-11-09-hardware/docs/proof/2026-11-09-v0.2/watch-kvm-024.txt)). Then reinstalled without `--test` |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art
