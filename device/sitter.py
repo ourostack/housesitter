@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2140,7 +2140,7 @@ def should_publish(st, status, now, beat_min=10):
     return status["state"] != last.get("state") or bool(status.get("actions")) or now - last.get("at", 0) >= beat_min * 60000
 
 
-OPS = ("status", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll")
+OPS = ("status", "watch_check", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll")
 
 
 def at_password_screen(st=None):
@@ -2165,6 +2165,25 @@ def hands_refusal(cfg, kvmd, st):
     return None
 
 
+def watch_check(a, st, now, via):
+    """The Mac's side of the mutual watch (`housesitter watch-kvm` on the Mac): it asks every minute, over SSH only.
+    Records who watches and when, so doctor can say "watched by the Mac itself"; takes the emails the Mac's watch sent
+    while it couldn't reach this KVM into the ledger, so both share one daily email cap; answers with the status."""
+    if via != "ssh":
+        return {"ok": False, "code": "action-unavailable", "result": "watch_check is for the Mac's own watch, over SSH"}
+    by = str(a.get("by") or "the Mac")[:64]
+    seen = {e.get("at") for e in st.get("ledger") or [] if e.get("kind") == "notify" and e.get("by") == "watcher"}
+    for e in a.get("sent") or []:
+        at = int(e.get("at") or 0)
+        if at and at not in seen and now - at < 86400000:
+            st["ledger"].append({"id": "watcher-%d" % at, "at": at, "kind": "notify", "by": "watcher", "test": bool(e.get("test")) or None,
+                                 "result": "posted by the Mac's watch%s: %s" % (" (TEST)" if e.get("test") else "", str(e.get("title") or "")[:80]) + (", emailed" if e.get("emailed") else "")})
+    st["watcher"] = {"by": by, "at": now}
+    save_state(st, keys=("watcher",))
+    status = load("status.json", {})
+    return {"ok": True, "result": {"status": status, "emails_today": emails_today(st.get("ledger"), now), "now": now}}
+
+
 def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     """One command (from the inbox, or `sitter.py do` over SSH). Unlock and power ops keep the sitter's own budgets and
     checks; screenshot, click, type and key are an agent's hands and pass through, except at a password screen.
@@ -2179,6 +2198,8 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     a = cmd.get("args") or {}
     if op == "status":
         return {"ok": True, "result": load("status.json", {})}
+    if op == "watch_check":
+        return watch_check(a, st, now, via)
     if op == "look":
         return {"ok": True, "result": once(cfg, kvmd, power, log, now=now)}
     if op == "screenshot":
@@ -2383,7 +2404,7 @@ def alert_test(cfg, kvmd, power, log, now=None, opener=None, again=False):
     if not (cfg.get("notify") or {}).get("url"):
         return {"ok": False, "result": "no notify target configured (housesitter adopt --notify ntfy|<url>)"}
     st = load("state.json", {"mem": None, "ledger": []})
-    last = [e for e in st.get("ledger") or [] if e.get("kind") == "notify" and e.get("test")]
+    last = [e for e in st.get("ledger") or [] if e.get("kind") == "notify" and e.get("test") and e.get("by") != "watcher"]
     if last and not again and now - last[-1]["at"] < ALERT_TEST_EVERY_H * 3600000:
         return {"ok": False, "result": "an alert test was sent %d min ago; one a day (--again to send another)" % ((now - last[-1]["at"]) // 60000)}
     rules = dict(DEFAULTS, **cfg.get("rules", {}))
@@ -2560,6 +2581,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in SECRET_NAMES},
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
+              "watcher": st.get("watcher"), "emails_today": emails_today(st.get("ledger"), now),
               "lock_policy": lock_policy(cfg), "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
               "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "watched_by": bool((cfg.get("watched_by") or {}).get("url")) or bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}

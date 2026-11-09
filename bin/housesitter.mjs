@@ -13,6 +13,8 @@ import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
 import { connect, summarise } from '../src/kvmd.mjs';
 import * as Plug from '../src/plug.mjs';
+import * as Watch from '../src/watch.mjs';
+import os from 'node:os';
 import * as R from '../src/reins.mjs';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 
@@ -48,6 +50,9 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter unlock <mac> --attended-test you are locking and unlocking on purpose: its own budget (30 an hour)
   housesitter want-desktop <mac> [--minutes 10]   an agent needs the UI: unlock now, and again if it locks meanwhile
                                            (only with "unlock_lock_screen": "on_request" or true in its config)
+  housesitter watch-kvm <mac> --install   on the Mac: a LaunchAgent that checks the KVM every minute, and tells you
+                                           once if it goes silent (and once when it's back): the Mac watches its KVM
+                                           [--silent-min 5] [--test]; also --once, --status, --uninstall
   housesitter alert-test <mac> [--again]  one real "I'm stuck" message through the rules, marked TEST (over SSH; once a day)
   housesitter learn-prompt <mac> --i-see-the-field [--filevault]  teach it the prompt you see on the KVM; --filevault during a restart
   housesitter learn-prompt <mac> --i-see-the-field --grid <x> <y>  the login window's list of users: x y is your
@@ -65,7 +70,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -98,6 +103,61 @@ function showLook(l) {
   right.push(p.dim('pressed nothing, typed nothing, changed nothing'));
   console.log(['', ...beside(paintGlimpse(p, flag('--private') ? null : l.glimpse, { title: 'what the KVM sees', note: flag('--private') ? 'picture hidden (--private)' : '' }).map((x) => `  ${x}`), right), ''].join('\n'));
   return 0;
+}
+
+async function watchKvm(mac) {
+  const name = mac.name;
+  const sp = Watch.statePath(name);
+  const silentMin = Number(val('--silent-min')) || Watch.SILENT_MIN;
+  const test = flag('--test');
+  if (flag('--status')) { const st = Watch.loadState(sp); json ? emit(st) : say(JSON.stringify(st, null, 2)); return 0; }
+  const label = Watch.agentLabel(name);
+  const agent = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+  const uid = process.getuid();
+  if (flag('--uninstall')) {
+    spawnSync('/bin/launchctl', ['bootout', `gui/${uid}/${label}`], { encoding: 'utf8' });
+    if (fs.existsSync(agent)) fs.renameSync(agent, path.join(os.homedir(), '.Trash', `${label}.plist.${Date.now()}`));
+    say(`stopped: ${name}'s KVM is no longer watched from this Mac`);
+    return 0;
+  }
+  if (flag('--install')) {
+    fs.mkdirSync(path.dirname(agent), { recursive: true });
+    fs.mkdirSync(path.join(os.homedir(), 'Library', 'Logs'), { recursive: true });
+    const extra = [...(val('--silent-min') ? ['--silent-min', String(silentMin)] : []), ...(test ? ['--test'] : [])];
+    fs.writeFileSync(agent, Watch.plist({ name, node: process.execPath, bin: fileURLToPath(import.meta.url), args: extra }));
+    spawnSync('/bin/launchctl', ['bootout', `gui/${uid}/${label}`], { encoding: 'utf8' });
+    const r = spawnSync('/bin/launchctl', ['bootstrap', `gui/${uid}`, agent], { encoding: 'utf8' });
+    if (r.status !== 0) { say(`✗ launchctl bootstrap failed: ${String(r.stderr).trim()}`); return 1; }
+    say(`✓ this Mac now checks ${name}'s KVM every minute (${label}); one message if it's silent for ${silentMin} min, one when it's back${test ? ' (TEST messages)' : ''}`);
+    return 0;
+  }
+  const store = secretStore();
+  const sh = sitterSsh(mac);
+  const by = mac.watch?.by || os.hostname().replace(/\.local$/, '');
+  const ask = async (a) => {
+    const r = await sh(onSitter(mac, `do watch_check '${JSON.stringify(a).replace(/'/g, "'\\''")}'`));
+    const j = JSON.parse(String(r.stdout).trim().split('\n').at(-1) || '{}');
+    if (!j.ok && /unknown op 'watch_check'/.test(j.result || '')) {
+      // A sitter older than 0.2.4: its status still says whether it's looking; it just can't record the watch.
+      const o = await sh(onSitter(mac, 'do status'));
+      const k = JSON.parse(String(o.stdout).trim().split('\n').at(-1) || '{}');
+      if (k.ok) return { status: k.result };
+    }
+    if (!j.ok) throw new Error(j.result || `ssh exit ${r.status}`);
+    return j.result;
+  };
+  const n = mac.notify || {};
+  const send = (title, body, { email }) => Watch.sendNtfy(n, title, body, { email, token: email ? store.get(n.token || defaultRefs(name).ntfy) : null });
+  const tick = async () => {
+    const out = await Watch.watchOnce({ name, by, notify: n, ask, send, state: Watch.loadState(sp), now: Date.now(), silentMin, test });
+    fs.mkdirSync(path.dirname(sp), { recursive: true });
+    fs.writeFileSync(sp, JSON.stringify(out.state, null, 2));
+    const line = `${new Date().toISOString()} ${out.ok ? 'ok' : `silent (${out.why})`}${out.said ? `; said ${out.said}: ${out.state.last_result}` : ''}`;
+    json ? emit({ ok: out.ok, said: out.said, why: out.why || null }) : say(line);
+    return out;
+  };
+  if (flag('--once')) { await tick(); return 0; }
+  for (;;) { await tick(); await new Promise((r) => setTimeout(r, 60000)); }
 }
 
 function need(n, usage) { if (!n) throw new Refusal('input-invalid', `usage: ${usage}`); }
@@ -178,6 +238,8 @@ async function main() {
 
   need(name, `housesitter ${cmd} <mac>`);
   const mac = macConfig(name);
+
+  if (cmd === 'watch-kvm') return watchKvm(mac);
 
   if (cmd === 'status' || cmd === 'doctor') {
     const [kvm, sit] = await Promise.all([kvmLook(mac).catch((e) => ({ error: e.message })), sitterClient(mac).status().catch((e) => ({ errors: [e.message] }))]);
