@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2915,6 +2915,19 @@ def after_boot(cfg, obs, boot, now=None):
     return boot_recent(boot, now) or ocr_filevault or lock_allowed(cfg, now)
 
 
+def note_lock_read(st, obs, now, log):
+    """The first lock-screen or FileVault clock the NPU reads while the Mac is away from its desktop goes in the log,
+    beside the KVM's own time (UTC; the Mac shows its local time), so a live read can be checked later."""
+    c = obs.get("clock") or {}
+    if c.get("where") == "lock":
+        if not st.get("lock_read_at"):
+            log("lock-screen clock: the NPU read %s in %s ms at the %s screen; the KVM's clock said %s UTC" % (
+                c.get("text"), c.get("ms"), obs.get("screen"), time.strftime("%H:%M:%S", time.gmtime(now / 1000))))
+            st["lock_read_at"] = now
+    elif obs.get("screen") == "desktop":
+        st["lock_read_at"] = None
+
+
 def once(cfg, kvmd, power, log, now=None, gh=None):
     now = now if now is not None else int(time.time() * 1000)
     st = load("state.json", {"mem": None, "ledger": []})
@@ -2924,6 +2937,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
     if obs.pop("desktop", False):
         st["desktop_at"] = now
     settle_trial(now, obs.get("screen") == "desktop", log)
+    note_lock_read(st, obs, now, log)
     caps = caps_of(cfg, power)
     if not after_boot(cfg, obs, st.get("boot"), now):
         caps["unlock"] = False
@@ -3001,7 +3015,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
             st["published"] = {"at": now, "state": status["state"]}
         except Exception as e:  # noqa: BLE001
             log("outbox publish failed: %s" % str(e)[:160])
-    save_state(st, ("mem", "desktop_at", "published", "last_incident"))
+    save_state(st, ("mem", "desktop_at", "published", "last_incident", "lock_read_at"))
     save("status.json", status)
     heartbeat(cfg, status)
     return status

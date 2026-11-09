@@ -740,6 +740,20 @@ def desktop_frame(w=640, h=360):
 class NpuClockReading(unittest.TestCase):
     """The menu-bar clock, read on the KVM's NPU: it only ever feeds the frozen test; it never decides the screen or types."""
 
+    def test_the_first_lock_screen_read_of_each_stretch_is_logged_with_the_kvms_time(self):
+        st, logs = {}, []
+        lock = {"screen": "login", "clock": {"text": "3:42", "on": "npu", "ms": 0.9, "where": "lock"}}
+        W.note_lock_read(st, lock, 1794267720000, logs.append)
+        W.note_lock_read(st, lock, 1794267780000, logs.append)
+        self.assertEqual(len(logs), 1, "once a stretch, not every look")
+        self.assertIn("the NPU read 3:42 in 0.9 ms at the login screen; the KVM's clock said 23:42:00 UTC", logs[0])
+        W.note_lock_read(st, {"screen": "login", "clock": None}, 1794267840000, logs.append)
+        W.note_lock_read(st, {"screen": "desktop", "clock": {"text": "3:44", "on": "npu"}}, 1794267900000, logs.append)
+        self.assertIsNone(st["lock_read_at"])
+        W.note_lock_read(st, dict(lock, screen="filevault"), 1794268000000, logs.append)
+        self.assertEqual(len(logs), 2)
+        self.assertIn("at the filevault screen", logs[1])
+
     def setUp(self):
         self.dir = scratch()
         W.HOME = self.dir
