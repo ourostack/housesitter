@@ -30,8 +30,8 @@ const STORY = {
     log: [['18:31:44', 'the screen went dark, then the Mac found its keyboard'], ['18:31:55', 'FileVault: not a screen it was taught, so it waits'], ['18:32:18', 'an agent teaches it this screen, once'], ['18:32:35', 'the prompt it was taught is on its picture'], ['18:32:37', 'typed the password, once, by itself'], ['18:32:56', 'the desktop is up, 1 min 44 s after the restart.']],
   },
   handsoff: {
-    before: [['21:32', 'That night, housesitter\'s own sitter, taught FileVault on one supervised restart. Then our agent pressed Restart, and nothing else touched the Mac. From the sitter\'s log and the KVM\'s frames:']],
-    log: [['21:32:23', 'Restart, pressed by our agent'], ['21:33:00', 'the screen went dark, then the Mac found its keyboard'], ['21:33:03', 'FileVault: the prompt it was taught, 100%'], ['21:33:20', 'steady, 20 s after the boot: it may type'], ['21:33:27', 'typed the password, once, by itself'], ['21:33:42', 'the desktop is up: 79 s, and nobody touched it.']],
+    before: [['22:55', 'That night, housesitter 0.2, which had learned FileVault on one supervised restart. Our agent pressed Restart, and nothing else touched the Mac. From the sitter\'s log and the KVM\'s frames:']],
+    log: [['22:55:55', 'Restart, pressed by our agent'], ['22:56:24', 'the screen went dark, then the Mac found its keyboard'], ['22:56:44', 'FileVault: the prompt it was taught, steady for 6 looks: it may type'], ['22:56:51', 'typed the password, once, by itself'], ['22:57:06', 'the desktop is up: 70 s, and nobody touched it.']],
   },
 };
 
@@ -80,6 +80,6 @@ export function renderEvening(steps, { color = false } = {}) {
     const box = s.withheld ? [p.dim(`${head}${'─'.repeat(Math.max(0, 41 - head.length))}╮`)] : glimpse(p, s.glimpse, { title: `seen ${s.at}` });
     blocks.push([...beside(box.map((l) => `  ${l}`), right, 3), '']);
   }
-  blocks.push([`  ${p.dim('The morning: it refuses, and tells you. That night: housesitter itself, hands-off, 79 s.')}`, `  ${p.dim('Your own Mac: housesitter adopt <mac> --address <kvm ip>     A rehearsed bad night: housesitter demo night')}`, '']);
+  blocks.push([`  ${p.dim('The morning: it refuses, and tells you. That night: housesitter itself, hands-off, 70 s.')}`, `  ${p.dim('Your own Mac: housesitter adopt <mac> --address <kvm ip>     A rehearsed bad night: housesitter demo night')}`, '']);
   return blocks;
 }

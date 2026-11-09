@@ -24,7 +24,7 @@ FRAMES = [
     ("18:07", "comet-live-20261108/05-lock-screen-awake-learned.png", "awake"),
     ("18:15", "comet-live-20261108/06-after-comet-unlock.png", "unlocked"),
     ("18:32", "comet-restart-20261109/frames/023232.jpg", "restart"),
-    ("21:33", "docs/proof/2026-11-09/restart2-hands-off/frames/053312.jpg", "handsoff"),  # in this repo
+    ("22:56", "docs/proof/2026-11-09-v0.2/proof/frame-0019.jpg", "handsoff"),  # in this repo
 ]
 
 
