@@ -106,7 +106,7 @@ You're done when the proof ends at your desktop and `housesitter doctor studio` 
 | **keeps falling back** to FileVault | three unlocks an hour at most, then it tells you | you decide |
 | **won't take the password** | two tries, then it stops and tells you exactly what to fix | you decide |
 | **is fine, but your agents can't reach it** | nothing; the desktop clock is ticking, so it never power-cycles a working Mac | — |
-| **is fine, but the KVM dies** (power, network, firmware) | can't tell you itself, so the Mac does: `housesitter watch-kvm` on the Mac checks the sitter every minute and sends one message after 5 minutes of silence, and one when it's back | 5 min |
+| **is fine, but the KVM dies** (power, network, firmware) | can't tell you itself, so the Mac does: `housesitter watch-kvm` on the Mac checks the sitter every minute and sends one message after 5 minutes of silence (about 8 after the sitter's last look), and one when it's back | about 8 min |
 
 Frozen means exactly what the table says, nothing looser. A Mac that has only lost its network still has a ticking clock, so it is never power-cycled: keep the clock in the menu bar (the default), and don't leave a full-screen app in front.
 
@@ -240,7 +240,7 @@ housesitter is experimental (0.2). Honest status, as of 9 November 2026. "Our wa
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
 | Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 246 tests in Node and Python on every push |
-| The Mac watching its KVM | **Done on real hardware, by housesitter 0.2.4** on 9 November: our mini's LaunchAgent, with its own watch-only key and its own ntfy token. We stopped only the sitter on the Comet at 01:13:32 PT (kvmd, the Comet and the mini untouched). With `--test --silent-min 2`, the mini sent "TEST: mini's KVM is silent" at 01:18:16, 4 min 44 s later, and it reached the owner's HEY Imbox at 01:18:18. We started the sitter at 01:18:44; "TEST: mini's KVM is back" went at 01:19:18 and reached HEY at 01:19:20. Both are in the sitter's ledger, counted against the shared email cap ([the log](https://github.com/ourostack/housesitter/blob/proof/2026-11-09-hardware/docs/proof/2026-11-09-v0.2/watch-kvm-024.txt)). Then reinstalled without `--test` |
+| The Mac watching its KVM | **Done on real hardware, by housesitter 0.2.4** on 9 November: our mini's LaunchAgent, with its own watch-only key and its own ntfy token. We stopped only the sitter on the Comet at 01:13:32 PT (kvmd, the Comet and the mini untouched). With `--test --silent-min 2` (the quiet limit cut from 5 minutes to 2 for the test), the mini sent "TEST: mini's KVM is silent" at 01:18:16, 4 min 44 s later, and it reached the owner's HEY Imbox at 01:18:18. We started the sitter at 01:18:44; "TEST: mini's KVM is back" went at 01:19:18 and reached HEY at 01:19:20. Both are in the sitter's ledger, counted against the shared email cap ([the log](https://github.com/ourostack/housesitter/blob/proof/2026-11-09-hardware/docs/proof/2026-11-09-v0.2/watch-kvm-024.txt)). Then reinstalled without `--test` |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art
