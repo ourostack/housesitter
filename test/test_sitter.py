@@ -1327,7 +1327,7 @@ class AgentsHands(unittest.TestCase):
         finally:
             W.load_secret = saved
         self.assertFalse(r["ok"], r)
-        self.assertIn("no password prompt it was taught", r["result"])
+        self.assertIn("blind unlock is unsupported", r["result"])
         self.assertFalse([p for p, _ in k.posts if "print" in p or "Enter" in p], "a lone Shift to wake the screen, nothing typed")
 
 

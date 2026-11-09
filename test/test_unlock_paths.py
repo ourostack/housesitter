@@ -178,6 +178,54 @@ class WithOcr(Base):
         self.assertEqual(k.typed(), [])
 
 
+class TeachingSafely(Base):
+    def test_a_list_of_users_is_never_taught_as_filevault(self):
+        W.save("config.json", {"name": "mini"})
+        self.assertEqual(W.main(["learn-prompt", "--grid", "0.5", "0.6", "--filevault"]), 2)
+        self.assertEqual(W.lessons(), [])
+
+    def test_the_waiting_message_never_suggests_filevault_for_a_screen_it_knows(self):
+        self.teach()
+        sent = []
+        saved = W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.notify, W.kvm_uptime_s, W.kvm_boot_id
+        try:
+            W.hdmi_mode = lambda read=None, kvmd=None: (2560, 1440)
+            W.frame_raw = lambda kvmd, run=None: (b"", 2560, 1440)
+            W.kvm_uptime_s = lambda read=None: 40000
+            W.kvm_boot_id = lambda read=None: "b1"
+            W.notify = lambda cfg, subject, body, opener=None: sent.append(body) or "posted 200"
+            usb = [900.0]
+            W.usb_last_enum = lambda dmesg=None, run=None: usb[0]
+            W.frame_features = lambda y, w, h: LUM["desktop"]
+            W.boot_watch({"name": "mini"}, Keys(), lambda m: None, now=1_000_000)
+            W.hdmi_mode = lambda read=None, kvmd=None: None
+            W.boot_watch({"name": "mini"}, Keys(), lambda m: None, now=1_003_000)
+            W.hdmi_mode = lambda read=None, kvmd=None: (2560, 1440)
+            usb[0] = 950.0
+            W.frame_features = lambda y, w, h: G["grid-later"]
+            for i in range(20):
+                W.boot_watch({"name": "mini"}, Keys(), lambda m: None, now=1_006_000 + i * 3000)
+        finally:
+            W.usb_last_enum, W.hdmi_mode, W.frame_raw, W.frame_features, W.notify, W.kvm_uptime_s, W.kvm_boot_id = saved
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn("--filevault", sent[0])
+        self.assertIn("housesitter unlock mini", sent[0])
+
+    def test_a_failing_lock_watch_never_stops_the_rules(self):
+        saved = W.observe, W.unlock_steps
+        try:
+            W.observe = lambda cfg, kvmd, power, mem, now: {"eyes": "frame", "screen": "login", "video": True, "prompt": {"visible": True, "kind": "lock", "taught": 1, "match": 1.0, "grid": False}}
+
+            def boom(*a, **k):
+                raise RuntimeError("kvmd /hid/events/send_mouse_move -> HTTP 503")
+            W.unlock_steps = boom
+            status = W.once({"name": "mini", "unlock_lock_screen": True}, Keys(), None, lambda m: None, now=5_000_000)
+        finally:
+            W.observe, W.unlock_steps = saved
+        self.assertIn("failed: kvmd", status["obs"]["lock_watch"])
+        self.assertTrue(os.path.exists(os.path.join(W.HOME, "status.json")))
+
+
 class LockScreenPolicy(Base):
     """unlock_lock_screen: off by default (the public product), "on_request" for our install (Ari, 2026-11-08)."""
 
@@ -363,7 +411,7 @@ class Plug(unittest.TestCase):
                         return
                     sent.append(json.loads(self.buf))
                     req = sent[-1]
-                    rep = {"id": req["id"], "result": {"output": True, "apower": 3}} if "auth" in req["params"] else {"id": req["id"], "error": {"code": 401, "message": json.dumps({"realm": "shellyplugusg4-abc", "nonce": 7, "nc": 1})}}
+                    rep = {"id": req["id"], "result": {"output": True, "apower": 3}} if "auth" in req else {"id": req["id"], "error": {"code": 401, "message": json.dumps({"realm": "shellyplugusg4-abc", "nonce": 7, "nc": 1})}}
                     self.out = json.dumps(rep).encode()
                     self.parts = [self.out]
 
@@ -374,8 +422,14 @@ class Plug(unittest.TestCase):
         g = Gatt()
         p = W.ShellyBle("AA:BB", connect=lambda mac: g, password="s3cret")
         self.assertEqual(p.status(), {"on": True, "watts": 3})
-        self.assertEqual(sent[-1]["params"]["auth"]["realm"], "shellyplugusg4-abc")
+        auth = sent[-1]["auth"]
+        self.assertEqual(sent[-1]["params"], {"id": 0}, "auth goes in the frame, beside params")
+        self.assertEqual((auth["realm"], auth["nc"]), ("shellyplugusg4-abc", 1), "firmware before 2.0 sends nc")
         self.assertNotIn("s3cret", json.dumps(sent))
+        h = lambda s: hashlib.sha256(s.encode()).hexdigest()  # noqa: E731
+        self.assertEqual(auth["response"], h("%s:7:1:%s:auth:%s" % (h("admin:shellyplugusg4-abc:s3cret"), auth["cnonce"], h("dummy_method:dummy_uri"))))
+        a2 = W.shelly_rpc_auth({"message": json.dumps({"realm": "r", "nonce": "AAAA"})}, "pw", cnonce=5)
+        self.assertEqual(a2["nc"], "00000001", "firmware 2.0+: eight hex digits")
 
     def test_make_power_reads_the_sealed_password(self):
         key = b"k" * 32

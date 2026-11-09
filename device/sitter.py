@@ -50,7 +50,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -654,9 +654,11 @@ def shelly_rpc_auth(err, password, user="admin", cnonce=None):
     except ValueError:
         c = {}
     cnonce = cnonce or int.from_bytes(os.urandom(4), "big")
+    # Firmware before 2.0 sends nc in the challenge (a number); 2.0+ doesn't, and wants 8 hex digits.
+    nc = c["nc"] if "nc" in c else "00000001"
     ha1 = _h("%s:%s:%s" % (user, c.get("realm", ""), password))
-    resp = _h("%s:%s:%s:%s:auth:%s" % (ha1, c.get("nonce", ""), c.get("nc", 1), cnonce, _h("dummy_method:dummy_uri")))
-    return {"realm": c.get("realm", ""), "username": user, "nonce": c.get("nonce", ""), "cnonce": cnonce, "response": resp, "algorithm": "SHA-256"}
+    resp = _h("%s:%s:%s:%s:auth:%s" % (ha1, c.get("nonce", ""), nc, cnonce, _h("dummy_method:dummy_uri")))
+    return {"realm": c.get("realm", ""), "username": user, "nonce": c.get("nonce", ""), "cnonce": cnonce, "nc": nc, "response": resp, "algorithm": "SHA-256"}
 
 
 def find_shelly(mac, subnet=None, probe=None, timeout=0.5, run=subprocess.run):
@@ -755,9 +757,12 @@ class ShellyBle(ShellyHttp):
     def __init__(self, mac, connect=None, chunk=180, password=None):
         self.mac, self.connect, self.chunk, self._id, self.password = mac, connect or bleak_connect, chunk, 0, password
 
-    def rpc(self, method, **params):
+    def rpc(self, method, _auth=None, **params):
         self._id += 1
-        req = json.dumps({"id": self._id, "src": "housesitter", "method": method, "params": params}).encode("utf-8")
+        frame = {"id": self._id, "src": "housesitter", "method": method, "params": params}
+        if _auth:
+            frame["auth"] = _auth  # in the request frame, beside params (Shelly's Gen2 authentication docs)
+        req = json.dumps(frame).encode("utf-8")
         with self.connect(self.mac) as g:
             g.write(SHELLY_BLE["tx_ctl"], len(req).to_bytes(4, "big"))
             for i in range(0, len(req), self.chunk):
@@ -771,8 +776,8 @@ class ShellyBle(ShellyHttp):
                 buf += part
         reply = json.loads(buf.decode("utf-8"))
         err = reply.get("error")
-        if err and err.get("code") == 401 and self.password and "auth" not in params:
-            return self.rpc(method, auth=shelly_rpc_auth(err, self.password), **params)
+        if err and err.get("code") == 401 and self.password and _auth is None:
+            return self.rpc(method, _auth=shelly_rpc_auth(err, self.password), **params)
         if err:
             raise RuntimeError("plug: %s" % err.get("message", err))
         return reply.get("result", {})
@@ -1727,8 +1732,15 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
         # Once a boot: it is waiting at a password screen it may not type at, so it tells you now rather than after
         # the rules' FileVault wait. The rules then count this message as the incident's first.
         name = cfg.get("name", "your Mac")
+        why = b2.get("stuck", "").replace("<mac>", name)
+        if obs.get("prompt_visible") or obs.get("grid"):
+            # It knows this screen, and it isn't FileVault: never suggest teaching it as FileVault.
+            fix = "If it's you who locked it, nothing to do. To unlock it now: housesitter unlock %s" % name
+        else:
+            fix = ("Look first: housesitter look %s. Only if it is the FileVault screen of a restart (it says FileVault, or it came straight after a restart with no login since), teach it: housesitter learn-prompt %s --i-see-the-field --filevault. "
+                   "A lock screen or login window is taught without --filevault." % (name, name))
         try:
-            sent = notify(cfg, "%s is waiting at a password screen" % name, "%s. Seen by its housesitter just now. To teach it your FileVault screen: housesitter learn-prompt %s --i-see-the-field --filevault, while you can see the field." % (b2.get("stuck", "").replace("<mac>", name)[:1].upper() + b2.get("stuck", "").replace("<mac>", name)[1:], name))
+            sent = notify(cfg, "%s is waiting at a password screen" % name, "%s. Seen by its housesitter just now. %s" % (why[:1].upper() + why[1:], fix))
         except Exception as e:  # noqa: BLE001
             sent = "failed: %s" % str(e)[:120]
         b2["told_at"] = now
@@ -2281,7 +2293,10 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
             and ((pr.get("visible") and pr.get("kind") == "lock") or (pr.get("grid") and not pr.get("visible")))):
         # unlock_lock_screen allows it right now (true, or an agent's want-desktop request stands): from the lock
         # screen or the list of users to the desktop, through every gate.
-        res = unlock_steps(cfg, kvmd, st, now, "the lock screen, and %s" % ("an agent wants the desktop" if desktop_wanted(now) else "unlock_lock_screen is on"), "lock-watch", log)
+        try:
+            res = unlock_steps(cfg, kvmd, st, now, "the lock screen, and %s" % ("an agent wants the desktop" if desktop_wanted(now) else "unlock_lock_screen is on"), "lock-watch", log)
+        except Exception as e:  # noqa: BLE001  (a frame or a click failed: the rules below still run)
+            res = "failed: %s" % str(e)[:160]
         log("lock-watch: %s" % res)
         obs["lock_watch"] = res[:200]
         if "desktop is back" in res or res.startswith("already"):
@@ -2464,6 +2479,9 @@ def main(argv):
     if argv[:1] == ["once"]:
         print(json.dumps(once(cfg, kvmd, power, log, gh=gh)))
         return 0
+    if argv[:1] == ["learn-prompt"] and "--grid" in argv and "--filevault" in argv:
+        print("learn-prompt: --grid and --filevault are two different lessons: a list of users is only ever clicked, never typed into. Teach each on its own", file=sys.stderr)
+        return 2
     if argv[:1] == ["learn-prompt"]:
         # An operator looking at the KVM's own picture, with the password field on it, teaches the sitter that screen:
         # three frames a few seconds apart, so a moving wallpaper drops out and only the prompt's own pixels stay.

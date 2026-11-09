@@ -220,6 +220,7 @@ async function main() {
   if (cmd === 'learn-prompt') {
     if (!flag('--i-see-the-field')) { say(`Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field (or, with --grid, the login window's list of users) on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`); return 2; }
     let grid = '';
+    if (flag('--grid') && flag('--filevault')) { say('--grid and --filevault are two different lessons: a list of users is only ever clicked, never typed into. Teach each on its own.'); return 2; }
     if (flag('--grid')) {
       const i = args.indexOf('--grid');
       const [gx, gy] = [Number(args[i + 1]), Number(args[i + 2])];
