@@ -1994,17 +1994,17 @@ class NpuClock:
         if self.proc:
             try:
                 self.proc.kill()  # its own PID, from Popen
-                self.proc.wait(timeout=5)
+                self.proc.wait(timeout=0.2)  # a job stuck in the driver can outlive SIGKILL; never wait on it
             except Exception:  # noqa: BLE001
                 pass
         self.proc = None
         return None
 
-    def _line(self):
+    def _line(self, deadline):
         import select
-        r, _, _ = select.select([self.proc.stdout], [], [], self.timeout)
+        r, _, _ = select.select([self.proc.stdout], [], [], max(0, deadline - time.monotonic()))
         if not r:
-            raise TimeoutError("the NPU worker didn't answer in %ds" % self.timeout)
+            raise TimeoutError("the NPU worker didn't answer in %gs" % self.timeout)
         ln = self.proc.stdout.readline()
         if not ln:
             raise RuntimeError("the NPU worker stopped")
@@ -2015,14 +2015,15 @@ class NpuClock:
         if not self.available(now):
             return None
         import struct
+        deadline = time.monotonic() + self.timeout  # one budget for the whole read, start-up included
         try:
             if not self.proc:
                 self.proc = self.popen([sys.executable, os.path.abspath(__file__), "npu-worker", self.model], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                if not self._line().get("ready"):
+                if not self._line(deadline).get("ready"):
                     raise RuntimeError("the NPU worker didn't start")
             self.proc.stdin.write(struct.pack("<I", len(px)) + px)
             self.proc.stdin.flush()
-            rep = self._line()
+            rep = self._line(deadline)
         except Exception as e:  # noqa: BLE001
             return self._off(str(e)[:120], now)
         if "error" in rep:

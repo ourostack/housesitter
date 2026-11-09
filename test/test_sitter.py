@@ -693,6 +693,8 @@ class MutualWatch(unittest.TestCase):
 FAKE_WORKER = r"""
 import json, struct, sys
 mode = sys.argv[1]
+if mode == "slow-start":
+    import time; time.sleep(0.7)
 print(json.dumps({"ready": True, "classes": 66, "steps": 96}), flush=True)
 reads = sys.argv[2:]
 k = 0
@@ -701,7 +703,7 @@ while True:
     if len(h) < 4:
         break
     sys.stdin.buffer.read(struct.unpack("<I", h)[0])
-    if mode == "hang":
+    if mode in ("hang", "slow-start"):
         import time; time.sleep(30)
     if mode == "error":
         print(json.dumps({"error": "the NPU job failed"}), flush=True); continue
@@ -802,6 +804,13 @@ class NpuClockReading(unittest.TestCase):
         self.assertIn("didn't answer", W.NPU.why)
         self.assertFalse(W.NPU.available())
         self.assertIsNone(W.NPU.proc)
+
+    def test_one_budget_covers_start_up_and_the_read(self):
+        W.NPU = fake_npu(mode="slow-start", timeout=1.0)
+        t = time.monotonic()
+        self.assertIsNone(W.NPU.read(b"\x00" * 6144))
+        self.assertLess(time.monotonic() - t, 1.6, "a slow start and a hung job share one timeout")
+        self.assertIn("didn't answer", W.NPU.why)
 
     def test_a_failed_job_is_turned_off_too(self):
         W.NPU = fake_npu(mode="error")
