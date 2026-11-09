@@ -95,7 +95,7 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     const late = ago > every * 2.5;
     scr.push(['THE SCREEN', '']);
     scr.push(['reads as', `${SCREEN[st.obs?.screen] || 'not read'}${st.obs?.eyes === 'frame' ? ' (from a decoded frame)' : ''}`]);
-    if (st.prompt) scr.push(['password field', st.prompt.visible ? `on the picture (${Math.round(st.prompt.match * 100)}% of the taught prompt)` : 'not on the picture']);
+    if (st.prompt) scr.push(['taught prompt', st.prompt.visible ? `on the picture (${Math.round(st.prompt.match * 100)}%)` : 'not on the picture']);
     if (st.obs?.screen === 'desktop') scr.push(['clock', st.obs.clock_ticking === false ? 'NOT moving' : st.obs.clock_ticking ? 'moving' : 'not read yet']);
     scr.push(['looked', `${age(ago)} ago${late ? ' (LATE: is the sitter running?)' : ''}`]);
     if (!late) scr.push(['next look', every - ago > 1000 ? `in ${age(every - ago)}` : 'due now']);

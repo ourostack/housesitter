@@ -13,8 +13,8 @@
 [Set it up](#three-cables-then-one-restart) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
 
 ```sh
-npx github:ourostack/housesitter demo         # the day it was built for, replayed from real frames; no hardware
-npx github:ourostack/housesitter demo night   # a rehearsed bad night, all fakes: two panics, a freeze, a changed password
+npx github:ourostack/housesitter demo         # the day it was built for, real frames
+npx github:ourostack/housesitter demo night   # a rehearsed bad night, all fakes
 ```
 
 <p align="center"><img src="docs/img/restart.gif" alt="A recording from the KVM's own picture of our Mac mini, with a caption bar under each frame. 18:31:55, restarted 43 seconds ago: the FileVault screen, a Golden Gate wallpaper with the clock at 6:31, and nobody home. 18:32:03: not a screen it was taught, so it won't type. 18:32:18: an agent teaches it this screen, once per Mac; amber dots mark the points that stay put across three frames, on the avatar and the name. 18:32:35: the prompt it was taught, on its own picture, zoomed three times. 18:32:39: it typed the password once, by itself, at 18:32:37; dark while it logs in. Then a card: 1 min 44 s from restart to desktop, nobody at the Mac, including 20 s to teach it the FileVault screen, once." width="100%"></p>
@@ -35,7 +35,7 @@ So housesitter types only where it sees the password prompt on its own picture, 
 
 ## housesitter doctor
 
-<p align="center"><img src="docs/img/doctor.png" alt="housesitter doctor mini --private, with the gradient pixel wordmark. The screen reads as a desktop from a decoded frame, the password field not on the picture, the clock moving, looked 15 seconds ago, next look in 45 seconds, the Mac answering. The Mac is up. The KVM is a GL.iNet Comet on kvmd 4.82 over the home LAN, keyboard online, HDMI 2560x1440. No password on this sitter, so it never types; the prompt is taught. 2 of 2 tries left before it stops, 3 of 3 this hour; no plug, so a frozen Mac is reported, never cycled. No incident seen by this sitter. Nowhere to tell you, and no heartbeat. Three things to do." width="100%"></p>
+<p align="center"><img src="docs/img/doctor.png" alt="housesitter doctor mini --private, with the gradient pixel wordmark. The screen reads as a desktop from a decoded frame, the taught prompt not on the picture, the clock moving, looked 15 seconds ago, next look in 45 seconds, the Mac answering. The Mac is up. The KVM is a GL.iNet Comet on kvmd 4.82 over the home LAN, keyboard online, HDMI 2560x1440. No password on this sitter, so it never types; the prompt is taught. 2 of 2 tries left before it stops, 3 of 3 this hour; no plug, so a frozen Mac is reported, never cycled. No incident seen by this sitter. Nowhere to tell you, and no heartbeat. Three things to do." width="100%"></p>
 
 *The data of a real `housesitter doctor` run against our mini and its Comet, a minute after that restart, drawn with `--private` so my desktop stays out. This sitter ran watch-only from a scratch folder on the KVM, so it truthfully has no password and nowhere to tell us: its three things to do.*
 

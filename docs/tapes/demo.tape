@@ -14,6 +14,14 @@ Set WindowBar Colorful
 
 Hide
 Type `alias housesitter="node $PWD/bin/housesitter.mjs"; cd docs/tapes; clear` Enter
+Type "housesitter demo --fast" Enter
+Sleep 2s
+Show
+# The first frame is the whole day, so a paused GIF (reduced motion) still shows it; then the replay itself.
+Sleep 3s
+Hide
+Type "clear" Enter
+Sleep 300ms
 Show
 
 Sleep 500ms
