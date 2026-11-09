@@ -11,6 +11,7 @@
 //       "unlock_lock_screen": false,                              // or "on_request" (an agent's want-desktop) or true
 //       "power":  { "kind": "shelly", "url": "http://192.168.1.60", "mac": "…", "auth": true },  // housesitter plug <mac> adopt
 //       "plug_password": "keychain:housesitter/studio-plug",      // made by plug adopt; or shelly-ble, fingerbot, command
+//       "health": { "kind": "json_age", "url": "https://…/heartbeat.json", "field": "at", "max_age_min": 3 },  // or { "host", "port" }
 //       "notify": { "kind": "ntfy", "url": "https://ntfy.sh/<your topic>", "email": "you@example.com" },  // or webhook; email needs an ntfy.sh account token
 //       "heartbeat": { "url": "https://hc-ping.com/<uuid>" },     // a dead man's switch, pinged every look
 //       "outbox": { "gist": "…", "inbox": "…", "token": "keychain:housesitter/studio-outbox" },

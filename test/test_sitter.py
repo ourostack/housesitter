@@ -502,6 +502,66 @@ class NotifyEmail(unittest.TestCase):
         self.assertIn("ntfy", W.SECRET_NAMES)
 
 
+class JsonAgeProbe(unittest.TestCase):
+    """A health probe that reads a heartbeat the Mac keeps rewriting (a secret gist, say) and counts the Mac up while
+    its timestamp is fresh. Unreachable is unknown, never down."""
+
+    NOW = 1794212400000  # 2026-11-09T08:20:00Z
+
+    def opener(self, doc=None, raise_=None):
+        seen = []
+
+        class R:
+            def __init__(s, body):
+                s.body = body
+            def read(s, n=-1): return s.body
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+
+        def op(req, timeout=5):
+            seen.append(req)
+            if raise_:
+                raise raise_
+            return R(json.dumps(doc).encode() if not isinstance(doc, bytes) else doc)
+        op.seen = seen
+        return op
+
+    H = {"kind": "json_age", "url": "https://gist.example/raw/mac.json", "field": "at", "max_age_min": 3}
+
+    def test_fresh_stale_and_ages(self):
+        self.assertTrue(W.tcp_answers(self.H, opener=self.opener({"at": "2026-11-09T08:18:30.049Z"}), now=self.NOW))
+        self.assertEqual(W.LAST_PROBE["age_min"], 1.5)
+        self.assertFalse(W.tcp_answers(self.H, opener=self.opener({"at": "2026-11-09T08:10:57Z"}), now=self.NOW))
+        self.assertEqual(W.LAST_PROBE["age_min"], 9.1)
+
+    def test_unreachable_or_unreadable_is_unknown_not_down(self):
+        import urllib.error as ue
+        self.assertIsNone(W.tcp_answers(self.H, opener=self.opener(raise_=ue.URLError("no route")), now=self.NOW))
+        self.assertIsNone(W.tcp_answers(self.H, opener=self.opener(b"<html>"), now=self.NOW))
+        self.assertIsNone(W.tcp_answers(self.H, opener=self.opener({"other": 1}), now=self.NOW))
+        self.assertNotIn("gist.example", json.dumps(W.LAST_PROBE), "the URL may be a secret: never in what the sitter reports")
+
+    def test_nested_fields_epoch_numbers_and_offsets(self):
+        h = dict(self.H, field="beat.at")
+        self.assertTrue(W.tcp_answers(h, opener=self.opener({"beat": {"at": self.NOW // 1000 - 60}}), now=self.NOW))
+        self.assertTrue(W.tcp_answers(h, opener=self.opener({"beat": {"at": self.NOW - 60000}}), now=self.NOW))
+        self.assertTrue(W.tcp_answers(h, opener=self.opener({"beat": {"at": "2026-11-09T00:19:00-08:00"}}), now=self.NOW))
+        self.assertIsNone(W.parse_when("2026-11-09T08:19:00"), "a time without a zone is refused, not guessed")
+        self.assertIsNone(W.parse_when(True))
+
+    def test_cache_buster_and_threshold(self):
+        op = self.opener({"at": "2026-11-09T08:15:00Z"})
+        self.assertTrue(W.tcp_answers(dict(self.H, bust_cache=True, max_age_min=12), opener=op, now=self.NOW))
+        self.assertTrue(op.seen[0].full_url.endswith("?hs=%d" % (self.NOW // 1000)))
+        self.assertFalse(W.tcp_answers(self.H, opener=self.opener({"at": "2026-11-09T08:15:00Z"}), now=self.NOW))
+
+    def test_rules_a_stale_heartbeat_with_a_moving_clock_is_never_hung(self):
+        obs = {"answers": False, "beat_min": None, "presence": None, "screen": "desktop", "clock_ticking": True, "video": True, "arp": True, "heartbeat_age_min": 9.1}
+        self.assertEqual(W.raw_state(obs), "degraded")
+        self.assertEqual(W.raw_state(dict(obs, answers=True)), "healthy")
+        self.assertIn("its heartbeat is 9.1 min old", W.plain_signs(obs))
+
+
 class Heartbeat(unittest.TestCase):
     def test_pings_and_fails(self):
         urls = []
