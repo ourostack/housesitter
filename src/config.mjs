@@ -8,7 +8,9 @@
 //                   "ssh_key": "~/.ssh/…",  "sitter_home": "/etc/kvmd/user/housesitter" },   // both optional
 //       "mac_password": "keychain:housesitter/studio-mac",        // copied once to the sitter, sealed there
 //       "user_names": ["Ada"],                                    // what the FileVault screen shows, to read it
-//       "power":  { "kind": "shelly", "url": "http://192.168.1.60" },   // or shelly-ble, fingerbot, command, none
+//       "unlock_lock_screen": false,                              // or "on_request" (an agent's want-desktop) or true
+//       "power":  { "kind": "shelly", "url": "http://192.168.1.60", "mac": "…", "auth": true },  // housesitter plug <mac> adopt
+//       "plug_password": "keychain:housesitter/studio-plug",      // made by plug adopt; or shelly-ble, fingerbot, command
 //       "notify": { "kind": "ntfy", "url": "https://ntfy.sh/<your topic>" },  // or webhook
 //       "heartbeat": { "url": "https://hc-ping.com/<uuid>" },     // a dead man's switch, pinged every look
 //       "outbox": { "gist": "…", "inbox": "…", "token": "keychain:housesitter/studio-outbox" },

@@ -33,7 +33,10 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
   else {
     kItems.push({ dot: 'ok', text: `${kvm.model || 'kvmd'}${kvm.version ? ` · kvmd ${kvm.version}` : ''} · via ${String(kvm.via).replace(' (fallback)', '')}` });
     const v = kvm.video || {};
-    kItems.push({ dot: kvm.hid?.keyboard_online && v.online ? 'ok' : 'warn', text: `keyboard ${kvm.hid?.keyboard_online ? 'online' : 'OFFLINE'} · HDMI ${v.online ? v.resolution : 'no signal'}` });
+    // GLKVM says "streamer": null while nobody is watching; the sitter reads its HDMI receiver directly.
+    const hdmi = v.online ? v.resolution : v.online == null && st?.obs?.hdmi ? `${st.obs.hdmi.replace('x', '×')} (read by the sitter; no viewer open)` : 'no signal';
+    const seen = v.online || (v.online == null && st?.obs?.hdmi);
+    kItems.push({ dot: kvm.hid?.keyboard_online && seen ? 'ok' : 'warn', text: `keyboard ${kvm.hid?.keyboard_online ? 'online' : 'OFFLINE'} · HDMI ${hdmi}` });
   }
   if (mac.kvm && !mac.kvm.tls_sha256) kItems.push({ dot: 'warn', text: 'its certificate is not pinned' });
   sec.push({ label: 'THE KVM', items: kItems });
@@ -47,8 +50,19 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     else if (st.password === 'trial') pItems.push({ dot: 'warn', text: 'one supervised try is armed: restart the Mac and watch' });
     else { pItems.push({ dot: 'off', text: 'unverified, so never typed' }); todo.push({ cmd: `housesitter unlock ${name} --trial`, why: 'arm one supervised try, then restart and watch' }); }
     const pr = st.prompt;
-    if (pr) pItems.push({ dot: pr.taught ? 'ok' : 'off', text: pr.taught ? `taught the password prompt (${pr.taught} reference${pr.taught > 1 ? 's' : ''})` : 'not taught the password prompt yet' });
-    if (pr && !pr.taught) todo.push({ cmd: `housesitter learn-prompt ${name} --i-see-the-field --filevault`, why: 'at the FileVault screen, during one restart you watch' });
+    const ls = st.lessons || pr?.lessons;
+    if (ls) {
+      const have = [['FileVault', ls.boot], ['lock screen', ls.lock], ['list of users', ls.grid]].filter(([, n]) => n).map(([k]) => k);
+      pItems.push({ dot: ls.boot ? 'ok' : 'off', text: have.length ? `taught: ${have.join(' · ')}` : 'not taught any screen yet' });
+      if (!ls.boot) todo.push({ cmd: `housesitter learn-prompt ${name} --i-see-the-field --filevault`, why: 'at the FileVault screen, during one restart you watch' });
+    } else if (pr) {
+      pItems.push({ dot: pr.taught ? 'ok' : 'off', text: pr.taught ? `taught the password prompt (${pr.taught} reference${pr.taught > 1 ? 's' : ''})` : 'not taught the password prompt yet' });
+      if (!pr.taught) todo.push({ cmd: `housesitter learn-prompt ${name} --i-see-the-field --filevault`, why: 'at the FileVault screen, during one restart you watch' });
+    }
+    if ('lock_policy' in st) {
+      const lp = st.lock_policy;
+      pItems.push({ dot: lp ? 'ok' : 'off', text: lp === true ? 'lock screen: unlocks any lock screen it sees (unlock_lock_screen: true)' : lp === 'on_request' ? `lock screen: unlocks it when an agent asks (want-desktop)${st.desktop_wanted ? '; a request stands now' : ''}` : 'lock screen: stays locked unless you ask over SSH' });
+    }
   }
   if (pItems.length) sec.push({ label: 'PASSWORD', items: pItems });
 
@@ -60,12 +74,15 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     const [u, uMax] = b.unlock_hour;
     const [ub, ubMax] = b.unlock_since_desktop;
     bItems.push({ dot: b.blocked ? 'warn' : 'ok', text: `unlock  ${Math.max(0, ubMax - ub)} of ${ubMax} tries left before it stops (resets at the desktop) · ${Math.max(0, uMax - u)} of ${uMax} left this hour${b.unlock_hour_frees_at ? ` (one back at ${clock(b.unlock_hour_frees_at, now)})` : ''}` });
+    if (b.unlock_test_hour?.[0]) bItems.push({ dot: 'ok', text: `tests   ${Math.max(0, b.unlock_test_hour[1] - b.unlock_test_hour[0])} of ${b.unlock_test_hour[1]} attended-test unlocks left this hour (their own budget)` });
     if (b.blocked) bItems.push({ dot: 'warn', text: `stopped: ${b.blocked}` });
   }
   if (st) {
     if (can.plug || can.fingerbot) {
       const [c, cMax] = b?.cycles_day || [0, 3];
-      bItems.push({ dot: 'ok', text: `power   ${Math.max(0, cMax - c)} of ${cMax} cycles left today · only a desktop frozen 5 min, then 3 more looks, while nothing answers` });
+      const o = st.obs || {};
+      const plug = o.plug_on != null ? ` · plug ${o.plug_on ? 'on' : 'OFF'}${o.watts != null ? `, ${Math.round(o.watts * 10) / 10} W` : ''}` : o.plug_error ? ` · plug NOT read: ${String(o.plug_error).slice(0, 40)}` : '';
+      bItems.push({ dot: o.plug_error ? 'warn' : 'ok', text: `power   ${Math.max(0, cMax - c)} of ${cMax} cycles left today${plug} · only a desktop frozen 5 min, then 3 more looks, while nothing answers` });
     } else bItems.push({ dot: 'off', text: 'power   no plug: a frozen Mac is reported, never cycled' });
   }
   if (bItems.length) sec.push({ label: 'BUDGETS', items: bItems });
@@ -99,7 +116,8 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     if (st.obs?.screen === 'desktop') scr.push(['clock', st.obs.clock_ticking === false ? 'NOT moving' : st.obs.clock_ticking ? 'moving' : 'not read yet']);
     scr.push(['looked', `${age(ago)} ago${late ? ' (LATE: is the sitter running?)' : ''}`]);
     if (!late) scr.push(['next look', every - ago > 1000 ? `in ${age(every - ago)}` : 'due now']);
-    scr.push(['answers', st.obs?.answers === true ? 'yes, on the network' : st.obs?.answers === false ? 'NO' : 'no probe set']);
+    const probeless = st.probes && !st.probes.health && !st.probes.heartbeat;
+    scr.push(['answers', st.obs?.answers === true ? 'yes, on the network' : st.obs?.answers === false ? 'NO' : probeless ? 'no probe set: "up" is a desktop whose clock moves' : 'no probe set']);
   }
   return { name, glimpse: st?.glimpse || null, screen: scr, sections: sec, todo, sitter: st?.sitter, via: sit?.via };
 }

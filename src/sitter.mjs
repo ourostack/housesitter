@@ -21,7 +21,7 @@ export function kvmHost(mac) {
 
 // Root SSH to the KVM with housesitter's own key. Returns run(cmd, input) -> { status, stdout, stderr }.
 export function sshRunner(name, address, { run = spawnSync, home = os.homedir(), key = null } = {}) {
-  const args = ['-i', key ? key.replace(/^~(?=\/)/, home) : sshKeyPath(name, home), '-o', `UserKnownHostsFile=${knownHostsPath(name, home)}`, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8'];
+  const args = ['-i', key ? key.replace(/^~(?=\/)/, home) : sshKeyPath(name, home), '-o', `UserKnownHostsFile=${knownHostsPath(name, home)}`, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'LogLevel=ERROR'];
   return async (cmd, input) => {
     const r = run('/usr/bin/ssh', [...args, `root@${address}`, cmd], { encoding: 'utf8', input: input ?? '', timeout: 120000 });
     return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
@@ -52,7 +52,7 @@ export function sitterClient(mac, { deps = {} } = {}) {
     routes.push({
       via: 'outbox (GitHub)',
       status: () => O.readStatus(mac.name, mac.outbox, gh),
-      async op(op, args = {}) { const { files, ...r } = await O.send(mac.name, mac.outbox, gh, op, args, { timeoutMs: op === 'unlock' ? 45000 : 20000, ...(deps.sendOpts || {}) }); return { ...r, files }; },
+      async op(op, args = {}) { const { files, ...r } = await O.send(mac.name, mac.outbox, gh, op, args, { timeoutMs: op === 'unlock' || op === 'want_desktop' ? 75000 : 20000, ...(deps.sendOpts || {}) }); return { ...r, files }; },
     });
   }
   return {

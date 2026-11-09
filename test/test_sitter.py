@@ -368,8 +368,8 @@ class Power(unittest.TestCase):
             def __exit__(self, *a): return False
             def read(self): return self.body
 
-        def opener(url, timeout=5):
-            urls.append(url)
+        def opener(req, timeout=5):
+            urls.append(getattr(req, "full_url", req))
             return R(b'{"output": true, "apower": 17.5}')
         p = W.ShellyHttp("http://10.0.0.9/", opener=opener)
         self.assertEqual(p.status(), {"on": True, "watts": 17.5})
@@ -1117,7 +1117,7 @@ class Look(unittest.TestCase):
         self.assertEqual(out["from"], "shot.png")
         self.assertEqual(out["size"], [w, h])
         self.assertEqual(out["reads_as"], "prompt_like")
-        self.assertEqual(out["prompt"], {"taught": 0, "match": 0.0, "visible": False, "kind": None})
+        self.assertEqual(out["prompt"], {"taught": 0, "match": 0.0, "visible": False, "kind": None, "grid": False, "click": None, "lessons": {"boot": 0, "lock": 0, "grid": 0}})
         self.assertEqual(out["glimpse"]["w"], 40)
         self.assertEqual(calls[0][0], "ffmpeg")
         self.assertEqual(W.look(NoKeys(), "x.png", run=lambda c, **k: type("R", (), {"stdout": b""})())["reads_as"], "none")
@@ -1327,7 +1327,7 @@ class AgentsHands(unittest.TestCase):
         finally:
             W.load_secret = saved
         self.assertFalse(r["ok"], r)
-        self.assertIn("no password prompt it was taught", r["result"])
+        self.assertIn("blind unlock is unsupported", r["result"])
         self.assertFalse([p for p, _ in k.posts if "print" in p or "Enter" in p], "a lone Shift to wake the screen, nothing typed")
 
 
@@ -1362,8 +1362,8 @@ class OnlyTheBootLesson(unittest.TestCase):
             class K:
                 def json(self, p):
                     raise RuntimeError("no OCR on this KVM")
-            self.assertFalse(W.see_field({}, K(), need_boot=True)[0])
-            self.assertTrue(W.see_field({}, K())[0], "asked for over SSH, the lock screen is fine")
+            self.assertFalse(W.see_field({}, K(), kinds=("boot",))[0])
+            self.assertTrue(W.see_field({}, K(), kinds=W.kinds_for({}, "request"))[0], "asked for over SSH, the lock screen is fine")
         finally:
             W.frame_raw, W.frame_features = saved
 
