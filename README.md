@@ -21,8 +21,6 @@ npx github:ourostack/housesitter demo night   # a rehearsed bad night, all fakes
 
 *Our Mac mini, restarted on 8 November with nobody at it, filmed by the KVM through the Mac's own HDMI port. It had only been taught our lock screen, so at FileVault it refused at first. An agent watching the KVM's picture taught it that screen from three frames, a one-time step, and it typed by itself: 1 minute 44 seconds from restart to desktop. Only the FileVault frames are shown.*
 
-`demo night`, the rehearsal, ends: *3 incidents overnight: 2 fixed by itself (4 min, 12 min), 1 needed you, and it said so once.* That one message read: *studio is stuck at FileVault: the password was wrong twice. Fix: housesitter secret studio mac-password, then housesitter adopt studio.*
-
 ## Why I built it
 
 If your agents live on a Mac with FileVault, every restart (an update, a power blip, a panic) stops at the password screen until someone types. A smart plug can't type. A KVM can, if you're awake. Here's how we found out.
@@ -52,6 +50,14 @@ One screen: a glimpse of what the KVM sees (40 by 22 pixels of its own picture, 
 <p align="center"><img src="docs/img/demo.gif" alt="A terminal recording. housesitter demo draws the day down the screen: pixel glimpses of real KVM frames on the left, and beside each what the sitter sees and does. 10:32, no password field: it won't type, and tells you once. 17:59 and 18:15, desktops, not shown. 18:07, the taught lock-screen prompt at 100 then 93 percent: it waits until you ask. 18:31 to 18:32:56, from the KVM's log: dark, keyboard back, FileVault, the field on its picture, typed once, the desktop. Then housesitter look reads a real frame of our lock screen: it sees the prompt it was taught, 100 percent, and may type once its password is verified." width="100%"></p>
 
 *Recorded by [vhs](https://github.com/charmbracelet/vhs) in CI from [`docs/tapes/demo.tape`](docs/tapes/demo.tape), never by hand: `housesitter demo`, then `housesitter look` on a real frame of our lock screen.*
+
+## A bad night, rehearsed
+
+`housesitter demo night` runs the real rules and the real client against a pretend Mac and a pretend KVM: two panics, a freeze and a password someone changed without telling the sitter. Everything in it is a fake, and says so.
+
+<p align="center"><img src="docs/img/night.gif" alt="A terminal recording of housesitter demo night. 03:12 a kernel panic; the sitter sees FileVault, types its sealed copy, and the Mac is back by itself 4 minutes after it went down. 04:31 the Mac freezes; at 04:36 the clock hasn't moved in 5 minutes and nothing answers; three more looks over two minutes; 04:38 the smart plug goes off for 10 seconds; back by itself 12 minutes after. 05:41 another panic after the password was changed; two tries fail, and at 05:51 one message to your phone: studio is stuck at FileVault, the password was wrong twice, and the fix. 3 incidents overnight: 2 fixed by itself, 1 needed you, and it said so once." width="100%"></p>
+
+*Recorded by vhs in CI from [`docs/tapes/night.tape`](docs/tapes/night.tape). The one message it sent read: "studio is stuck at FileVault: the password was wrong twice. Fix: housesitter secret studio mac-password, then housesitter adopt studio."*
 
 ## Why not just…
 
