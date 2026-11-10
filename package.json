@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/housesitter",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Your agents' Mac, looked after while you're away: a cheap IP-KVM unlocks FileVault after a panic, power-cycles a hang, gives agents eyes and hands before login, and tells you only when it can't.",
   "type": "module",
   "bin": { "housesitter": "bin/housesitter.mjs" },
