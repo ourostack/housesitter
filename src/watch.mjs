@@ -27,6 +27,31 @@ export function fresh(answer, now) {
   return age <= Math.max(3 * every, 180000) ? { ok: true, age } : { ok: false, why: `the sitter's last look was ${Math.round(age / 60000)} min ago` };
 }
 
+// Routes to the sitter, tried in order: SSH first (LAN or tailnet), then the outbox gists, so a Mac away from the KVM's
+// network still hears it. Each route is { via, ask(a) }; the answer says which one answered.
+export function askRoutes(routes) {
+  return async (a) => {
+    const errors = [];
+    for (const r of routes) {
+      try { return { ...(await r.ask(a)), via: r.via }; } catch (e) { errors.push(`${r.via}: ${String(e.message || e).slice(0, 160)}`); }
+    }
+    throw new Error(errors.join('; ') || 'no route to the sitter');
+  };
+}
+
+// The outbox route: the status the sitter publishes to its outbox gist, read directly; only if that copy is stale, one
+// status request through the inbox. (watch_check stays SSH-only on the sitter, so over the outbox the emails this Mac
+// sent are handed over later, at the next SSH answer.)
+export function outboxAsk({ readStatus, op, now = Date.now }) {
+  return async () => {
+    const st = await readStatus();
+    if (st?.at && fresh({ status: st }, now()).ok) return { status: st };
+    const r = await op('status');
+    if (!r?.ok) throw new Error(`${r?.code || 'failed'} ${typeof r?.result === 'string' ? r.result : ''}`.trim());
+    return { status: r.result };
+  };
+}
+
 // ntfy, as the sitter sends it (device/sitter.py notify): the email and the account token ride together, and a refused
 // email never costs the push.
 export async function sendNtfy(n, title, body, { email = null, token = null, fetchFn = fetch } = {}) {
@@ -72,6 +97,7 @@ export async function watchOnce({ name, by, notify, ask, send, state = {}, now =
   if (f.ok) {
     s.last_ok_at = now;
     s.last_error = null;
+    if (answer.via) s.last_via = answer.via;
     for (const e of s.sent) if (pending.some((p) => p.at === e.at)) e.reported = true;
     if (answer.emails_today != null) { s.sitter_emails_today = answer.emails_today; s.sitter_emails_today_at = now; }
     let said = null;

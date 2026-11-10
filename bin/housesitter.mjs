@@ -15,6 +15,7 @@ import { connect, summarise } from '../src/kvmd.mjs';
 import * as Peer from '../src/peer.mjs';
 import * as Plug from '../src/plug.mjs';
 import * as Watch from '../src/watch.mjs';
+import * as O from '../src/outbox.mjs';
 import os from 'node:os';
 import * as R from '../src/reins.mjs';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
@@ -137,7 +138,7 @@ async function watchKvm(mac) {
   const store = secretStore();
   const sh = sitterSsh(mac);
   const by = mac.watch?.by || os.hostname().replace(/\.local$/, '');
-  const ask = async (a) => {
+  const sshAsk = async (a) => {
     const r = await sh(onSitter(mac, `do watch_check '${JSON.stringify(a).replace(/'/g, "'\\''")}'`));
     const j = JSON.parse(String(r.stdout).trim().split('\n').at(-1) || '{}');
     if (!j.ok && /unknown op 'watch_check'/.test(j.result || '')) {
@@ -149,14 +150,20 @@ async function watchKvm(mac) {
     if (!j.ok) throw new Error(j.result || `ssh exit ${r.status}`);
     return j.result;
   };
+  const routes = [{ via: 'ssh', ask: sshAsk }];
+  if (mac.outbox?.gist) {
+    const gh = O.gistClient({ token: () => (mac.outbox.token && store.get(mac.outbox.token)) || O.ghCliToken() });
+    routes.push({ via: 'outbox', ask: Watch.outboxAsk({ readStatus: () => O.readStatus(name, mac.outbox, gh), op: (op) => O.send(name, mac.outbox, gh, op, {}, { timeoutMs: 25000 }) }) });
+  }
+  const ask = Watch.askRoutes(routes);
   const n = mac.notify || {};
   const send = (title, body, { email }) => Watch.sendNtfy(n, title, body, { email, token: email ? store.get(n.token || defaultRefs(name).ntfy) : null });
   const tick = async () => {
     const out = await Watch.watchOnce({ name, by, notify: n, ask, send, state: Watch.loadState(sp), now: Date.now(), silentMin, test });
     fs.mkdirSync(path.dirname(sp), { recursive: true });
     fs.writeFileSync(sp, JSON.stringify(out.state, null, 2));
-    const line = `${new Date().toISOString()} ${out.ok ? 'ok' : `silent (${out.why})`}${out.said ? `; said ${out.said}: ${out.state.last_result}` : ''}`;
-    json ? emit({ ok: out.ok, said: out.said, why: out.why || null }) : say(line);
+    const line = `${new Date().toISOString()} ${out.ok ? `ok via ${out.state.last_via || 'ssh'}` : `silent (${out.why})`}${out.said ? `; said ${out.said}: ${out.state.last_result}` : ''}`;
+    json ? emit({ ok: out.ok, via: out.ok ? out.state.last_via || 'ssh' : null, said: out.said, why: out.why || null }) : say(line);
     return out;
   };
   if (flag('--once')) { await tick(); return 0; }
