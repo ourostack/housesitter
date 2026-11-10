@@ -198,6 +198,12 @@ The GitHub outbox turns a GitHub account into a keyboard for the Mac, so it's of
 
 Transports are pluggable (`registerTransport`), so another KVM or relay can slot in.
 
+## Housesitter, the agent
+
+The sitter is deterministic on purpose. For judgment around it, [plugins/housesitter](plugins/housesitter/) makes Housesitter an [Ouro](https://github.com/ourostack/ouroboros) agent living on the KVM itself: MCP tools for the sitter's eyes and hands (`sitter_status`, `sitter_look`, `sitter_screenshot`, `sitter_unlock`, `sitter_click` and the rest, each passing the sitter's reply through as it is), `kvm_health` for the KVM's own memory and the sitter's heartbeat, and a watcher that wakes the agent with `ouro event submit` when the sitter's state changes or the Mac's heartbeat goes stale. Python 3 standard library only, like the sitter.
+
+Housesitter and the agent on the Mac (Ouroboros) talk in free text through two secret gists. On the Mac: `housesitter peer send <text> [--re <id>]` and `housesitter peer inbox`; on the KVM, the `peer_send` and `peer_inbox` tools. Install, environment and the message format: [the plugin's README](plugins/housesitter/README.md).
+
 ## Hardware
 
 **What to buy** (prices approximate, November 2026):
@@ -260,7 +266,7 @@ A stale heartbeat only ever counts against the Mac alongside a stopped clock: a 
 
 ## What's verified
 
-housesitter is experimental (0.3). Honest status, as of 9 November 2026. "Our watchdog" is the private code in our own setup that housesitter was generalised from; it runs the same rules.
+housesitter is experimental (0.4). Honest status, as of 9 November 2026. "Our watchdog" is the private code in our own setup that housesitter was generalised from; it runs the same rules.
 
 | Part | Status |
 | --- | --- |
@@ -276,9 +282,10 @@ housesitter is experimental (0.3). Honest status, as of 9 November 2026. "Our wa
 | A macOS update | **Not yet tried.** An update can restart more than once; each restart is its own boot with its own two tries, and all of them share three unlocks an hour |
 | A Mac with other displays | **It types only when the prompt is on the KVM's picture.** Our mini has three displays; the KVM now mirrors the main one, so the prompt is on its picture. Without that, blind unlock is unsupported: it tells you instead |
 | Reading the screen with OCR | **English macOS only** ("Enter Password"), and our Comet has no OCR at 2560x1440 |
-| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 271 tests in Node and Python on every push |
+| Rules, adopt, transports, Reins, the plug, demo | **Tested with fakes and real frames**: 305 tests in Node and Python on every push |
 | Who can reach the KVM (home and away) | **Done on real hardware, by housesitter 0.3.2** on 9 November, with the sitter's hash recorded on the KVM: at home our laptop and a Mac on the LAN reached SSH, HTTP and HTTPS; with away applied, neither got an answer over the LAN while the tailnet still did; 94 s later the sitter's own recheck found the rules weren't home and put them back. Nothing public was tried at home, because nothing public can reach our Comet; UDP (NTP, mDNS) isn't filtered ([proof](docs/proof/2026-11-09-ingress/)) |
 | The Mac watching its KVM | **Done on real hardware, by housesitter 0.2.4** on 9 November: our mini's LaunchAgent, with its own watch-only key and its own ntfy token. We stopped only the sitter on the Comet at 01:13:32 PT (kvmd, the Comet and the mini untouched). With `--test --silent-min 2` (the quiet limit cut from 5 minutes to 2 for the test), the mini sent "TEST: mini's KVM is silent" at 01:18:16, 4 min 44 s later, and it reached the owner's HEY Imbox at 01:18:18. We started the sitter at 01:18:44; "TEST: mini's KVM is back" went at 01:19:18 and reached HEY at 01:19:20. Both are in the sitter's ledger, counted against the shared email cap ([the log](https://github.com/ourostack/housesitter/blob/proof/2026-11-09-hardware/docs/proof/2026-11-09-v0.2/watch-kvm-024.txt)). Then reinstalled without `--test` |
+| Housesitter as an Ouro agent (the plugin, the peer link, the watcher) | **Tested with fakes only** (0.4): a fake sitter, a local stand-in for GitHub's gist API and a fake `ouro`. Not yet run on the Comet |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art

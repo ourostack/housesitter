@@ -19,6 +19,10 @@
 - Mutual watch: `housesitter watch-kvm <mac> --install` on the Mac: a LaunchAgent that asks the sitter for its status every minute over SSH (`do watch_check`), or, when SSH can't reach the KVM and an outbox is configured, from the outbox gist (`ok via outbox` in its log), and sends one message after 5 min of silence and one when it's back, sharing the sitter's daily email cap. `doctor` shows "watched by the Mac itself".
 - Messages: ntfy or a webhook; `adopt --notify ntfy --email <address>` also emails one address through an ntfy.sh account (token: `housesitter secret <mac> ntfy-token`; 5 emails a day on a free account). `housesitter alert-test <mac>` sends one real stuck message marked TEST.
 
+## Housesitter, the agent on the KVM
+- [plugins/housesitter](plugins/housesitter/README.md): an Ouro plugin. MCP tools sitter_status, sitter_look, sitter_screenshot, sitter_unlock, sitter_want_desktop, sitter_power_cycle, sitter_power_on, sitter_click, sitter_type, sitter_key, sitter_scroll (each runs `sitter.py do <op>` and returns its reply as is), peer_send, peer_inbox, kvm_health; watch.py wakes the agent with `ouro event submit`; skills/housesitter/SKILL.md.
+- Peer link with the agent on the Mac: `housesitter peer send <text> [--re <id>]`, `housesitter peer inbox [--peek]`. Free text, one gist file per message.
+
 ## Docs
 - [Hardware](docs/hardware.md): wiring, display settings, KVM quirks, power adapters
 - [Security](docs/security.md): the password rules and their limits
@@ -31,3 +35,4 @@
 - src/hands.mjs: the pixel driver and transports
 - src/adopt.mjs: arrival day
 - device/sitter.py: the always-on watcher on the KVM (Python 3 standard library only)
+- src/peer.mjs and plugins/housesitter/peer.py: the two ends of the peer link
