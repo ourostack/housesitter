@@ -153,7 +153,7 @@ async function watchKvm(mac) {
   const routes = [{ via: 'ssh', ask: sshAsk }];
   if (mac.outbox?.gist) {
     const gh = O.gistClient({ token: () => (mac.outbox.token && store.get(mac.outbox.token)) || O.ghCliToken() });
-    routes.push({ via: 'outbox', ask: Watch.outboxAsk({ readStatus: () => O.readStatus(name, mac.outbox, gh), op: (op) => O.send(name, mac.outbox, gh, op, {}, { timeoutMs: 25000 }) }) });
+    routes.push({ via: 'outbox', ask: Watch.outboxAsk({ readStatus: () => O.readStatus(name, mac.outbox, gh), beatMin: mac.outbox.beat_min ?? 10 }) });
   }
   const ask = Watch.askRoutes(routes);
   const n = mac.notify || {};
