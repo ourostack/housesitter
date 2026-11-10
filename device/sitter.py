@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.3"
+VERSION = "0.3.4"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -373,15 +373,24 @@ def is_jpeg(b):
     return isinstance(b, (bytes, bytearray)) and b[:2] == b"\xff\xd8"
 
 
-def snapshot_jpeg(kvmd, query="allow_offline=1"):
+def snapshot_jpeg(kvmd, query="allow_offline=1", frame=None):
+    def snap():
+        # GL-RM1PE V1.7.1 answers HTTP 500 rather than a non-JPEG body while its encoder is on H.264 at 2560x1440
+        # (seen 2026-11-10): either way, there's no JPEG here, so try the next way.
+        try:
+            img = kvmd.get("/streamer/snapshot?%s" % query, timeout=20)
+        except Exception:  # noqa: BLE001
+            return None
+        return img if is_jpeg(img) else None
+
     with StreamWarm(kvmd):
-        img = kvmd.get("/streamer/snapshot?%s" % query, timeout=20)
-        if is_jpeg(img):
+        img = snap()
+        if img:
             return img
         kvmd.post("/streamer/set_params?video_format=1", timeout=15)
         time.sleep(1.5)
-        img = kvmd.get("/streamer/snapshot?%s" % query, timeout=20)
-        if is_jpeg(img):
+        img = snap()
+        if img:
             return img
         # GL-RM1PE V1.7.1 at 2560x1440 stays on H.264 either way (seen 2026-11-08): put the encoder back and decode a
         # keyframe on the device instead. Never change the EDID or the Mac's display mode to get a picture.
@@ -389,7 +398,7 @@ def snapshot_jpeg(kvmd, query="allow_offline=1"):
             kvmd.post("/streamer/set_params?video_format=0", timeout=15)
         except Exception:  # noqa: BLE001
             pass
-    return frame_jpeg(kvmd)
+    return (frame or frame_jpeg)(kvmd)
 
 
 def ocr_text(kvmd, box=None):
@@ -1617,7 +1626,32 @@ def glimpse(yuv, w, h, size=GLIMPSE):
     return {"w": gw, "h": gh, "rgb": base64.b64encode(bytes(out)).decode("ascii")}
 
 
-def frame_jpeg(kvmd, run=subprocess.run):
+def shrink_yuv420(yuv, w, h, width):
+    """A yuv420p frame cut down by a whole factor so it is at most `width` wide (every n-th pixel of every n-th row:
+    the Comet's ffmpeg has no scaler). Returns (frame, w, h); the frame as it is when it already fits."""
+    n = -(-w // max(1, int(width)))
+    if n <= 1:
+        return yuv, w, h
+    nw, nh, cw, ch = w // n // 2 * 2, h // n // 2 * 2, w // 2, h // 2
+    out = bytearray()
+    for r in range(nh):
+        out += yuv[r * n * w:r * n * w + w][::n][:nw]
+    for base in (w * h, w * h + cw * ch):
+        for r in range(nh // 2):
+            out += yuv[base + r * n * cw:base + r * n * cw + cw][::n][:nw // 2]
+    return bytes(out), nw, nh
+
+
+def frame_jpeg(kvmd, run=subprocess.run, width=None):
+    if width:
+        got = frame_raw(kvmd, run=run)
+        if got and LAST_FRAME:
+            yuv, w, h = shrink_yuv420(*LAST_FRAME, width)
+            out = run(["ffmpeg", "-hide_banner", "-loglevel", "quiet", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "%dx%d" % (w, h),
+                       "-i", "-", "-frames:v", "1", "-c:v", "mjpeg", "-strict", "-1", "-q:v", "5", "-f", "image2pipe", "-"],
+                      input=yuv, capture_output=True, timeout=20).stdout
+            if is_jpeg(out):
+                return out
     with StreamWarm(kvmd):
         out = run(["sh", "-c", FRAME_JPEG], capture_output=True, timeout=20).stdout
     if not is_jpeg(out):
@@ -2602,8 +2636,9 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     if op == "look":
         return {"ok": True, "result": once(cfg, kvmd, power, log, now=now)}
     if op == "screenshot":
-        w = int(a.get("width", 1280))
-        jpg = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % max(320, min(w, 1920)))
+        w = max(320, min(int(a.get("width", 1280)), 1920))
+        jpg = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % w,
+                            frame=lambda k: frame_jpeg(k, width=w))
         return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd)}, "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
     if op == "click":
         why = hands_refusal(cfg, kvmd, st)

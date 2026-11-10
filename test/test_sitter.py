@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -323,6 +324,46 @@ class Glkvm(unittest.TestCase):
         finally:
             W.time.sleep = orig
         self.assertEqual(K.posts, ["/streamer/set_params?video_format=1"])
+
+    def test_snapshot_http_500_falls_through_to_the_decoded_keyframe(self):
+        class K:
+            posts = []
+            def get(self, p, timeout=15):
+                raise RuntimeError("kvmd GET /streamer/snapshot -> HTTP 500")
+            def post(self, p, body=None, timeout=60):
+                K.posts.append(p)
+        orig = W.time.sleep
+        W.time.sleep = lambda s: None
+        try:
+            self.assertEqual(W.snapshot_jpeg(K(), frame=lambda k: b"\xff\xd8frame"), b"\xff\xd8frame")
+        finally:
+            W.time.sleep = orig
+        self.assertEqual(K.posts, ["/streamer/set_params?video_format=1", "/streamer/set_params?video_format=0"])
+
+    def test_shrink_yuv420_keeps_every_nth_pixel_and_both_chroma_planes(self):
+        w, h = 8, 4
+        y = bytes(range(w * h)); u = bytes(100 + i for i in range(w * h // 4)); v = bytes(200 + i for i in range(w * h // 4))
+        out, nw, nh = W.shrink_yuv420(y + u + v, w, h, 4)
+        self.assertEqual((nw, nh), (4, 2))
+        self.assertEqual(out[:8], bytes([0, 2, 4, 6, 16, 18, 20, 22]))
+        self.assertEqual(out[8:], bytes([100, 102, 200, 202]))
+        self.assertEqual(len(out), nw * nh * 3 // 2)
+        same = W.shrink_yuv420(y + u + v, w, h, 1920)
+        self.assertEqual(same, (y + u + v, w, h))
+
+    def test_the_decoded_keyframe_is_shrunk_to_the_width_asked(self):
+        w, h = 2560, 1440
+        frame = bytes(w * h * 3 // 2)
+        calls = []
+        def run(cmd, capture_output=True, timeout=20, input=None):
+            calls.append((cmd, input))
+            if cmd[0] == "sh":
+                return types.SimpleNamespace(stdout=frame)
+            return types.SimpleNamespace(stdout=b"\xff\xd8small")
+        self.assertEqual(W.frame_jpeg(object(), run=run, width=1280), b"\xff\xd8small")
+        enc, data = calls[-1]
+        self.assertIn("1280x720", enc)
+        self.assertEqual(len(data), 1280 * 720 * 3 // 2)
 
 
 class Ble(unittest.TestCase):
