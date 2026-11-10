@@ -253,7 +253,7 @@ const watchLog = (dir) => fs.readFileSync(path.join(dir, 'peer-watch.log'), 'utf
 test('peer watch wakes the agent once per new message, marks nothing read and never writes', async () => {
   const { gists, gh, dir, time, p, patches } = await setup();
   const x = fakeExec();
-  const w = peerWatch({ p, dir, agent: 'ouroboros', ouro: '/bin/ouro', bin: '/h/bin/housesitter.mjs', exec: x.exec, clock: () => time.now });
+  const w = peerWatch({ p, dir, agent: 'ouroboros', ouro: '/bin/ouro', bin: '/h/bin/housesitter.mjs', exec: x.exec, clock: () => time.now, probe: async () => true });
   await w.tick();
   assert.equal(x.calls.length, 0);
   const [f1, c1] = hmsg('a1', '2026-11-09T11:59:00Z', 'the Mac is at the login window');
@@ -288,7 +288,7 @@ test('peer watch: a failed ouro msg backs off and retries; a rate-limited read w
     : fetch(url, o));
   const p = peer({ dir, env, fetchFn, clock: () => time.now });
   const x = fakeExec([1]);
-  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', every: 30, exec: x.exec, clock: () => time.now });
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', every: 30, exec: x.exec, clock: () => time.now, probe: async () => true });
   const [f1, c1] = hmsg('b1', '2026-11-09T11:59:00Z', 'hello');
   gists[H_TO_O][f1] = c1;
   await w.tick();
@@ -314,7 +314,7 @@ test('peer watch: a failed ouro msg backs off and retries; a rate-limited read w
   await w.tick();
   assert.equal(x.calls.length, 3);
   assert.match(x.calls[2][4], /latest: again/);
-  const nowhere = peerWatch({ p, dir: fs.mkdtempSync(path.join(scratchRoot, 'peer-')), ouro: null, bin: 'hs', exec: x.exec, clock: () => time.now });
+  const nowhere = peerWatch({ p, dir: fs.mkdtempSync(path.join(scratchRoot, 'peer-')), ouro: null, bin: 'hs', exec: x.exec, clock: () => time.now, probe: async () => true });
   await nowhere.tick();
   assert.equal(x.calls.length, 3);
   await gh.close();
@@ -325,7 +325,7 @@ test('peer watch flushes the agent\'s queue when due, not before', async () => {
   await p.send('first');
   time.now += 60e3;
   await p.send('second');
-  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', exec: fakeExec().exec, clock: () => time.now });
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', exec: fakeExec().exec, clock: () => time.now, probe: async () => true });
   await w.tick();
   assert.equal(patches().length, 1);
   assert.equal(queue().length, 1);
@@ -372,4 +372,48 @@ test('ghCliToken: asks gh for the named login, and falls back to gh\'s active ac
   assert.equal(ghCliToken(run, { user: 'nobody' }), 'active');
   assert.equal(ghCliToken(run), 'active');
   assert.deepEqual(seen, ['auth token --hostname github.com --user arimendelow', 'auth token --hostname github.com --user nobody', 'auth token', 'auth token']);
+});
+
+test('peer watch tells Housesitter after two ticks without the daemon, and once when it answers again', async () => {
+  const { gists, gh, dir, time, p } = await setup();
+  let alive = true;
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', exec: fakeExec().exec, clock: () => time.now, probe: async () => alive, host: 'mini' });
+  const sent = () => Object.values(gists[O_TO_H]).map((c) => JSON.parse(c).text);
+  await w.tick();
+  alive = false;
+  await w.tick();
+  assert.equal(sent().length, 0, 'one missed tick is not news');
+  time.now += 30e3;
+  await w.tick();
+  time.now += 30e3;
+  await w.tick();
+  assert.equal(sent().length, 1);
+  assert.match(sent()[0], /^peer-watch on mini: ouroboros's Ouro daemon on this Mac isn't answering on \/tmp\/ouroboros-daemon\.sock \(since .*\)\. If you want it back, peer_bring_back_ouroboros/);
+  alive = true;
+  time.now += 30e3;
+  await w.tick();
+  assert.equal(sent().length, 2);
+  assert.match(sent()[1], /^peer-watch on mini: ouroboros's daemon answers again \(down since /);
+  await gh.close();
+});
+
+test('peer watch runs `ouro up` once for a do: ouro-up message, reports back, then wakes the agent', async () => {
+  const { gists, gh, dir, time, p } = await setup();
+  let alive = false;
+  const calls = [];
+  const exec = async (file, argv, opts) => { calls.push([file, ...argv, opts?.timeoutMs]); if (argv[0] === 'up') alive = true; return { code: 0, stdout: '', stderr: '' }; };
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', exec, clock: () => time.now, probe: async () => alive, host: 'mini' });
+  const name = `${stamp(Date.parse('2026-11-09T11:59:00Z'))}-000000c1.json`;
+  gists[H_TO_O][name] = JSON.stringify({ v: 1, id: 'c1', at: '2026-11-09T11:59:00Z', from: 'housesitter@comet', text: 'your daemon went quiet; bringing it back', do: 'ouro-up' });
+  await w.tick();
+  assert.deepEqual(calls[0], ['/bin/ouro', 'up', 300000]);
+  assert.deepEqual(calls[1].slice(0, 4), ['/bin/ouro', 'msg', '--to', 'ouroboros']);
+  const back = Object.values(gists[O_TO_H]).map((c) => JSON.parse(c));
+  assert.equal(back.length, 1);
+  assert.equal(back[0].re, 'c1');
+  assert.match(back[0].text, /^peer-watch on mini: ran `ouro up` for your c1 at .*: exit 0; ouroboros's daemon is answering again\.$/);
+  time.now += 30e3;
+  await w.tick();
+  assert.equal(calls.filter((c) => c[1] === 'up').length, 1, 'once per request');
+  await gh.close();
 });

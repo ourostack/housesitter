@@ -3,11 +3,17 @@
 // `ouro msg --to <agent>` once per new message; then it flushes the agent's queued sends if they're due. It marks
 // nothing read (the agent does that with `peer inbox`) and writes to GitHub only through flush().
 //
-// State, beside the peer log: peer-watch.json {etag, woken[], wake_fails, wake_until, read_until}; peer-watch.log,
-// one line per action.
+// It also keeps an eye on the agent's daemon for Housesitter: when the daemon's socket stops answering for two ticks it
+// tells Housesitter (and again when it answers), and a message from Housesitter with "do": "ouro-up" (its
+// peer_bring_back_ouroboros tool) makes it run `ouro up` and report the result back. That is the one action it takes.
+//
+// State, beside the peer log: peer-watch.json {etag, woken[], wake_fails, wake_until, read_until, daemon, down_ticks,
+// down_since, done[]}; peer-watch.log, one line per action.
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { SEEN_MAX } from './peer.mjs';
 
@@ -27,13 +33,23 @@ export function which(name, PATH = process.env.PATH || '') {
   return null;
 }
 
-const runFile = (file, argv) => new Promise((res) => {
-  execFile(file, argv, { timeout: 60000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => res({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout || ''), stderr: String(stderr || err?.message || '') }));
+const runFile = (file, argv, { timeoutMs = 60000 } = {}) => new Promise((res) => {
+  execFile(file, argv, { timeout: timeoutMs, maxBuffer: 1 << 20 }, (err, stdout, stderr) => res({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout || ''), stderr: String(stderr || err?.message || '') }));
+});
+
+// Does the daemon answer on its socket? A connection accepted within 3 s is enough.
+export const socketAnswers = (sock) => new Promise((res) => {
+  const c = net.createConnection(sock);
+  const done = (ok) => { c.destroy(); res(ok); };
+  c.setTimeout(3000, () => done(false));
+  c.once('connect', () => done(true));
+  c.once('error', () => done(false));
 });
 
 // p: a peer() from src/peer.mjs. ouro: the ouro executable (null: not found). bin: the housesitter CLI the wake names.
 // exec, clock and print are for tests.
-export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, exec = runFile, clock = Date.now, print = () => {} }) {
+export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, exec = runFile, clock = Date.now, print = () => {},
+  socket = '/tmp/ouroboros-daemon.sock', probe = socketAnswers, host = os.hostname().replace(/\.local$/, '') }) {
   const stateFile = path.join(dir, 'peer-watch.json');
   const logFile = path.join(dir, 'peer-watch.log');
   const log = (line) => {
@@ -69,6 +85,7 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     }
     delete st.read_until;
     if (r.unchanged) { log('tick: unchanged'); return; }
+    for (const m of r.messages) if (m.do === 'ouro-up' && !(st.done || []).includes(m.id)) await bringBack(st, m);
     const woken = new Set(st.woken || []);
     const fresh = r.messages.filter((m) => !woken.has(m.id));
     if (!fresh.length) { st.etag = r.etag; log(`tick: ${r.messages.length} unread, none new`); return; }
@@ -82,6 +99,40 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     log(`woke ${agent} for ${fresh.map((m) => m.id).join(', ')}`);
   }
 
+  // Housesitter asked for the daemon back: `ouro up`, then say what happened.
+  async function bringBack(st, m) {
+    st.done = [...(st.done || []), m.id].slice(-SEEN_MAX);
+    if (!ouro) { log(`ouro-up for ${m.id}: ouro is not on PATH`); await tell(`peer-watch on ${host}: can't run \`ouro up\` for your ${m.id}: ouro isn't on PATH here.`, m.id); return; }
+    log(`ouro-up for ${m.id}: running ${ouro} up (${oneLine(m.text, 120)})`);
+    const res = await exec(ouro, ['up'], { timeoutMs: 300000 });
+    const back = await probe(socket);
+    if (back) { st.daemon = 'up'; st.down_ticks = 0; delete st.down_since; delete st.wake_until; delete st.wake_fails; }
+    log(`ouro-up for ${m.id}: exit ${res.code}; daemon ${back ? 'answering' : 'not answering'}`);
+    await tell(`peer-watch on ${host}: ran \`ouro up\` for your ${m.id} at ${iso(clock())}: exit ${res.code}; ${agent}'s daemon is ${back ? 'answering again' : 'still not answering'}.`
+      + (res.code !== 0 ? ` Output: ${oneLine(res.stderr || res.stdout, 300)}` : ''), m.id);
+  }
+
+  async function tell(text, re = null) {
+    try { await p.send(text, { re, now: true }); } catch (e) { log(`tell Housesitter failed: ${oneLine(e.message, 300)}`); }
+  }
+
+  // The daemon's socket, every tick; Housesitter hears after two ticks without an answer, and again when it's back.
+  async function health(st) {
+    const alive = await probe(socket);
+    if (alive) {
+      if (st.daemon === 'down') { log(`${agent}'s daemon answers again`); await tell(`peer-watch on ${host}: ${agent}'s daemon answers again (down since ${st.down_since}).`); }
+      st.daemon = 'up'; st.down_ticks = 0; delete st.down_since;
+      return;
+    }
+    st.down_ticks = (st.down_ticks || 0) + 1;
+    st.down_since = st.down_since || iso(clock());
+    if (st.down_ticks >= 2 && st.daemon !== 'down') {
+      st.daemon = 'down';
+      log(`${agent}'s daemon isn't answering on ${socket} (since ${st.down_since}); telling Housesitter`);
+      await tell(`peer-watch on ${host}: ${agent}'s Ouro daemon on this Mac isn't answering on ${socket} (since ${st.down_since}). If you want it back, peer_bring_back_ouroboros asks me to run \`ouro up\`.`);
+    }
+  }
+
   function backoff(st, now, why) {
     st.wake_fails = (st.wake_fails || 0) + 1;
     const wait = Math.min(900, every * 2 ** st.wake_fails);
@@ -92,6 +143,7 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
   async function tick() {
     fs.mkdirSync(dir, { recursive: true });
     const st = readJson(stateFile, {}) || {};
+    await health(st);
     await read(st);
     writeJson(stateFile, st);
     try {

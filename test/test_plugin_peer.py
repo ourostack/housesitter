@@ -88,6 +88,14 @@ class PeerTest(PluginCase):
         self.assertEqual(st["writes"], [t0, t0 + 30])
         self.assertEqual(st["last"], t0 + 30)
 
+    def test_a_bring_back_request_goes_at_once_as_free_text_with_do_ouro_up(self):
+        r = peer.send("your daemon went quiet at 12:01; bringing it back", now=True, do="ouro-up", ts=time.time())
+        self.assertEqual(r["status"], "sent")
+        msg = json.loads(self.patches()[0]["body"]["files"][r["file"]]["content"])
+        self.assertEqual((msg["do"], msg["text"]), ("ouro-up", "your daemon went quiet at 12:01; bringing it back"))
+        plain = peer.send("hello", ts=time.time())
+        self.assertNotIn("do", [e["msg"] for e in self.queue() if e["msg"]["id"] == plain["id"]][0])
+
     def test_the_hourly_cap_keeps_messages_queued_logs_once_a_minute_and_lets_them_go_when_it_frees(self):
         t0 = time.time()
         for i in range(10):

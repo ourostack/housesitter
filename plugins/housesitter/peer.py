@@ -178,12 +178,14 @@ def stale_files(gist, now, keep_sec=KEEP_SEC):
     return sorted(n for n in files if file_time(n) is not None and now - file_time(n) > keep_sec)
 
 
-def new_message(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=None):
+def new_message(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=None, do=None):
     now = time.time() if now is None else now
     mid = uuid.uuid4().hex[:8]
     msg = {"v": 1, "id": mid, "at": iso(now), "from": sender, "to": to, "text": text}
     if re_id:
         msg["re"] = re_id
+    if do:
+        msg["do"] = do  # an action for the Mac's peer watch beside the free text; today only "ouro-up"
     return "%s-%s.json" % (stamp(now), mid), msg
 
 
@@ -237,13 +239,13 @@ def write_queue(entries):
     os.replace(tmp, path)
 
 
-def send(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=False, ts=None):
+def send(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=False, ts=None, do=None):
     """Queue one message for the out gist and flush the queue if it's due (now=True: at once, if the hourly cap allows).
     The message is on disk before anything is written to GitHub, so it is never lost; its status is sent or queued."""
     if not isinstance(text, str) or not text:
         raise ValueError("text: a message needs some text")
     ts = clock() if ts is None else ts
-    name, msg = new_message(text, to, re_id, sender, ts)
+    name, msg = new_message(text, to, re_id, sender, ts, do)
     with locked("peer-outbox.lock"):
         with open(os.path.join(state_dir(), "peer-outbox.jsonl"), "a") as f:
             f.write(json.dumps({"file": name, "msg": msg}) + "\n")
