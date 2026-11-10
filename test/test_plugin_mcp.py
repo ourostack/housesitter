@@ -11,7 +11,7 @@ from plugin_base import slurp, FLEET, IN, OUT, PLUGIN, ROOT, PluginCase, iso
 
 SERVER = os.path.join(PLUGIN, "mcp", "server.py")
 TOOLS = {"sitter_status", "sitter_look", "sitter_screenshot", "sitter_unlock", "sitter_want_desktop", "sitter_power_cycle", "sitter_power_on",
-         "sitter_click", "sitter_type", "sitter_key", "sitter_scroll", "peer_send", "peer_inbox", "kvm_health"}
+         "sitter_click", "sitter_type", "sitter_key", "sitter_scroll", "peer_send", "peer_bring_back_ouroboros", "peer_inbox", "kvm_health"}
 JPEG = b"\xff\xd8\xff\xe0fake-jpeg-frame\xff\xd9"
 
 

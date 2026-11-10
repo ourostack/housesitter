@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.4.9"
+VERSION = "0.4.10"
 PROTOCOL = "2025-06-18"
 LONG_OPS = ("type", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
@@ -193,6 +193,8 @@ TOOLS = [
     ("peer_send", "Send Ouroboros (the agent on the Mac) a message: free text, anything you want to say or ask. re is the id of the message you're answering. Messages are batched and go out within 6 minutes (status sent or queued); GitHub's gist writes are capped at 10 an hour each way.",
      schema({"text": {"type": "string"}, "to": {"type": "string"}, "re": {"type": "string"},
              "now": {"type": "boolean", "description": "send at once (counts against the 10/h cap); use for anything Ari or Ouroboros must hear now, like 'tell Ari' or 'about to restart'"}}, ["text"]), 45000, False),
+    ("peer_bring_back_ouroboros", "Bring Ouroboros's daemon on the Mac back when it has stopped answering (the Mac's peer watch tells you when it does). Sends why as an urgent message that asks the Mac's peer watch to run `ouro up`; the watch reports the result back as a message.",
+     schema({"why": {"type": "string"}}, ["why"]), 45000, False),
     ("peer_inbox", "New messages from Ouroboros, oldest first, each with its id, time and text. Each comes back once; then it's marked read. It also sends any of your queued messages that are due.", schema(), 45000, False),
     ("kvm_health", "This KVM's own health: memory available, load, uptime, free space on /userdata, and whether the sitter's heartbeat (its status.json, rewritten every interval) is fresh. The sitter comes first: keep memory free for it.",
      schema(), 10000, True),
@@ -248,6 +250,8 @@ def call(name, a):
         return sitter("scroll", pick(a, ["dx", "dy", "x", "y", "w", "h"])), []
     if name == "peer_send":
         return peer.send(a.get("text"), to=a.get("to") or "ouroboros", re_id=a.get("re"), now=a.get("now") is True), []
+    if name == "peer_bring_back_ouroboros":
+        return peer.send(a.get("why") or "bring Ouroboros back", now=True, do="ouro-up"), []
     if name == "peer_inbox":
         return peer.inbox(), []
     if name == "kvm_health":
