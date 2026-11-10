@@ -13,6 +13,7 @@ import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
 import { connect, summarise } from '../src/kvmd.mjs';
 import * as Peer from '../src/peer.mjs';
+import { peerWatch, which } from '../src/peer-watch.mjs';
 import * as Plug from '../src/plug.mjs';
 import * as Watch from '../src/watch.mjs';
 import * as O from '../src/outbox.mjs';
@@ -70,6 +71,9 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter peer inbox [--peek]          Housesitter's new messages, oldest first, each shown once (--peek: don't mark them read);
                                            also sends queued messages that are due
   housesitter peer flush [--now]           send the queued messages if due (--now: at once, within the hourly cap)
+  housesitter peer watch [--agent ouroboros] [--every 30] [--once] [--ouro <path>]
+                                           wake the agent with ouro msg when Housesitter writes (marks nothing read),
+                                           and send its queued messages when due; logs to peer-watch.log beside the config
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
   housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 
@@ -78,7 +82,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -427,7 +431,7 @@ async function proof(mac) {
   return backAt ? 0 : 1;
 }
 
-// `housesitter peer send|inbox|flush`: Ouroboros's end of the peer link with Housesitter; see src/peer.mjs.
+// `housesitter peer send|inbox|flush|watch`: Ouroboros's end of the peer link with Housesitter; see src/peer.mjs.
 async function peerCmd() {
   const p = Peer.peer({ dir: path.dirname(configPath()) });
   const waiting = (r) => (r.capped ? `the hourly cap is reached; it goes out after ${r.next_allowed_at}`
@@ -453,7 +457,13 @@ async function peerCmd() {
     else say(r.messages.length ? r.messages.map((m) => `${m.at}  ${m.from || '?'}  ${m.id}${m.re ? ` (re ${m.re})` : ''}\n${m.text}`).join('\n\n') : 'nothing new');
     return 0;
   }
-  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox, flush)`);
+  if (name === 'watch') {
+    const every = Math.max(5, Number.parseInt(val('--every') || '30', 10) || 30);
+    const w = peerWatch({ p, dir: path.dirname(configPath()), agent: val('--agent') || 'ouroboros', ouro: val('--ouro') || which('ouro'), bin: path.join(ROOT, 'bin', 'housesitter.mjs'), every, print: flag('--once') || process.stdout.isTTY ? (l) => console.log(l) : () => {} });
+    if (flag('--once')) { await w.tick(); return 0; }
+    return w.run();
+  }
+  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox, flush, watch)`);
 }
 
 // `housesitter plug <mac> find|adopt [ip]|status|prove`: see src/plug.mjs.

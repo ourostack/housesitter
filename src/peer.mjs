@@ -11,7 +11,8 @@
 // files older than 24 hours, in one PATCH. A flush happens at most once every HOUSESITTER_PEER_FLUSH_SEC (default 360)
 // after the last one, at once for an urgent message (now), and never more than HOUSESITTER_PEER_MAX_PER_HOUR (default
 // 10) times in any 60 minutes; over the cap, messages wait in the queue and peer-log.jsonl gets a peer-cap line.
-// send tries a flush; inbox and `housesitter peer flush` flush whatever is due.
+// send tries a flush; inbox, `housesitter peer flush` and `housesitter peer watch` (src/peer-watch.mjs) flush whatever
+// is due.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -76,7 +77,11 @@ export function peer({ dir, token, env = process.env, fetchFn = globalThis.fetch
     if (r.status >= 300) {
       let msg = '';
       try { msg = JSON.parse(text).message || ''; } catch { /* not JSON */ }
-      throw new Error(`GitHub ${method} ${url.split('?')[0]} -> HTTP ${r.status}${msg ? `: ${msg}` : ''}`);
+      const e = new Error(`GitHub ${method} ${url.split('?')[0]} -> HTTP ${r.status}${msg ? `: ${msg}` : ''}`);
+      e.status = r.status;
+      e.retryAfter = int(r.headers.get('retry-after'), null);
+      e.reset = int(r.headers.get('x-ratelimit-reset'), null);
+      throw e;
     }
     return { status: r.status, etag: r.headers.get('etag'), body: raw ? text : (text ? JSON.parse(text) : null) };
   };
@@ -181,6 +186,14 @@ export function peer({ dir, token, env = process.env, fetchFn = globalThis.fetch
       const out = { ok: true, id, at: msg.at, file, to, status: (r.sent || []).includes(id) ? 'sent' : 'queued' };
       for (const k of ['pruned', 'queued', 'next_flush_at', 'capped', 'next_allowed_at', 'busy', 'error']) if (k in r) out[k] = r[k];
       return out;
+    },
+    // The peer's messages not yet read with inbox, without marking them; a conditional GET against etag (from an
+    // earlier peek) returns unchanged when the gist hasn't changed. It never writes.
+    async peek(etag = null) {
+      const r = await gist(inGist, etag);
+      if (r.status === 304) return { unchanged: true, etag, messages: [] };
+      const seen = [].concat(readJson(path.join(dir, 'peer-seen.json'), []) || []);
+      return { etag: r.etag, messages: (await messages(r.body)).filter((m) => !seen.includes(m.id)) };
     },
     // New messages from the peer; unless peeking, it also flushes the out queue if that's due.
     async inbox({ mark = true } = {}) {
