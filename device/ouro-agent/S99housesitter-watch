@@ -1,0 +1,22 @@
+#!/bin/sh
+# Housesitter's watcher (ourostack/housesitter plugins/housesitter/watch.py): wakes the Housesitter agent through
+# `ouro event submit` when a peer message arrives or the sitter or the mini's heartbeat changes. Respawns if it exits;
+# niced, and first in line for the OOM killer after the agent, so the sitter always wins.
+PIDF=/var/run/housesitter-watch.pid
+LOG=/userdata/ouro/housesitter/watch.log
+running() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
+case "$1" in
+  start)
+    running && exit 0
+    mkdir -p /userdata/ouro/housesitter
+    setsid sh -c 'echo 900 > /proc/self/oom_score_adj; . /userdata/ouro/env.sh; export HOUSESITTER_AGENT=Housesitter HOUSESITTER_OURO_BIN=/userdata/ouro/home/.ouro-cli/bin/ouro; while true; do nice -n 10 python3 /userdata/ouro/home/.ouro-cli/plugins/housesitter/watch.py >>'"$LOG"' 2>&1; sleep 10; done' </dev/null >/dev/null 2>&1 &
+    echo $! > "$PIDF"
+    ;;
+  stop)
+    if running; then kill -TERM -"$(cat "$PIDF")" 2>/dev/null || kill -TERM "$(cat "$PIDF")"; fi
+    : > "$PIDF"
+    ;;
+  restart) "$0" stop; sleep 1; "$0" start ;;
+  status) if running; then echo "housesitter-watch running (pid $(cat "$PIDF"))"; else echo "housesitter-watch stopped"; exit 3; fi ;;
+  *) echo "usage: $0 start|stop|restart|status"; exit 2 ;;
+esac
