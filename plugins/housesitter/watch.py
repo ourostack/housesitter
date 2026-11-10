@@ -190,7 +190,9 @@ class Watcher:
             note = ""
         ts = peer.stamp(self.clock())
         mac = env("HOUSESITTER_MAC", "aris-mac-mini")
-        if self.wake("mini", "heartbeat-stale", "mini-simulated-%s" % ts, "DRILL: %s's heartbeat is stale (simulated)" % mac,
+        summary = ("DRILL: %s's heartbeat is stale (simulated). Run it end to end like a real incident, "
+                   "saying \"drill\" in everything you send." % mac) + (" Note: %s" % note if note else "")
+        if self.wake("mini", "heartbeat-stale", "mini-simulated-%s" % ts, summary,
                      {"kind": "mini-heartbeat", "mac": mac, "stale": True, "simulated": True, "note": note,
                       "how": "a drill: sitter_status with simulate \"stale-heartbeat\" answers the same way; nothing on the Mac changed"}):
             os.rename(path, "%s.consumed-%s" % (path, ts))

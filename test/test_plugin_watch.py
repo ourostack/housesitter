@@ -146,6 +146,8 @@ class WatchTest(PluginCase):
         self.assertEqual([(w["--source"], w["--type"]) for w in wakes], [("mini", "heartbeat-stale")])
         self.assertTrue(wakes[0]["--id"].startswith("mini-simulated-"))
         self.assertTrue(wakes[0]["--summary"].startswith("DRILL"))
+        self.assertIn("end to end like a real incident", wakes[0]["--summary"])
+        self.assertIn("Note: drill at 21:00", wakes[0]["--summary"])
         p = json.loads(slurp(wakes[0]["--payload"]))
         self.assertEqual((p["simulated"], p["note"]), (True, "drill at 21:00"))
         self.assertFalse(os.path.exists(drill))
