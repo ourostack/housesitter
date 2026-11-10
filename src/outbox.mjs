@@ -17,8 +17,14 @@ import os from 'node:os';
 const API = 'https://api.github.com';
 export const OPS = ['status', 'look', 'screenshot', 'unlock', 'power_cycle', 'power_on', 'click', 'type', 'key', 'scroll'];
 
-export function ghCliToken(run = spawnSync) {
-  const r = run('gh', ['auth', 'token'], { encoding: 'utf8', env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` } });
+// gh's token: for `user` (a github.com login) when gh is signed in to it, else gh's active account.
+export function ghCliToken(run = spawnSync, { user } = {}) {
+  const opts = { encoding: 'utf8', env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` } };
+  if (user) {
+    const u = run('gh', ['auth', 'token', '--hostname', 'github.com', '--user', user], opts);
+    if (u.status === 0 && String(u.stdout).trim()) return String(u.stdout).trim();
+  }
+  const r = run('gh', ['auth', 'token'], opts);
   if (r.status !== 0) throw new Error('outbox: no GitHub token (set outbox.token in the config, or sign in with `gh auth login`)');
   return String(r.stdout).trim();
 }
