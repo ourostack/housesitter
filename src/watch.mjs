@@ -24,7 +24,7 @@ export function fresh(answer, now) {
   if (!st?.at) return { ok: false, why: answer ? 'the sitter answered, but has no status yet' : 'no answer from the KVM' };
   const every = (st.interval_sec || 60) * 1000;
   const age = now - st.at;
-  return age <= Math.max(3 * every, 180000) ? { ok: true, age } : { ok: false, why: `the sitter's last look was ${Math.round(age / 60000)} min ago` };
+  return age <= (answer.window_ms ?? Math.max(3 * every, 180000)) ? { ok: true, age } : { ok: false, why: `the sitter's last look was ${Math.round(age / 60000)} min ago` };
 }
 
 // Routes to the sitter, tried in order: SSH first (LAN or tailnet), then the outbox gists, so a Mac away from the KVM's
@@ -39,16 +39,16 @@ export function askRoutes(routes) {
   };
 }
 
-// The outbox route: the status the sitter publishes to its outbox gist, read directly; only if that copy is stale, one
-// status request through the inbox. (watch_check stays SSH-only on the sitter, so over the outbox the emails this Mac
-// sent are handed over later, at the next SSH answer.)
-export function outboxAsk({ readStatus, op, now = Date.now }) {
+// The outbox route: the status the sitter publishes to its outbox gist, read only. The sitter publishes at least every
+// outbox.beat_min minutes (and at once on any change), so that copy counts as fresh for one beat plus a look. It never
+// writes: gist writes share one budget per GitHub account (100 an hour), which a watch asking every minute would spend.
+// (watch_check stays SSH-only on the sitter, so over the outbox the emails this Mac sent are handed over later, at the
+// next SSH answer.)
+export function outboxAsk({ readStatus, beatMin = 10 }) {
   return async () => {
     const st = await readStatus();
-    if (st?.at && fresh({ status: st }, now()).ok) return { status: st };
-    const r = await op('status');
-    if (!r?.ok) throw new Error(`${r?.code || 'failed'} ${typeof r?.result === 'string' ? r.result : ''}`.trim());
-    return { status: r.result };
+    if (!st?.at) throw new Error('nothing published in the outbox');
+    return { status: st, window_ms: (beatMin + 1) * 60000 };
   };
 }
 
