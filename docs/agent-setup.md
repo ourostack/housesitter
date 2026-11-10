@@ -129,6 +129,21 @@ Sampled every 30 s by `memsample.sh` into `/userdata/ouro/samples/mem.csv`: MemA
 
 ![Two hours of memory and the sitter's heartbeat](img/agent-setup/16-memory-window.png)
 
-## 8. Telegram
+## 8. Eyes: a real screenshot
+
+kvmd's `/streamer/snapshot` answered HTTP 500 on the Comet, so `sitter_screenshot` failed and Housesitter couldn't see the screen. There were two causes:
+
+- **The encoder couldn't start.** kvmd starts its video encoder only while a client watches, and the encoder needs 64 KB contiguous kernel blocks. The Comet's kernel has no memory compaction, so as free memory fragmented, starts failed with `open valloc failed` and `page allocation failure: order:4`: 117 of 144 starts in half an hour. Dropping the page cache lets the freed pages merge again. `boot-start.sh` (cron, every minute) now does that only when free blocks of 64 KB and up fall under 250, and logs each drop.
+- **No JPEG at 2560×1440.** The encoder stays on H.264, and kvmd answers a snapshot with 500, so the sitter's fallback was never reached. From sitter 0.3.4 it is: on any failed snapshot the sitter decodes an H.264 keyframe on the KVM (`ustreamer-dump | ffmpeg`), cuts it down to the width asked for in Python (the Comet's ffmpeg has no scaler) and encodes a JPEG. That takes about 11 s, and the sitter's heartbeat is undisturbed. kvmd wasn't restarted.
+
+At 07:32 Housesitter took one `sitter_screenshot` and read it:
+
+> The mini is unlocked at the desktop, Edge is in front, and the menu-bar clock reads Mon Nov 9 11:32 PM. Edge has the Microsoft Autopilot "Automations" page open with 6 habit cards … On the right, about 10 macOS notifications are stacked up …
+
+![The frame it read](img/agent-setup/17-mini-screen-via-sitter-screenshot.jpg)
+
+Image turns need 0.1.0-alpha.1020 or later, which passes MCP images to the model. Until the prompt budget counts a picture as a picture, keep screenshots at 1280 wide. Its base64 is otherwise counted as text, and a full 2560×1440 frame pushed a turn over budget and into an HTTP 400.
+
+## 9. Telegram
 
 The bot is meant to be created in a headless browser's Telegram Web session, as @OuroborosOuroBot was. That session had been revoked and needs one QR scan from Ari's phone. Until then, Housesitter reaches Ari through Ouroboros: a `peer_send` asking it to tell Ari, which Ouroboros surfaces to him (drill 2 above). With the bot created, `senses.telegram` and `ouro connect telegram` make Telegram Housesitter's own channel.
