@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { peer, stamp, fileTime, O_TO_H, H_TO_O } from '../src/peer.mjs';
+import { peer, stamp, fileTime, O_TO_H, H_TO_O, OWNER } from '../src/peer.mjs';
+import { ghCliToken } from '../src/outbox.mjs';
 import { peerWatch } from '../src/peer-watch.mjs';
 
 const BIN = fileURLToPath(new URL('../bin/housesitter.mjs', import.meta.url));
@@ -348,4 +349,27 @@ test('housesitter peer watch --once from the shell', async () => {
   assert.match(r.stdout, /woke ouroboros for c9/);
   assert.match(fs.readFileSync(calls, 'utf8'), /^msg\|--to\|ouroboros\|1 new message from Housesitter .*bin\/housesitter\.mjs peer inbox/);
   await gh.close();
+});
+
+test('peer: without GH_TOKEN it reads with gh\'s token for the gists\' owner, not gh\'s active account', async () => {
+  const { gh, dir, env } = await setup();
+  delete env.GH_TOKEN;
+  const calls = [];
+  const ghToken = (_run, o) => { calls.push(o.user); return `tok-${o.user}`; };
+  const r = await peer({ dir, env, ghToken }).inbox({ mark: false });
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls, [OWNER]);
+  assert.equal(gh.requests.at(-1).auth, `Bearer tok-${OWNER}`);
+  await peer({ dir, env, ghToken, user: 'someone' }).inbox({ mark: false });
+  assert.equal(calls.at(-1), 'someone');
+  await gh.close();
+});
+
+test('ghCliToken: asks gh for the named login, and falls back to gh\'s active account when gh has no such login', () => {
+  const seen = [];
+  const run = (cmd, args) => { seen.push(args.join(' ')); return args.includes('--user') ? (args.includes('arimendelow') ? { status: 0, stdout: 'owner\n' } : { status: 1, stdout: '' }) : { status: 0, stdout: 'active\n' }; };
+  assert.equal(ghCliToken(run, { user: 'arimendelow' }), 'owner');
+  assert.equal(ghCliToken(run, { user: 'nobody' }), 'active');
+  assert.equal(ghCliToken(run), 'active');
+  assert.deepEqual(seen, ['auth token --hostname github.com --user arimendelow', 'auth token --hostname github.com --user nobody', 'auth token', 'auth token']);
 });

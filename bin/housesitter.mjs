@@ -433,7 +433,9 @@ async function proof(mac) {
 
 // `housesitter peer send|inbox|flush|watch`: Ouroboros's end of the peer link with Housesitter; see src/peer.mjs.
 async function peerCmd() {
-  const p = Peer.peer({ dir: path.dirname(configPath()) });
+  let user;
+  try { user = loadConfig().peer?.user; } catch { user = undefined; }
+  const p = Peer.peer({ dir: path.dirname(configPath()), user });
   const waiting = (r) => (r.capped ? `the hourly cap is reached; it goes out after ${r.next_allowed_at}`
     : r.error ? `it goes out at the next flush (${r.error})`
     : r.next_flush_at ? `it goes out by ${r.next_flush_at}` : 'it goes out at the next flush');

@@ -26,6 +26,9 @@ export const KEEP_MS = 24 * 3600 * 1000;
 export const SEEN_MAX = 500;
 export const FLUSH_SEC = 360;
 export const MAX_PER_HOUR = 10;
+// The peer gists' owner. Without GH_TOKEN the link uses gh's token for this login, not gh's active account: GitHub
+// limits gist reads per token, and another account's token may be spent (2026-11-10, arimendelow_microsoft).
+export const OWNER = 'arimendelow';
 const NAME = /^(\d{8})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{8}\.json$/;
 
 export const stamp = (ms) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
@@ -61,12 +64,12 @@ function lock(file, { wait = true, staleMs = 30000 } = {}) {
 }
 
 // dir holds peer-outbox.jsonl, peer-flush.json, peer-seen.json, peer-etag.json and peer-log.jsonl. clock: tests.
-export function peer({ dir, token, env = process.env, fetchFn = globalThis.fetch, from = `ouroboros@${os.hostname().replace(/\.local$/, '')}`, clock = Date.now } = {}) {
+export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env, fetchFn = globalThis.fetch, from = `ouroboros@${os.hostname().replace(/\.local$/, '')}`, clock = Date.now } = {}) {
   const api = (env.HOUSESITTER_GITHUB_API || 'https://api.github.com').replace(/\/$/, '');
   const outGist = env.HOUSESITTER_PEER_OUT || O_TO_H;
   const inGist = env.HOUSESITTER_PEER_IN || H_TO_O;
   let tok = null;
-  const auth = () => (tok ??= token ? (typeof token === 'function' ? token() : token) : env.GH_TOKEN || env.GITHUB_TOKEN || ghCliToken());
+  const auth = () => (tok ??= token ? (typeof token === 'function' ? token() : token) : env.GH_TOKEN || env.GITHUB_TOKEN || ghToken(undefined, { user: user || env.HOUSESITTER_PEER_USER || OWNER }));
   const req = async (method, url, { body, etag, raw } = {}) => {
     const headers = { Authorization: `Bearer ${auth()}`, Accept: 'application/vnd.github+json', 'User-Agent': 'housesitter-peer', 'X-GitHub-Api-Version': '2022-11-28' };
     if (etag) headers['If-None-Match'] = etag;
