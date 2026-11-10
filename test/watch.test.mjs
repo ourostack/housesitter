@@ -2,7 +2,7 @@
 // email cap shared with the sitter. All fakes: a pretend sitter that answers or doesn't, a pretend ntfy.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fresh, plist, sendNtfy, stableNode, watchOnce } from '../src/watch.mjs';
+import { askRoutes, fresh, outboxAsk, plist, sendNtfy, stableNode, watchOnce } from '../src/watch.mjs';
 
 const T0 = Date.UTC(2026, 10, 9, 9, 0);
 const MIN = 60000;
@@ -120,4 +120,43 @@ test('the LaunchAgent names a node that survives brew upgrade', () => {
   assert.equal(stableNode('/opt/homebrew/Cellar/node@22/22.23.4_2/bin/node', has), '/opt/homebrew/bin/node');
   assert.equal(stableNode('/Users/a/.nvm/versions/node/v22.1.0/bin/node', has), '/Users/a/.nvm/versions/node/v22.1.0/bin/node');
   assert.equal(stableNode('/opt/homebrew/Cellar/node/23.1/bin/node', () => false), '/opt/homebrew/Cellar/node/23.1/bin/node');
+});
+
+// Away from the KVM's network (the KVM at home, the Mac at the office), SSH can't reach the sitter: the watch reads the
+// outbox gist the sitter publishes to, and asks it for a status through the inbox only when that copy is stale.
+test('SSH unreachable: the watch hears the sitter through the outbox, and says which route answered', async () => {
+  const ssh = { via: 'ssh 192.168.50.14', ask: async () => { throw new Error('ssh: connect to host 192.168.50.14 port 22: Operation timed out'); } };
+  const outbox = { via: 'outbox', ask: outboxAsk({ readStatus: async () => ({ at: T0 - 20000, interval_sec: 60, state: 'healthy' }), op: async () => assert.fail('a fresh published status needs no round trip'), now: () => T0 }) };
+  const ask = askRoutes([ssh, outbox]);
+  const out = await watchOnce({ name: 'mini', by: 'Aris-MacBook-Pro', notify, ask, send: async () => assert.fail('nothing to say'), state: {}, now: T0 });
+  assert.equal(out.ok, true);
+  assert.equal(out.state.last_via, 'outbox');
+});
+
+test('a stale published status is refreshed with one status request through the inbox', async () => {
+  const ops = [];
+  const ask = outboxAsk({ readStatus: async () => ({ at: T0 - 20 * MIN, interval_sec: 60 }), op: async (o) => { ops.push(o); return { ok: true, result: { at: T0 - 5000, interval_sec: 60 } }; }, now: () => T0 });
+  const a = await ask({ by: 'x', sent: [] });
+  assert.deepEqual(ops, ['status']);
+  assert.equal(a.status.at, T0 - 5000);
+});
+
+test('the outbox route that gets no answer is an error, so silence still counts', async () => {
+  const ask = askRoutes([
+    { via: 'ssh', ask: async () => { throw new Error('timed out'); } },
+    { via: 'outbox', ask: outboxAsk({ readStatus: async () => null, op: async () => ({ ok: false, code: 'timeout', result: 'no reply' }), now: () => T0 }) },
+  ]);
+  await assert.rejects(ask({ by: 'x', sent: [] }), (e) => /ssh: timed out/.test(e.message) && /outbox: timeout/.test(e.message));
+  const out = await watchOnce({ name: 'mini', by: 'x', notify, ask, send: async () => ({ result: 'posted', emailed: false }), state: {}, now: T0 });
+  assert.equal(out.ok, false);
+  assert.match(out.state.last_error, /outbox: timeout/);
+});
+
+test('SSH first: when it answers, the outbox is never asked', async () => {
+  const ask = askRoutes([
+    { via: 'ssh', ask: async () => ({ status: { at: T0, interval_sec: 60 } }) },
+    { via: 'outbox', ask: async () => assert.fail('outbox asked while SSH answers') },
+  ]);
+  const a = await ask({ by: 'x', sent: [] });
+  assert.equal(a.via, 'ssh');
 });

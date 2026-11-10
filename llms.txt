@@ -16,7 +16,7 @@
 - Mac locked and you need its UI? `housesitter want-desktop <mac> [--minutes 10]` (or the Reins action `want_desktop`): the sitter unlocks it through its own gates, only if its config says `"unlock_lock_screen": "on_request"` or `true`; otherwise action-unavailable.
 - Smart plug: `housesitter plug <mac> find|adopt [ip]|status|prove --attended`.
 - Health probe: config `health` is `{host, port}` (TCP) or `{kind: "json_age", url, field, max_age_min}` (a heartbeat JSON; fresh = up, unreachable = unknown).
-- Mutual watch: `housesitter watch-kvm <mac> --install` on the Mac: a LaunchAgent that asks the sitter for its status every minute over SSH (`do watch_check`), and sends one message after 5 min of silence and one when it's back, sharing the sitter's daily email cap. `doctor` shows "watched by the Mac itself".
+- Mutual watch: `housesitter watch-kvm <mac> --install` on the Mac: a LaunchAgent that asks the sitter for its status every minute over SSH (`do watch_check`), or, when SSH can't reach the KVM and an outbox is configured, from the outbox gist (`ok via outbox` in its log), and sends one message after 5 min of silence and one when it's back, sharing the sitter's daily email cap. `doctor` shows "watched by the Mac itself".
 - Messages: ntfy or a webhook; `adopt --notify ntfy --email <address>` also emails one address through an ntfy.sh account (token: `housesitter secret <mac> ntfy-token`; 5 emails a day on a free account). `housesitter alert-test <mac>` sends one real stuck message marked TEST.
 
 ## Docs
