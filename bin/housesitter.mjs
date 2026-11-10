@@ -12,6 +12,7 @@ import { renderEvening, replay } from '../src/evening.mjs';
 import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
 import { connect, summarise } from '../src/kvmd.mjs';
+import * as Peer from '../src/peer.mjs';
 import * as Plug from '../src/plug.mjs';
 import * as Watch from '../src/watch.mjs';
 import os from 'node:os';
@@ -62,6 +63,8 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter ls <mac>                     the Mac as state + the actions available now (Ouro Reins)
   housesitter do <mac> <action> ['<json>'] run one; refusals: action-unavailable, input-invalid, action-failed
   housesitter forget <mac> --yes           wipe the secrets from the KVM and stop the sitter
+  housesitter peer send <text> [--re <id>] Ouroboros to Housesitter, the agent on the KVM: free text through a secret gist
+  housesitter peer inbox [--peek]          Housesitter's new messages, oldest first, each shown once (--peek: don't mark them read)
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
   housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 
@@ -70,7 +73,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -235,6 +238,8 @@ async function main() {
     say(`stored at ${ref}${which === 'mac-password' || which === 'ntfy-token' ? `; run housesitter adopt ${name} to put it on the sitter` : ''}`);
     return 0;
   }
+
+  if (cmd === 'peer') return peerCmd();
 
   need(name, `housesitter ${cmd} <mac>`);
   const mac = macConfig(name);
@@ -409,6 +414,25 @@ async function proof(mac) {
   fs.writeFileSync(path.join(dir, 'timeline.json'), `${JSON.stringify({ mac: mac.name, recorded_by: `housesitter ${VERSION}`, real: true, desktops: flag('--all-frames') ? 'recorded' : 'not recorded', kvm_log: raw ? { unfiltered: 'syslog.log (logread, the whole in-memory buffer; it holds addresses, so check against it rather than publish it whole)', access: 'kvmd-access.log', command: ACCESS } : null, timeline }, null, 2)}\n`);
   say(`\n${kept} frames, timeline.json (${timeline.length} looks)${raw ? ', and the KVM\'s own log (syslog.log, which holds addresses, and kvmd-access.log from it)' : ''} in ${dir}${backAt ? '' : ' (the Mac did not come back while recording)'}.\nA video: ffmpeg -framerate 4 -pattern_type glob -i '${dir}/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p ${dir}/proof.mp4`);
   return backAt ? 0 : 1;
+}
+
+// `housesitter peer send|inbox`: Ouroboros's end of the peer link with Housesitter; see src/peer.mjs.
+async function peerCmd() {
+  const p = Peer.peer({ dir: path.dirname(configPath()) });
+  if (name === 'send') {
+    const text = rest.join(' ');
+    need(text, 'housesitter peer send <text> [--re <id>]');
+    const r = await p.send(text, { re: val('--re'), to: val('--to') || 'housesitter' });
+    json ? emit(r) : say(`sent ${r.id} to ${r.to}${r.pruned.length ? ` (cleared ${r.pruned.length} over a day old)` : ''}`);
+    return 0;
+  }
+  if (name === 'inbox') {
+    const r = await p.inbox({ mark: !flag('--peek') });
+    if (json) emit(r);
+    else say(r.messages.length ? r.messages.map((m) => `${m.at}  ${m.from || '?'}  ${m.id}${m.re ? ` (re ${m.re})` : ''}\n${m.text}`).join('\n\n') : 'nothing new');
+    return 0;
+  }
+  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox)`);
 }
 
 // `housesitter plug <mac> find|adopt [ip]|status|prove`: see src/plug.mjs.

@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "housesitter": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["mcp/server.py"],
+      "env": {
+        "HOUSESITTER_SITTER_CMD": "${HOUSESITTER_SITTER_CMD:-python3 /etc/kvmd/user/housesitter/sitter.py}",
+        "HOUSESITTER_HOME": "${HOUSESITTER_HOME:-/etc/kvmd/user/housesitter}",
+        "HOUSESITTER_STATE_DIR": "${HOUSESITTER_STATE_DIR:-/userdata/ouro/housesitter}",
+        "HOUSESITTER_TOKEN_FILE": "${HOUSESITTER_TOKEN_FILE:-/userdata/ouro/secrets/github-token}",
+        "HOUSESITTER_PEER_IN": "${HOUSESITTER_PEER_IN:-d10a53ca03a65b26aa2a4bbb96cec03d}",
+        "HOUSESITTER_PEER_OUT": "${HOUSESITTER_PEER_OUT:-94a9ee97baab459bb32a37d6dbb7c52d}",
+        "HOUSESITTER_FLEET_GIST": "${HOUSESITTER_FLEET_GIST:-ded3f1d37c2a756becc3333b0e4276b4}",
+        "HOUSESITTER_MAC": "${HOUSESITTER_MAC:-aris-mac-mini}",
+        "HOUSESITTER_DISK": "${HOUSESITTER_DISK:-/userdata}"
+      }
+    }
+  }
+}
