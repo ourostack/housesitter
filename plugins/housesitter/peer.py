@@ -1,18 +1,27 @@
 """The peer link between Housesitter (on the KVM) and Ouroboros (on the Mac): free text through two secret gists.
 
 Each message is one immutable gist file, <UTC yyyymmddTHHMMSSZ>-<8 hex>.json, holding
-{"v": 1, "id", "at", "from", "to", "text", "re"?}. Sending adds a file to the out gist and, in the same PATCH, deletes
-files there older than 24 hours. Reading GETs the in gist with an ETag (304: nothing new) and returns the messages not
-yet in the seen-set, oldest first.
+{"v": 1, "id", "at", "from", "to", "text", "re"?}. Reading GETs the in gist with an ETag (304: nothing new) and returns
+the messages not yet in the seen-set, oldest first.
 
-    python3 peer.py send <text> [--re <id>] [--to <name>]
+GitHub allows about 100 gist writes an hour per user, shared by the whole fleet, so sending is batched: a message goes
+into a durable queue (peer-outbox.jsonl) and a flush writes everything queued, and deletes the out gist's files older
+than 24 hours, in one PATCH. A flush happens at most once every HOUSESITTER_PEER_FLUSH_SEC (default 360) after the last
+one, at once for an urgent message (now), and never more than HOUSESITTER_PEER_MAX_PER_HOUR (default 10) times in any
+60 minutes; over the cap, messages wait in the queue and peer-log.jsonl gets a peer-cap line. send tries a flush;
+watch.py and inbox flush whatever is due.
+
+    python3 peer.py send <text> [--re <id>] [--to <name>] [--now]
     python3 peer.py inbox [--peek]
-    python3 peer.py prune
+    python3 peer.py flush [--now]
 
-Env: HOUSESITTER_PEER_IN, HOUSESITTER_PEER_OUT (gist ids), HOUSESITTER_STATE_DIR (seen-set, ETag, log),
-HOUSESITTER_TOKEN_FILE or GH_TOKEN / GITHUB_TOKEN, HOUSESITTER_GITHUB_API (tests). Python 3 standard library only.
+Env: HOUSESITTER_PEER_IN, HOUSESITTER_PEER_OUT (gist ids), HOUSESITTER_STATE_DIR (queue, seen-set, ETag, log),
+HOUSESITTER_PEER_FLUSH_SEC, HOUSESITTER_PEER_MAX_PER_HOUR, HOUSESITTER_TOKEN_FILE or GH_TOKEN / GITHUB_TOKEN,
+HOUSESITTER_GITHUB_API (tests). Python 3 standard library only.
 """
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
@@ -28,6 +37,9 @@ KEEP_SEC = 24 * 3600
 SEEN_MAX = 500
 NAME_RE = re.compile(r"^(\d{8}T\d{6}Z)-([0-9a-f]{8})\.json$")
 USER_AGENT = "housesitter-peer"
+FLUSH_SEC = 360  # at most one flush every 6 minutes, unless it's urgent
+MAX_PER_HOUR = 10  # GitHub allows about 100 gist writes an hour per user, shared by the whole fleet
+clock = time.time  # tests replace it
 
 
 def env(name, default):
@@ -175,36 +187,153 @@ def new_message(text, to="ouroboros", re_id=None, sender="housesitter@comet", no
     return "%s-%s.json" % (stamp(now), mid), msg
 
 
-def send(text, to="ouroboros", re_id=None, gist_id=None, sender="housesitter@comet", now=None):
-    """Add one message to the out gist, deleting its files older than 24 h in the same PATCH."""
+def flush_sec():
+    return max(0, int(env("HOUSESITTER_PEER_FLUSH_SEC", str(FLUSH_SEC))))
+
+
+def max_per_hour():
+    return max(1, int(env("HOUSESITTER_PEER_MAX_PER_HOUR", str(MAX_PER_HOUR))))
+
+
+@contextlib.contextmanager
+def locked(name, block=True):
+    """An exclusive lock on a file in the state dir (the MCP server's copies and the watcher share the queue). Yields
+    whether it was taken: with block=False, False means another process holds it."""
+    fd = os.open(os.path.join(state_dir(), name), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if block else fcntl.LOCK_NB))
+            got = True
+        except BlockingIOError:
+            got = False
+        yield got
+    finally:
+        os.close(fd)
+
+
+def read_queue():
+    out = []
+    try:
+        with open(os.path.join(state_dir(), "peer-outbox.jsonl")) as f:
+            for ln in f:
+                try:
+                    e = json.loads(ln)
+                except ValueError:
+                    continue  # a half-written line is not a message
+                if isinstance(e, dict) and isinstance(e.get("msg"), dict) and e.get("file"):
+                    out.append(e)
+    except OSError:
+        pass
+    return out
+
+
+def write_queue(entries):
+    path = os.path.join(state_dir(), "peer-outbox.jsonl")
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w") as f:
+        f.write("".join(json.dumps(e) + "\n" for e in entries))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def send(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=False, ts=None):
+    """Queue one message for the out gist and flush the queue if it's due (now=True: at once, if the hourly cap allows).
+    The message is on disk before anything is written to GitHub, so it is never lost; its status is sent or queued."""
     if not isinstance(text, str) or not text:
         raise ValueError("text: a message needs some text")
-    gist_id = gist_id or env("HOUSESITTER_PEER_OUT", H_TO_O)
-    now = time.time() if now is None else now
-    name, msg = new_message(text, to, re_id, sender, now)
+    ts = clock() if ts is None else ts
+    name, msg = new_message(text, to, re_id, sender, ts)
+    with locked("peer-outbox.lock"):
+        with open(os.path.join(state_dir(), "peer-outbox.jsonl"), "a") as f:
+            f.write(json.dumps({"file": name, "msg": msg}) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    out = {"ok": True, "id": msg["id"], "at": msg["at"], "file": name, "to": to}
     try:
-        pruned = stale_files(get_gist(gist_id)[2], now)
-    except RuntimeError:
-        pruned = []  # pruning is housekeeping: a failed read never stops a message
-    files = {n: None for n in pruned}
-    files[name] = {"content": json.dumps(msg)}
-    request("PATCH", "%s/gists/%s" % (api(), gist_id), body={"files": files})
-    log({"dir": "sent", "gist": gist_id, "file": name, "msg": msg, "pruned": pruned})
-    return {"ok": True, "id": msg["id"], "at": msg["at"], "file": name, "to": to, "pruned": pruned}
+        r = flush(now=now, ts=ts)
+    except RuntimeError as e:
+        r = {"error": str(e)}  # it stays queued; the next flush (the watcher's, within minutes) takes it
+    sent = msg["id"] in (r.get("sent") or [])
+    out["status"] = "sent" if sent else "queued"
+    for k in ("pruned", "queued", "next_flush_at", "capped", "next_allowed_at", "busy", "error"):
+        if k in r:
+            out[k] = r[k]
+    return out
 
 
-def prune(gist_id=None, now=None):
-    """Delete the out gist's messages older than 24 h, without sending one."""
+def flush_if_due(ts=None):
+    """Write the queue to the out gist if the last flush was HOUSESITTER_PEER_FLUSH_SEC (default 6 min) ago."""
+    return flush(now=False, ts=ts)
+
+
+def flush(now=False, ts=None, gist_id=None):
+    """Write every queued message to the out gist in one PATCH, which also deletes its files older than 24 h. Only when
+    it's due (or now=True) and the hourly cap allows; otherwise the messages stay queued. A failed PATCH leaves them
+    queued too and raises. Each PATCH tried counts against the cap."""
     gist_id = gist_id or env("HOUSESITTER_PEER_OUT", H_TO_O)
-    now = time.time() if now is None else now
-    pruned = stale_files(get_gist(gist_id)[2], now)
-    if pruned:
-        request("PATCH", "%s/gists/%s" % (api(), gist_id), body={"files": {n: None for n in pruned}})
-    return {"ok": True, "pruned": pruned}
+    ts = clock() if ts is None else ts
+    with locked("peer-flush.lock", block=False) as got:
+        if not got:
+            return {"ok": True, "sent": [], "queued": len(read_queue()), "busy": True}
+        with locked("peer-outbox.lock"):
+            queue = read_queue()
+        if not queue:
+            return {"ok": True, "sent": [], "queued": 0}
+        state_path = os.path.join(state_dir(), "peer-flush.json")
+        st = read_json(state_path, {})
+        st = st if isinstance(st, dict) else {}
+        writes = sorted(w for w in (st.get("writes") or []) if isinstance(w, (int, float)) and ts - w < 3600)
+        last = st.get("last")
+        every = flush_sec()
+        if not now and isinstance(last, (int, float)) and ts - last < every:
+            return {"ok": True, "sent": [], "queued": len(queue), "next_flush_at": iso(last + every)}
+        cap = max_per_hour()
+        if len(writes) >= cap:
+            next_allowed = iso(writes[len(writes) - cap] + 3600)
+            if not isinstance(st.get("cap_logged"), (int, float)) or ts - st["cap_logged"] >= 60:
+                log({"at": iso(ts), "event": "peer-cap", "queued": len(queue), "next_allowed_at": next_allowed})
+                st["cap_logged"] = ts
+                write_json(state_path, dict(st, writes=writes))
+            return {"ok": True, "sent": [], "queued": len(queue), "capped": True, "next_allowed_at": next_allowed}
+        try:
+            pruned = stale_files(get_gist(gist_id)[2], ts)
+        except RuntimeError:
+            pruned = []  # pruning is housekeeping: a failed read never stops a message
+        files = {n: None for n in pruned}
+        for e in queue:
+            files[e["file"]] = {"content": json.dumps(e["msg"])}
+        st["writes"] = writes + [ts]
+        write_json(state_path, st)
+        request("PATCH", "%s/gists/%s" % (api(), gist_id), body={"files": files})
+        st["last"] = ts
+        write_json(state_path, st)
+        done = {e["msg"]["id"] for e in queue}
+        with locked("peer-outbox.lock"):
+            left = [e for e in read_queue() if e["msg"]["id"] not in done]
+            write_queue(left)
+        for e in queue:
+            log({"dir": "sent", "gist": gist_id, "file": e["file"], "msg": e["msg"]})
+        log({"dir": "flush", "gist": gist_id, "at": iso(ts), "files": [e["file"] for e in queue], "pruned": pruned, "urgent": bool(now)})
+        return {"ok": True, "sent": [e["msg"]["id"] for e in queue], "queued": len(left), "pruned": pruned}
 
 
 def inbox(gist_id=None, mark=True):
-    """New messages from the peer, oldest first, then marked seen. A 304 means nothing new since the last read."""
+    """New messages from the peer, oldest first, then marked seen. A 304 means nothing new since the last read.
+    Unless peeking, it also flushes the out queue if that's due."""
+    flushed = {}
+    if mark:
+        try:
+            flushed = flush_if_due()
+        except RuntimeError as e:
+            flushed = {"error": str(e)}
+    out = _read_inbox(gist_id, mark)
+    if flushed.get("sent") or flushed.get("error") or flushed.get("capped"):
+        out["outbox"] = {k: v for k, v in flushed.items() if k != "ok"}
+    return out
+
+
+def _read_inbox(gist_id, mark):
     gist_id = gist_id or env("HOUSESITTER_PEER_IN", O_TO_H)
     d = state_dir()
     etags = read_json(os.path.join(d, "peer-etag.json"), {})
@@ -226,7 +355,7 @@ def inbox(gist_id=None, mark=True):
 
 
 def main(argv):
-    if not argv or argv[0] not in ("send", "inbox", "prune"):
+    if not argv or argv[0] not in ("send", "inbox", "flush"):
         print(__doc__.strip())
         return 2
     try:
@@ -239,14 +368,16 @@ def main(argv):
                     else:
                         to = argv[i + 1]
                     i += 2
+                elif argv[i] == "--now":
+                    i += 1
                 else:
                     words.append(argv[i])
                     i += 1
-            out = send(" ".join(words), to=to, re_id=re_id)
+            out = send(" ".join(words), to=to, re_id=re_id, now="--now" in argv)
         elif argv[0] == "inbox":
             out = inbox(mark="--peek" not in argv)
         else:
-            out = prune()
+            out = flush(now="--now" in argv)
     except (RuntimeError, ValueError, OSError) as e:
         print(json.dumps({"ok": False, "error": str(e)}))
         return 1

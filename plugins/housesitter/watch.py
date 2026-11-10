@@ -10,6 +10,8 @@ Every HOUSESITTER_WATCH_SEC (default 30) it looks at four things and wakes the a
   mini    the Mac's own fleet heartbeat (<mac>.json in the fleet gist) is older than 15 minutes, or back
   drill   $HOUSESITTER_STATE_DIR/simulate-incident exists: one stale-heartbeat incident, marked simulated; the file is
           then renamed to simulate-incident.consumed-<time>
+Each tick it also flushes the agent's queued peer messages when they're due (peer.flush_if_due), so what peer_send
+queued goes out within HOUSESITTER_PEER_FLUSH_SEC (6 minutes) without the agent doing anything more.
 
 It remembers what it has woken the agent for in watch-seen.json and watch-state.json, and only reads peer-seen.json
 (peer_inbox's), so a message the agent hasn't read is never hidden from it. One line on stdout per event.
@@ -105,6 +107,11 @@ class Watcher:
         peer.write_json(self.woken_path, woken[-WOKEN_MAX:])
         st["peer_etag"] = None if missed else etag  # a wake that failed is tried again next time
 
+    def watch_outbox(self, st):
+        r = peer.flush_if_due(ts=self.clock())
+        if r.get("sent"):
+            self.say(event="flush", sent=r["sent"], queued=r.get("queued", 0), pruned=len(r.get("pruned") or []))
+
     def watch_sitter(self, st):
         path = os.path.join(env("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter"), "status.json")
         now = self.clock()
@@ -192,7 +199,7 @@ class Watcher:
 
     def tick(self):
         st = self.load()
-        for name in ("drill", "peer", "sitter", "mini"):
+        for name in ("drill", "peer", "outbox", "sitter", "mini"):
             b = self.backoff.get(name) or {"fails": 0, "until": 0}
             if self.clock() < b["until"]:
                 continue

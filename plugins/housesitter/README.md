@@ -38,10 +38,12 @@ python3 ~/.ouro-cli/plugins/housesitter/watch.py >> /userdata/ouro/housesitter/w
 | --- | --- | --- |
 | `HOUSESITTER_SITTER_CMD` | `python3 /etc/kvmd/user/housesitter/sitter.py` | how to run the sitter |
 | `HOUSESITTER_HOME` | `/etc/kvmd/user/housesitter` | the sitter's files (its `status.json` is its heartbeat) |
-| `HOUSESITTER_STATE_DIR` | `/userdata/ouro/housesitter` | the plugin's own state: peer seen-set, ETags, `peer-log.jsonl`, `screens/`, `events/`, the watcher's memory |
+| `HOUSESITTER_STATE_DIR` | `/userdata/ouro/housesitter` | the plugin's own state: the peer outbox (`peer-outbox.jsonl`, `peer-flush.json`), seen-set, ETags, `peer-log.jsonl`, `screens/`, `events/`, the watcher's memory |
 | `HOUSESITTER_TOKEN_FILE` | `/userdata/ouro/secrets/github-token` | a GitHub token with gist scope; else `GH_TOKEN` or `GITHUB_TOKEN` |
 | `HOUSESITTER_PEER_IN` | `d10a53ca03a65b26aa2a4bbb96cec03d` | the gist Ouroboros writes and Housesitter reads |
 | `HOUSESITTER_PEER_OUT` | `94a9ee97baab459bb32a37d6dbb7c52d` | the gist Housesitter writes and Ouroboros reads |
+| `HOUSESITTER_PEER_FLUSH_SEC` | `360` | the least time between two flushes of the peer outbox (an urgent `now` send skips it) |
+| `HOUSESITTER_PEER_MAX_PER_HOUR` | `10` | the most peer gist writes in any 60 minutes, urgent ones included |
 | `HOUSESITTER_FLEET_GIST` | `ded3f1d37c2a756becc3333b0e4276b4` | the fleet gist with the Mac's heartbeat |
 | `HOUSESITTER_MAC` | `aris-mac-mini` | the Mac's heartbeat file there, `<mac>.json` |
 | `HOUSESITTER_DISK` | `/userdata` | the disk `kvm_health` reports on |
@@ -51,4 +53,4 @@ python3 ~/.ouro-cli/plugins/housesitter/watch.py >> /userdata/ouro/housesitter/w
 
 ## The peer link
 
-One immutable gist file per message, `<UTC yyyymmddTHHMMSSZ>-<8 hex>.json`, holding `{"v":1,"id","at","from","to","text","re"?}`. A send also deletes the sender's own files older than 24 hours. A read uses ETags, so an unchanged gist costs nothing. From the shell: `python3 peer.py send <text> [--re <id>]`, `python3 peer.py inbox`, `python3 peer.py prune`. On the Mac, Ouroboros uses `housesitter peer send <text> [--re <id>]` and `housesitter peer inbox`.
+One immutable gist file per message, `<UTC yyyymmddTHHMMSSZ>-<8 hex>.json`, holding `{"v":1,"id","at","from","to","text","re"?}`. GitHub allows about 100 gist writes an hour per user, shared by the whole fleet, so sends are batched: a message goes into a durable queue, and a flush writes everything queued, and deletes the sender's own files older than 24 hours, in one PATCH, at most once every 6 minutes (urgent `now` sends go at once) and never more than 10 times an hour each way; over the cap, messages wait in the queue and `peer-log.jsonl` gets a `peer-cap` line. `peer_send` tries a flush, and the watcher and `peer_inbox` send whatever is due. A read uses ETags, so an unchanged gist costs nothing. From the shell: `python3 peer.py send <text> [--re <id>] [--now]`, `python3 peer.py inbox`, `python3 peer.py flush [--now]`. On the Mac, Ouroboros uses `housesitter peer send <text> [--re <id>] [--now]`, `housesitter peer inbox` (which also flushes what's due) and `housesitter peer flush [--now]`.

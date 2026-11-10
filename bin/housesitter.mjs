@@ -64,8 +64,12 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter ls <mac>                     the Mac as state + the actions available now (Ouro Reins)
   housesitter do <mac> <action> ['<json>'] run one; refusals: action-unavailable, input-invalid, action-failed
   housesitter forget <mac> --yes           wipe the secrets from the KVM and stop the sitter
-  housesitter peer send <text> [--re <id>] Ouroboros to Housesitter, the agent on the KVM: free text through a secret gist
-  housesitter peer inbox [--peek]          Housesitter's new messages, oldest first, each shown once (--peek: don't mark them read)
+  housesitter peer send <text> [--re <id>] [--now]
+                                           Ouroboros to Housesitter, the agent on the KVM: free text through a secret gist,
+                                           sent within 6 minutes (--now: at once; 10 gist writes an hour at most)
+  housesitter peer inbox [--peek]          Housesitter's new messages, oldest first, each shown once (--peek: don't mark them read);
+                                           also sends queued messages that are due
+  housesitter peer flush [--now]           send the queued messages if due (--now: at once, within the hourly cap)
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
   housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 
@@ -423,14 +427,24 @@ async function proof(mac) {
   return backAt ? 0 : 1;
 }
 
-// `housesitter peer send|inbox`: Ouroboros's end of the peer link with Housesitter; see src/peer.mjs.
+// `housesitter peer send|inbox|flush`: Ouroboros's end of the peer link with Housesitter; see src/peer.mjs.
 async function peerCmd() {
   const p = Peer.peer({ dir: path.dirname(configPath()) });
+  const waiting = (r) => (r.capped ? `the hourly cap is reached; it goes out after ${r.next_allowed_at}`
+    : r.error ? `it goes out at the next flush (${r.error})`
+    : r.next_flush_at ? `it goes out by ${r.next_flush_at}` : 'it goes out at the next flush');
   if (name === 'send') {
     const text = rest.join(' ');
-    need(text, 'housesitter peer send <text> [--re <id>]');
-    const r = await p.send(text, { re: val('--re'), to: val('--to') || 'housesitter' });
-    json ? emit(r) : say(`sent ${r.id} to ${r.to}${r.pruned.length ? ` (cleared ${r.pruned.length} over a day old)` : ''}`);
+    need(text, 'housesitter peer send <text> [--re <id>] [--now]');
+    const r = await p.send(text, { re: val('--re'), to: val('--to') || 'housesitter', now: flag('--now') });
+    json ? emit(r) : say(r.status === 'sent'
+      ? `sent ${r.id} to ${r.to}${r.pruned?.length ? ` (cleared ${r.pruned.length} over a day old)` : ''}`
+      : `queued ${r.id} for ${r.to}: ${waiting(r)}`);
+    return 0;
+  }
+  if (name === 'flush') {
+    const r = await p.flush({ now: flag('--now') });
+    json ? emit(r) : say(r.sent.length ? `sent ${r.sent.length} queued message${r.sent.length === 1 ? '' : 's'}` : r.queued ? `${r.queued} queued: ${waiting(r).replace(/^it goes/, 'they go')}` : 'nothing queued');
     return 0;
   }
   if (name === 'inbox') {
@@ -439,7 +453,7 @@ async function peerCmd() {
     else say(r.messages.length ? r.messages.map((m) => `${m.at}  ${m.from || '?'}  ${m.id}${m.re ? ` (re ${m.re})` : ''}\n${m.text}`).join('\n\n') : 'nothing new');
     return 0;
   }
-  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox)`);
+  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox, flush)`);
 }
 
 // `housesitter plug <mac> find|adopt [ip]|status|prove`: see src/plug.mjs.
