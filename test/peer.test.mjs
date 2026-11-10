@@ -8,6 +8,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { peer, stamp, fileTime, O_TO_H, H_TO_O } from '../src/peer.mjs';
+import { peerWatch } from '../src/peer-watch.mjs';
 
 const BIN = fileURLToPath(new URL('../bin/housesitter.mjs', import.meta.url));
 const scratchRoot = path.join(fileURLToPath(new URL('..', import.meta.url)), '.scratch');
@@ -241,5 +242,110 @@ test('housesitter peer send, flush and inbox from the shell; the queue outlives 
   const help = (await cli(['help'], e)).stdout;
   assert.match(help, /housesitter peer send <text>/);
   assert.match(help, /housesitter peer flush \[--now\]/);
+  await gh.close();
+});
+
+const hmsg = (id, at, text) => [`${stamp(Date.parse(at))}-${id.padStart(8, '0')}.json`, JSON.stringify({ v: 1, id, at, from: 'housesitter@comet', text })];
+const fakeExec = (codes = []) => { const calls = []; return { calls, exec: async (file, argv) => { calls.push([file, ...argv]); const code = codes.shift() ?? 0; return { code, stdout: '', stderr: code ? 'daemon down' : '' }; } }; };
+const watchLog = (dir) => fs.readFileSync(path.join(dir, 'peer-watch.log'), 'utf8').trim().split('\n');
+
+test('peer watch wakes the agent once per new message, marks nothing read and never writes', async () => {
+  const { gists, gh, dir, time, p, patches } = await setup();
+  const x = fakeExec();
+  const w = peerWatch({ p, dir, agent: 'ouroboros', ouro: '/bin/ouro', bin: '/h/bin/housesitter.mjs', exec: x.exec, clock: () => time.now });
+  await w.tick();
+  assert.equal(x.calls.length, 0);
+  const [f1, c1] = hmsg('a1', '2026-11-09T11:59:00Z', 'the Mac is at the login window');
+  gists[H_TO_O][f1] = c1;
+  await w.tick();
+  assert.equal(x.calls.length, 1);
+  assert.deepEqual(x.calls[0].slice(0, 4), ['/bin/ouro', 'msg', '--to', 'ouroboros']);
+  assert.match(x.calls[0][4], /^1 new message from Housesitter on the peer link \(latest: the Mac is at the login window\)\. Read it with: node \/h\/bin\/housesitter\.mjs peer inbox — then answer with peer send/);
+  await w.tick();
+  assert.equal(gh.requests.at(-1).etag !== undefined, true);
+  assert.equal(x.calls.length, 1);
+  const [f2, c2] = hmsg('a2', '2026-11-09T12:00:30Z', `tell-ari: ${'z'.repeat(400)}`);
+  gists[H_TO_O][f2] = c2;
+  await w.tick();
+  assert.equal(x.calls.length, 2);
+  assert.match(x.calls[1][4], /^1 new message .*latest: tell-ari: z+…\)/);
+  assert.ok(x.calls[1][4].length < 500);
+  assert.equal(fs.existsSync(path.join(dir, 'peer-seen.json')), false);
+  assert.deepEqual((await p.inbox()).messages.map((m) => m.id), ['a1', 'a2']);
+  await w.tick();
+  assert.equal(x.calls.length, 2);
+  assert.equal(patches().length, 0);
+  assert.match(watchLog(dir).join('\n'), /woke ouroboros for a1\n.*tick: unchanged\n.*woke ouroboros for a2/);
+  await gh.close();
+});
+
+test('peer watch: a failed ouro msg backs off and retries; a rate-limited read waits for the reset', async () => {
+  const { gists, gh, dir, env, time } = await setup();
+  let limited = 0;
+  const fetchFn = async (url, o) => (limited-- > 0
+    ? new Response('{"message":"API rate limit exceeded"}', { status: 403, headers: { 'x-ratelimit-reset': String(time.now / 1000 + 600) } })
+    : fetch(url, o));
+  const p = peer({ dir, env, fetchFn, clock: () => time.now });
+  const x = fakeExec([1]);
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', every: 30, exec: x.exec, clock: () => time.now });
+  const [f1, c1] = hmsg('b1', '2026-11-09T11:59:00Z', 'hello');
+  gists[H_TO_O][f1] = c1;
+  await w.tick();
+  assert.equal(x.calls.length, 1);
+  assert.match(watchLog(dir).at(-1), /wake failed: ouro msg exited 1: daemon down; retry in 60 s/);
+  time.now += 30e3;
+  await w.tick();
+  assert.equal(x.calls.length, 1);
+  time.now += 31e3;
+  await w.tick();
+  assert.equal(x.calls.length, 2);
+  assert.match(watchLog(dir).at(-1), /woke ouroboros for b1/);
+  const [f2, c2] = hmsg('b2', '2026-11-09T12:02:00Z', 'again');
+  gists[H_TO_O][f2] = c2;
+  limited = 1;
+  await w.tick();
+  assert.match(watchLog(dir).at(-1), /read rate-limited \(HTTP 403\); next read after 2026-11-09T12:11:01Z/);
+  const gets = gh.requests.length;
+  time.now += 300e3;
+  await w.tick();
+  assert.equal(gh.requests.length, gets);
+  time.now += 301e3;
+  await w.tick();
+  assert.equal(x.calls.length, 3);
+  assert.match(x.calls[2][4], /latest: again/);
+  const nowhere = peerWatch({ p, dir: fs.mkdtempSync(path.join(scratchRoot, 'peer-')), ouro: null, bin: 'hs', exec: x.exec, clock: () => time.now });
+  await nowhere.tick();
+  assert.equal(x.calls.length, 3);
+  await gh.close();
+});
+
+test('peer watch flushes the agent\'s queue when due, not before', async () => {
+  const { gh, dir, time, p, patches, queue } = await setup();
+  await p.send('first');
+  time.now += 60e3;
+  await p.send('second');
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', exec: fakeExec().exec, clock: () => time.now });
+  await w.tick();
+  assert.equal(patches().length, 1);
+  assert.equal(queue().length, 1);
+  time.now += 300e3;
+  await w.tick();
+  assert.equal(patches().length, 2);
+  assert.deepEqual(queue(), []);
+  assert.match(watchLog(dir).at(-1), /flushed 1 queued message: /);
+  await gh.close();
+});
+
+test('housesitter peer watch --once from the shell', async () => {
+  const { gists, gh, dir, env } = await setup();
+  const calls = path.join(dir, 'ouro-calls.txt');
+  const ouro = path.join(dir, 'ouro');
+  fs.writeFileSync(ouro, `#!/bin/sh\nprintf '%s|' "$@" >> '${calls}'\necho >> '${calls}'\n`, { mode: 0o755 });
+  const [f1, c1] = hmsg('c9', '2026-11-09T11:59:00Z', 'up again');
+  gists[H_TO_O][f1] = c1;
+  const r = await cli(['peer', 'watch', '--once', '--agent', 'ouroboros', '--ouro', ouro], { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /woke ouroboros for c9/);
+  assert.match(fs.readFileSync(calls, 'utf8'), /^msg\|--to\|ouroboros\|1 new message from Housesitter .*bin\/housesitter\.mjs peer inbox/);
   await gh.close();
 });
