@@ -1,6 +1,6 @@
 {
   "name": "housesitter",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "description": "Housesitter, an Ouro agent living on an IP-KVM: the sitter's eyes and hands on the Mac beside it, a free-text peer link with the agent on that Mac, and a watcher that wakes it when something changes.",
   "author": { "name": "Ari Mendelow" },
   "homepage": "https://github.com/ourostack/housesitter/tree/main/plugins/housesitter",

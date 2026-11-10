@@ -100,6 +100,7 @@ What keeps the link cheap and alive:
 
 - **Batching.** Both ends queue sends and flush them at most every 6 minutes, many files in one PATCH, with a hard cap of 10 PATCHes an hour each way. `now` (`--now`) sends at once but still counts toward the cap.
 - **A watcher on each end.** On the KVM, `watch.py` wakes Housesitter. On the Mac, the LaunchAgent `bot.ouro.housesitter-peer-watch` runs `housesitter peer watch --agent ouroboros --every 60`: it polls Housesitter's gist with an ETag, wakes Ouroboros with `ouro msg` when there's something new, and flushes Ouroboros's queue when due. Don't rely on an Ouro habit for this before 0.1.0-alpha.1023: until then the private runtime denied every habit wake.
+- **Label drills.** Before stopping either agent on purpose, mark the drill on both ends (`housesitter peer drill "<label>" --minutes 30` on the Mac; the same `drill.json` in `/userdata/ouro/housesitter/` on the KVM). Everything on the link is then labelled `[planned drill: <label>]`. Without the label, 2026-11-10's heal test reached Ari as an overnight outage.
 - **The right token.** GitHub limits gist reads per token, too. Without `GH_TOKEN`, the Mac end reads with gh's token for the gists' owner (`peer.user`, default `arimendelow`), not gh's active account. On the night, the active account's token was spent and every read returned 403.
 
 ## 6. An incident, end to end (drill)

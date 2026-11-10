@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { SEEN_MAX } from './peer.mjs';
+import { DRILL_NOTE, drillLabel, SEEN_MAX } from './peer.mjs';
 
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
@@ -64,7 +64,13 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     const n = fresh.length;
     return `${n} new message${n === 1 ? '' : 's'} from Housesitter on the peer link (latest: ${oneLine(fresh.at(-1).text, 200)}). `
       + `Read ${n === 1 ? 'it' : 'them'} with: node ${bin} peer inbox — then answer with peer send `
-      + '(add --now only if urgent; a message that says tell-ari: relay it to Ari on Teams).';
+      + '(add --now only if urgent; a message that says tell-ari: relay it to Ari on Teams).'
+      + drillWake(fresh);
+  };
+  // A drill on this Mac (drill.json) or a message sent during one on the Comet: say so in the wake.
+  const drillWake = (fresh) => {
+    const label = drillLabel(dir, clock()) || fresh.map((m) => /^\[planned drill: ([^\]]+)\]/.exec(m.text || '')?.[1]).find(Boolean);
+    return label ? ` ${DRILL_NOTE(label)}` : '';
   };
 
   async function read(st) {

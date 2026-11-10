@@ -77,6 +77,10 @@ class Watcher:
         peer.write_json(path, dict(payload, source=source, type=etype, id=eid, at=peer.iso(self.clock())))
         text = (payload.get("message") or {}).get("text") if source == "peer" else None
         message = "[housesitter watch] %s %s (%s): %s Details: %s" % (source, etype, eid, text or one_line(summary) or etype, path)
+        m = re.match(r"^\[planned drill: ([^\]]+)\]", text or "")
+        drill = peer.drill_label(self.clock()) or (m and m.group(1))
+        if drill:
+            message += " " + peer.drill_note(drill)
         cmd = shlex.split(env("HOUSESITTER_OURO_BIN", "ouro")) + ["msg", "--to", env("HOUSESITTER_AGENT", "housesitter"), message]
         try:
             r = self.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)

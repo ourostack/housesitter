@@ -72,6 +72,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            also sends queued messages that are due
   housesitter peer flush [--now]           send the queued messages if due (--now: at once, within the hourly cap)
   housesitter peer watch [--agent ouroboros] [--every 30] [--once] [--ouro <path>]
+  housesitter peer drill <label> [--minutes 60] | --end   mark a planned drill: the link labels everything sent meanwhile
                                            wake the agent with ouro msg when Housesitter writes (marks nothing read),
                                            and send its queued messages when due; logs to peer-watch.log beside the config
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
@@ -459,13 +460,30 @@ async function peerCmd() {
     else say(r.messages.length ? r.messages.map((m) => `${m.at}  ${m.from || '?'}  ${m.id}${m.re ? ` (re ${m.re})` : ''}\n${m.text}`).join('\n\n') : 'nothing new');
     return 0;
   }
+  if (name === 'drill') {
+    const file = path.join(path.dirname(configPath()), 'drill.json');
+    if (flag('--end')) {
+      const d = (() => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } })();
+      if (d) fs.writeFileSync(file, `${JSON.stringify({ ...d, until: new Date().toISOString() }, null, 2)}\n`);
+      json ? emit({ ok: true, ended: d?.label || null }) : say(d ? `drill "${d.label}" ended` : 'no drill');
+      return 0;
+    }
+    const label = rest.join(' ');
+    need(label, 'housesitter peer drill <label> [--minutes 60] | housesitter peer drill --end');
+    const minutes = Math.max(1, Number.parseInt(val('--minutes') || '60', 10) || 60);
+    const d = { label, from: new Date().toISOString(), until: new Date(Date.now() + minutes * 60e3).toISOString() };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(d, null, 2)}\n`);
+    json ? emit({ ok: true, ...d }) : say(`drill "${label}" until ${d.until}: everything sent on the peer link says "[planned drill: ${label}]"`);
+    return 0;
+  }
   if (name === 'watch') {
     const every = Math.max(5, Number.parseInt(val('--every') || '30', 10) || 30);
     const w = peerWatch({ p, dir: path.dirname(configPath()), agent: val('--agent') || 'ouroboros', ouro: val('--ouro') || which('ouro'), bin: path.join(ROOT, 'bin', 'housesitter.mjs'), every, print: flag('--once') || process.stdout.isTTY ? (l) => console.log(l) : () => {} });
     if (flag('--once')) { await w.tick(); return 0; }
     return w.run();
   }
-  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox, flush, watch)`);
+  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox, flush, watch, drill)`);
 }
 
 // `housesitter plug <mac> find|adopt [ip]|status|prove`: see src/plug.mjs.

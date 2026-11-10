@@ -64,6 +64,16 @@ function lock(file, { wait = true, staleMs = 30000 } = {}) {
 }
 
 // dir holds peer-outbox.jsonl, peer-flush.json, peer-seen.json, peer-etag.json and peer-log.jsonl. clock: tests.
+// A planned drill (a battle test, a heal test): `housesitter peer drill <label>` writes drill.json beside the peer
+// state until it ends. While it runs, everything sent on the link starts with "[planned drill: <label>]", so neither
+// agent reports the drill to Ari as a real incident (2026-11-10: a heal test reached Ari as an overnight outage).
+export function drillLabel(dir, now = Date.now()) {
+  const d = readJson(path.join(dir, 'drill.json'), null);
+  return d && typeof d.label === 'string' && d.label && Date.parse(d.until) > now ? d.label : null;
+}
+export const drillText = (text, label) => (label && !text.startsWith('[planned drill') ? `[planned drill: ${label}] ${text}` : text);
+export const DRILL_NOTE = (label) => `This is a planned drill (${label}): handle it for real, but say "planned drill (${label})" in anything you report, and don't relay it to Ari as an incident.`;
+
 export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env, fetchFn = globalThis.fetch, from = `ouroboros@${os.hostname().replace(/\.local$/, '')}`, clock = Date.now } = {}) {
   const api = (env.HOUSESITTER_GITHUB_API || 'https://api.github.com').replace(/\/$/, '');
   const outGist = env.HOUSESITTER_PEER_OUT || O_TO_H;
@@ -177,6 +187,7 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
     async send(text, { re = null, to = 'housesitter', now = false } = {}) {
       if (typeof text !== 'string' || !text) throw new Error('peer send: a message needs some text');
       const ts = clock();
+      text = drillText(text, drillLabel(dir, ts));
       const id = crypto.randomBytes(4).toString('hex');
       const msg = { v: 1, id, at: iso(ts), from, to, text, ...(re ? { re } : {}) };
       const file = `${stamp(ts)}-${id}.json`;

@@ -87,6 +87,10 @@ def iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def parse_iso(text):
+    return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
 def stamp(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -178,6 +182,28 @@ def stale_files(gist, now, keep_sec=KEEP_SEC):
     return sorted(n for n in files if file_time(n) is not None and now - file_time(n) > keep_sec)
 
 
+def drill_label(now=None):
+    """The planned drill running now (drill.json beside the peer state: {"label", "until"}), or None. While one runs,
+    everything sent on the link starts with "[planned drill: <label>]", so it never reaches Ari as a real incident."""
+    d = read_json(os.path.join(state_dir(), "drill.json"), None)
+    now = time.time() if now is None else now
+    try:
+        if isinstance(d, dict) and d.get("label") and parse_iso(d["until"]) > now:
+            return str(d["label"])
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
+def drill_text(text, label):
+    return "[planned drill: %s] %s" % (label, text) if label and not text.startswith("[planned drill") else text
+
+
+def drill_note(label):
+    return ('This is a planned drill (%s): handle it for real, but say "planned drill (%s)" in anything you report, '
+            "and don't relay it to Ari as an incident." % (label, label))
+
+
 def new_message(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=None, do=None):
     now = time.time() if now is None else now
     mid = uuid.uuid4().hex[:8]
@@ -245,7 +271,7 @@ def send(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=False
     if not isinstance(text, str) or not text:
         raise ValueError("text: a message needs some text")
     ts = clock() if ts is None else ts
-    name, msg = new_message(text, to, re_id, sender, ts, do)
+    name, msg = new_message(drill_text(text, drill_label(ts)), to, re_id, sender, ts, do)
     with locked("peer-outbox.lock"):
         with open(os.path.join(state_dir(), "peer-outbox.jsonl"), "a") as f:
             f.write(json.dumps({"file": name, "msg": msg}) + "\n")
