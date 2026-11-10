@@ -1,0 +1,10 @@
+#!/bin/sh
+# Housesitter's memory sampler (/userdata/ouro/bin/memsample.sh): one CSV line every 30 s into /userdata/ouro/samples/mem.csv.
+PIDF=/var/run/housesitter-samples.pid
+running() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
+case "$1" in
+  start) running && exit 0; setsid sh -c 'exec /userdata/ouro/bin/memsample.sh </dev/null >>/userdata/ouro/samples/memsample.log 2>&1' & echo $! > "$PIDF" ;;
+  stop) running && kill "$(cat "$PIDF")"; : > "$PIDF" ;;
+  status) if running; then echo "samples running (pid $(cat "$PIDF"))"; else echo "samples stopped"; exit 3; fi ;;
+  *) echo "usage: $0 start|stop|status"; exit 2 ;;
+esac
