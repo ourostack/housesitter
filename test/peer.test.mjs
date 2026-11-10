@@ -417,3 +417,40 @@ test('peer watch runs `ouro up` once for a do: ouro-up message, reports back, th
   assert.equal(calls.filter((c) => c[1] === 'up').length, 1, 'once per request');
   await gh.close();
 });
+
+test('a planned drill: `peer drill` labels everything sent until it ends, and the watch says so when it wakes the agent', async () => {
+  const { gists, gh, dir, env, time, p } = await setup();
+  const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') };
+  const d = await cli(['peer', 'drill', 'battle', 'test', 'row', '9', '--minutes', '30', '--json'], e);
+  assert.equal(d.status, 0, d.stderr);
+  const drill = JSON.parse(fs.readFileSync(path.join(dir, 'drill.json'), 'utf8'));
+  assert.equal(drill.label, 'battle test row 9');
+  time.now = Date.parse(drill.from) + 60e3;
+  await p.send('your daemon is down', { now: true });
+  const sent = () => Object.values(gists[O_TO_H]).map((c) => JSON.parse(c).text);
+  assert.deepEqual(sent(), ['[planned drill: battle test row 9] your daemon is down']);
+  await p.send('[planned drill: battle test row 9] already labelled', { now: true });
+  assert.equal(sent()[1], '[planned drill: battle test row 9] already labelled');
+
+  const x = fakeExec();
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', exec: x.exec, clock: () => time.now, probe: async () => true });
+  const [f1, c1] = hmsg('d1', '2026-11-10T12:51:50Z', 'please run ouro up');
+  gists[H_TO_O][f1] = c1;
+  await w.tick();
+  assert.match(x.calls.at(-1)[4], /This is a planned drill \(battle test row 9\): handle it for real, but say "planned drill \(battle test row 9\)" in anything you report, and don't relay it to Ari as an incident\.$/);
+
+  assert.equal((await cli(['peer', 'drill', '--end'], e)).status, 0);
+  time.now = Date.now() + 1000;
+  await p.send('all clear', { now: true });
+  assert.equal(sent().at(-1), 'all clear');
+  const [f2, c2] = hmsg('d2', '2026-11-10T13:10:00Z', '[planned drill: row 9] a message labelled on the Comet');
+  gists[H_TO_O][f2] = c2;
+  await w.tick();
+  assert.match(x.calls.at(-1)[4], /This is a planned drill \(row 9\)/, 'a label from the other side carries into the wake');
+  const [f3, c3] = hmsg('d3', '2026-11-10T13:11:00Z', 'a real one');
+  delete gists[H_TO_O][f2];
+  gists[H_TO_O][f3] = c3;
+  await w.tick();
+  assert.doesNotMatch(x.calls.at(-1)[4], /planned drill/);
+  await gh.close();
+});

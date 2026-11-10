@@ -96,6 +96,19 @@ class PeerTest(PluginCase):
         plain = peer.send("hello", ts=time.time())
         self.assertNotIn("do", [e["msg"] for e in self.queue() if e["msg"]["id"] == plain["id"]][0])
 
+    def test_during_a_planned_drill_everything_sent_is_labelled_and_after_it_nothing_is(self):
+        now = time.time()
+        peer.write_json(os.path.join(peer.state_dir(), "drill.json"), {"label": "battle test row 9", "until": peer.iso(now + 600)})
+        r = peer.send("bring it back", now=True, do="ouro-up", ts=now)
+        msg = json.loads(self.patches()[0]["body"]["files"][r["file"]]["content"])
+        self.assertEqual(msg["text"], "[planned drill: battle test row 9] bring it back")
+        self.assertEqual(peer.drill_text(msg["text"], "battle test row 9"), msg["text"])  # never twice
+        self.assertIsNone(peer.drill_label(now + 601))
+        later = peer.send("a real one", ts=now + 700)
+        sent = [json.loads(f["content"]) for q in self.patches() for n, f in q["body"]["files"].items() if f and n == later["file"]]
+        queued = [e["msg"] for e in self.queue() if e["msg"]["id"] == later["id"]]
+        self.assertEqual([m["text"] for m in sent + queued], ["a real one"])
+
     def test_the_hourly_cap_keeps_messages_queued_logs_once_a_minute_and_lets_them_go_when_it_frees(self):
         t0 = time.time()
         for i in range(10):

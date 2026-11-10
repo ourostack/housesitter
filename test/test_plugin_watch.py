@@ -65,6 +65,17 @@ class WatchTest(PluginCase):
         self.w.tick()
         self.assertEqual(len(patches()), 2)
 
+    def test_a_wake_during_a_planned_drill_says_it_is_one(self):
+        peer.write_json(os.path.join(self.state, "drill.json"), {"label": "battle test row 9", "until": peer.iso(self.now + 600)})
+        self.put_message(IN, "20261110T125123Z-0000dd01.json", {"v": 1, "id": "dd01", "at": "2026-11-10T12:51:23Z", "from": "ouroboros@mini", "text": "daemon down"})
+        self.w.tick()
+        self.assertTrue(self.ouro_calls()[0][3].endswith(peer.drill_note("battle test row 9")))
+
+    def test_a_message_labelled_on_the_mac_carries_the_drill_into_the_wake(self):
+        self.put_message(IN, "20261110T125123Z-0000dd02.json", {"v": 1, "id": "dd02", "at": "2026-11-10T12:51:23Z", "from": "ouroboros@mini", "text": "[planned drill: row 9] daemon down"})
+        self.w.tick()
+        self.assertTrue(self.ouro_calls()[0][3].endswith(peer.drill_note("row 9")))
+
     def test_a_message_the_agent_already_read_does_not_wake_it(self):
         os.makedirs(self.state, exist_ok=True)
         with open(os.path.join(self.state, "peer-seen.json"), "w") as f:
