@@ -21,7 +21,7 @@
 
 ## Housesitter, the agent on the KVM
 - [plugins/housesitter](plugins/housesitter/README.md): an Ouro plugin. MCP tools sitter_status, sitter_look, sitter_screenshot, sitter_unlock, sitter_want_desktop, sitter_power_cycle, sitter_power_on, sitter_click, sitter_type, sitter_key, sitter_scroll (each runs `sitter.py do <op>` and returns its reply as is), peer_send, peer_inbox, kvm_health; watch.py wakes the agent with `ouro msg --to <agent>`; skills/housesitter/SKILL.md.
-- Peer link with the agent on the Mac: `housesitter peer send <text> [--re <id>]`, `housesitter peer inbox [--peek]`. Free text, one gist file per message.
+- Peer link with the agent on the Mac: `housesitter peer send <text> [--re <id>] [--now]`, `housesitter peer inbox [--peek]`, `housesitter peer flush [--now]`. Free text, one gist file per message; sends are queued and flushed in one PATCH at most every 6 minutes (`--now`/`now` at once), at most 10 gist writes an hour each way (HOUSESITTER_PEER_FLUSH_SEC, HOUSESITTER_PEER_MAX_PER_HOUR).
 
 ## Docs
 - [Hardware](docs/hardware.md): wiring, display settings, KVM quirks, power adapters

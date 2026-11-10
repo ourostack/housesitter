@@ -8,6 +8,7 @@ import time
 import unittest
 
 from plugin_base import FLEET, IN, PLUGIN, PluginCase, iso, slurp
+import peer  # noqa: E402
 import watch  # noqa: E402
 
 
@@ -46,6 +47,23 @@ class WatchTest(PluginCase):
         self.assertEqual(json.loads(slurp(os.path.join(self.state, "watch-seen.json"))), ["aa01"])
         wake = [json.loads(ln) for ln in self.lines if json.loads(ln).get("event") == "wake"]
         self.assertEqual([(w["source"], w["id"], w["ok"]) for w in wake], [("peer", "peer-aa01", True)])
+
+    def test_it_flushes_the_queued_peer_messages_when_they_are_due(self):
+        peer.send("first", ts=self.now)
+        q = peer.send("queued", ts=self.now + 30)
+        self.assertEqual(q["status"], "queued")
+        patches = lambda: [r for r in self.gh.requests if r["method"] == "PATCH"]
+        self.now += 60
+        self.w.tick()
+        self.assertEqual(len(patches()), 1)  # not due yet
+        self.now += 301
+        self.w.tick()
+        self.assertEqual(len(patches()), 2)
+        self.assertEqual(set(patches()[1]["body"]["files"]), {q["file"]})
+        flushed = [json.loads(ln) for ln in self.lines if json.loads(ln).get("event") == "flush"]
+        self.assertEqual([(f["sent"], f["queued"]) for f in flushed], [([q["id"]], 0)])
+        self.w.tick()
+        self.assertEqual(len(patches()), 2)
 
     def test_a_message_the_agent_already_read_does_not_wake_it(self):
         os.makedirs(self.state, exist_ok=True)
