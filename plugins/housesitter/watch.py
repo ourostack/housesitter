@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Housesitter's one background watcher, its own process (the KVM's init script starts it; the MCP server never does).
 
-Every HOUSESITTER_WATCH_SEC (default 30) it looks at four things and wakes the agent (`ouro event submit`) when one
-of them has news:
+Every HOUSESITTER_WATCH_SEC (default 30) it looks at four things and wakes the agent when one of them has news, with
+`ouro msg --to <agent> <message>` (the daemon queues it and wakes an ordinary turn with all of the agent's tools;
+`ouro event submit` turns are scoped to the Sanctuary Butler's capability profiles, so they aren't used here):
   peer    a new message from Ouroboros in the in gist (ETag: an unchanged gist costs nothing)
   sitter  the sitter's state or what the screen reads as changed, or its heartbeat (status.json, rewritten every
           interval) is older than 3 intervals, or back
@@ -72,9 +73,9 @@ class Watcher:
         eid = safe_id(eid)
         path = os.path.join(d, "%s.json" % eid)
         peer.write_json(path, dict(payload, source=source, type=etype, id=eid, at=peer.iso(self.clock())))
-        cmd = shlex.split(env("HOUSESITTER_OURO_BIN", "ouro")) + [
-            "event", "submit", "--agent", env("HOUSESITTER_AGENT", "housesitter"), "--source", source, "--type", etype,
-            "--id", eid, "--summary", one_line(summary) or etype, "--payload", path]
+        text = (payload.get("message") or {}).get("text") if source == "peer" else None
+        message = "[housesitter watch] %s %s (%s): %s Details: %s" % (source, etype, eid, text or one_line(summary) or etype, path)
+        cmd = shlex.split(env("HOUSESITTER_OURO_BIN", "ouro")) + ["msg", "--to", env("HOUSESITTER_AGENT", "housesitter"), message]
         try:
             r = self.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
             ok, why = r.returncode == 0, (r.stderr or b"").decode("utf-8", "replace").strip()[-200:]

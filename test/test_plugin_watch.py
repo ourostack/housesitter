@@ -1,5 +1,6 @@
 """The plugin's watcher (plugins/housesitter/watch.py): wakes the agent once per new thing, with a fake ouro."""
 import json
+import re
 import os
 import subprocess
 import sys
@@ -19,7 +20,13 @@ class WatchTest(PluginCase):
         self.w = watch.Watcher(clock=lambda: self.now, out=self.lines.append)
 
     def wakes(self):
-        return [dict(zip(c[2::2], c[3::2])) for c in self.ouro_calls()]
+        out = []
+        for c in self.ouro_calls():
+            self.assertEqual(c[:3], ["msg", "--to", "housesitter"])
+            m = re.match(r"^\[housesitter watch\] (\S+) (\S+) \(([^)]+)\): (.*) Details: (\S+)$", c[3], re.S)
+            self.assertTrue(m, c[3])
+            out.append(dict(zip(("--source", "--type", "--id", "--summary", "--payload"), m.groups())))
+        return out
 
     def test_a_new_peer_message_wakes_the_agent_once_with_the_exact_command_line(self):
         text = "Mini's back up after the restart.\nCan you look at the screen?"
@@ -28,8 +35,7 @@ class WatchTest(PluginCase):
         calls = self.ouro_calls()
         self.assertEqual(len(calls), 1)
         payload = os.path.join(self.state, "events", "peer-aa01.json")
-        self.assertEqual(calls[0], ["event", "submit", "--agent", "housesitter", "--source", "peer", "--type", "message", "--id", "peer-aa01",
-                                    "--summary", "Ouroboros: Mini's back up after the restart. Can you look at the screen?", "--payload", payload])
+        self.assertEqual(calls[0], ["msg", "--to", "housesitter", "[housesitter watch] peer message (peer-aa01): %s Details: %s" % (text, payload)])
         body = json.loads(slurp(payload))
         self.assertEqual(body["message"]["text"], text)
         self.assertEqual((body["source"], body["type"]), ("peer", "message"))

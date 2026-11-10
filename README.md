@@ -200,7 +200,7 @@ Transports are pluggable (`registerTransport`), so another KVM or relay can slot
 
 ## Housesitter, the agent
 
-The sitter is deterministic on purpose. For judgment around it, [plugins/housesitter](plugins/housesitter/) makes Housesitter an [Ouro](https://github.com/ourostack/ouroboros) agent living on the KVM itself: MCP tools for the sitter's eyes and hands (`sitter_status`, `sitter_look`, `sitter_screenshot`, `sitter_unlock`, `sitter_click` and the rest, each passing the sitter's reply through as it is), `kvm_health` for the KVM's own memory and the sitter's heartbeat, and a watcher that wakes the agent with `ouro event submit` when the sitter's state changes or the Mac's heartbeat goes stale. Python 3 standard library only, like the sitter.
+The sitter is deterministic on purpose. For judgment around it, [plugins/housesitter](plugins/housesitter/) makes Housesitter an [Ouro](https://github.com/ourostack/ouroboros) agent living on the KVM itself: MCP tools for the sitter's eyes and hands (`sitter_status`, `sitter_look`, `sitter_screenshot`, `sitter_unlock`, `sitter_click` and the rest, each passing the sitter's reply through as it is), `kvm_health` for the KVM's own memory and the sitter's heartbeat, and a watcher that wakes the agent with `ouro msg` (an ordinary turn with all its tools) when the sitter's state changes or the Mac's heartbeat goes stale. Python 3 standard library only, like the sitter.
 
 Housesitter and the agent on the Mac (Ouroboros) talk in free text through two secret gists. On the Mac: `housesitter peer send <text> [--re <id>]` and `housesitter peer inbox`; on the KVM, the `peer_send` and `peer_inbox` tools. Install, environment and the message format: [the plugin's README](plugins/housesitter/README.md).
 

@@ -20,7 +20,7 @@
 - Messages: ntfy or a webhook; `adopt --notify ntfy --email <address>` also emails one address through an ntfy.sh account (token: `housesitter secret <mac> ntfy-token`; 5 emails a day on a free account). `housesitter alert-test <mac>` sends one real stuck message marked TEST.
 
 ## Housesitter, the agent on the KVM
-- [plugins/housesitter](plugins/housesitter/README.md): an Ouro plugin. MCP tools sitter_status, sitter_look, sitter_screenshot, sitter_unlock, sitter_want_desktop, sitter_power_cycle, sitter_power_on, sitter_click, sitter_type, sitter_key, sitter_scroll (each runs `sitter.py do <op>` and returns its reply as is), peer_send, peer_inbox, kvm_health; watch.py wakes the agent with `ouro event submit`; skills/housesitter/SKILL.md.
+- [plugins/housesitter](plugins/housesitter/README.md): an Ouro plugin. MCP tools sitter_status, sitter_look, sitter_screenshot, sitter_unlock, sitter_want_desktop, sitter_power_cycle, sitter_power_on, sitter_click, sitter_type, sitter_key, sitter_scroll (each runs `sitter.py do <op>` and returns its reply as is), peer_send, peer_inbox, kvm_health; watch.py wakes the agent with `ouro msg --to <agent>`; skills/housesitter/SKILL.md.
 - Peer link with the agent on the Mac: `housesitter peer send <text> [--re <id>]`, `housesitter peer inbox [--peek]`. Free text, one gist file per message.
 
 ## Docs
