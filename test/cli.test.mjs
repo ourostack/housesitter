@@ -53,6 +53,14 @@ test('Reins: only what is possible now; inputs validated with a JSON path', asyn
   assert.equal((await R.run('studio', 'unlock', {}, { scr: fv, sitter })).result, 'did unlock');
 });
 
+test('Reins: the schema check is hackamore\'s, so the two answer a bad input alike', async () => {
+  const H = await import('@ouro.bot/hackamore/schema');
+  assert.equal(R.validate, H.validate);
+  const point = { type: 'array', items: { type: 'integer', minimum: 0 }, minItems: 2, maxItems: 2 };
+  assert.equal(R.validate(point, [3, 4]), null);
+  assert.equal(R.validate(point, [3, -1]).path, '$[1]');
+});
+
 test('config: secret references, never values', () => {
   assert.deepEqual(parseRef('keychain:housesitter/studio-mac'), { kind: 'keychain', service: 'housesitter', account: 'studio-mac' });
   assert.throws(() => parseRef('hunter2'), /not a secret reference/);

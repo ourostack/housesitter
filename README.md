@@ -184,7 +184,7 @@ The same from a shell, for any agent: `housesitter screenshot studio`, `click`, 
 
 Before an agent drives a locked Mac, `housesitter want-desktop studio` asks the sitter for the desktop, if its config allows lock screens (above). The agent never sees or sends the password.
 
-`housesitter ls studio` gives the Mac as one screen in Ouro Reins, our small protocol for letting agents drive any app: its state and only the actions available right now, each with a JSON Schema. `housesitter do studio <action> '<json>'` runs one; refusals are `action-unavailable` (with what is available), `input-invalid` (with the JSON path) and `action-failed`. An accessibility-tree driver composes with it and falls back to it when there is no tree.
+`housesitter ls studio` gives the Mac as one screen in Ouro Reins, our small protocol for letting agents drive any app: its state and only the actions available right now, each with a JSON Schema. `housesitter do studio <action> '<json>'` runs one; refusals are `action-unavailable` (with what is available), `input-invalid` (with the JSON path) and `action-failed`. [hackamore](https://github.com/ourostack/hackamore) is the accessibility-tree driver that composes with it: it reads and drives any app through its tree, and uses housesitter's `open(mac)` for the pixels where there is no tree (before login, FileVault, a frozen app). The schema check is hackamore's, so the two answer a bad input the same way.
 
 ## Reach it from anywhere
 
@@ -293,6 +293,7 @@ housesitter is experimental (0.4). Honest status, as of 9 November 2026. "Our wa
 - **[kvm-pilot](https://github.com/DustinTrap/kvm-pilot)** is the MCP server to reach for when an agent needs BIOS, bootloader, BMC or OS-install control over a KVM. housesitter is narrower: an always-on sitter for one Mac, living on the KVM itself. Its live GL-RM1PE findings are built in here, and our hardware reports go back to it.
 - **[PiKVM](https://pikvm.org)** made the open KVM and the API everything here speaks. **[JetKVM](https://jetkvm.com)** and **NanoKVM** are worth watching.
 - **macOS 26's SSH unlock** ([`apple_ssh_and_filevault(7)`](https://github.com/apple-oss-distributions/OpenSSH/blob/main/apple_ssh_and_filevault.7)) unlocks FileVault over SSH when Remote Login is on and the network is up before boot. Use it if you can; housesitter covers the Macs where you can't and the hangs where nothing answers.
+- **[hackamore](https://github.com/ourostack/hackamore)** is ours: the engine that drives any Mac app through its accessibility tree, with no model in the loop. It keeps the Reins engine; housesitter keeps the KVM, the sitter and the hands.
 - [docs/prior-art.md](docs/prior-art.md) has the rest, and what we borrowed.
 
 ## For agents

@@ -25,6 +25,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - run: npm install --omit=dev --no-audit --no-fund
       - run: node --test test/*.test.mjs
       - run: node bin/housesitter.mjs demo
   sitter:
