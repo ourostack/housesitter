@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 680" width="1280" height="680" role="img" aria-labelledby="t d">
+  <title id="t">How the KVM, the Mac mini, Ouroboros and Housesitter fit together</title>
+  <desc id="d">On the left, the Mac mini, with three things in it: Ouroboros, the agent that does the work, together with its peer watch; watch-kvm, a LaunchAgent that asks the KVM every minute whether the sitter is still looking; and the screen and USB port, which the KVM sees and types into. On the right of the cables, the Comet KVM beside the mini, with three things in it: Housesitter, an Ouro agent for judgment; the sitter, deterministic rules plus a clock read on the KVM's own NPU; and kvmd, the KVM's video in and keyboard and mouse out. An HDMI cable carries the Mac's picture to the KVM, its eyes. A USB-C cable carries the KVM's keyboard and mouse to the Mac, its hands, even at the FileVault screen. Ouroboros and Housesitter talk to each other in free text through two secret gists, and bring each other back. The Mac's watch-kvm asks the sitter over SSH. An optional smart plug on the Mac's power cord is switched by the KVM over Wi-Fi or Bluetooth. On the far right, you: the sitter sends one message when it needs you, and the Mac sends one if the KVM itself goes quiet for five minutes. You and your agents can reach the KVM over your tailnet, your LAN or a GitHub outbox.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" class="bg0" stop-color="#fff3e3"/>
+      <stop offset="1" class="bg1" stop-color="#ffe6c7"/>
+    </linearGradient>
+    <linearGradient id="alu" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#f4f4f6"/>
+      <stop offset="1" stop-color="#d3d4da"/>
+    </linearGradient>
+    <linearGradient id="kvm" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#5b5f6b"/>
+      <stop offset="1" stop-color="#3a3d46"/>
+    </linearGradient>
+    <radialGradient id="eye" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#fff1c4"/>
+      <stop offset=".45" stop-color="#ffb84a"/>
+      <stop offset="1" stop-color="#ff9d2e" stop-opacity="0"/>
+    </radialGradient>
+    <marker id="ab" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3b7dd8"/></marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2e9e5b"/></marker>
+    <marker id="ap" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#8a5cd6"/></marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#e28a2b"/></marker>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#7a4b22" flood-opacity="0.2"/>
+    </filter>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .title { font-size: 20px; font-weight: 800; fill: #2b2730; }
+      .sub { font-size: 15px; fill: #6a5e57; }
+      .chip-t { font-size: 17px; font-weight: 700; fill: #2b2730; }
+      .chip-s { font-size: 14px; fill: #6a5e57; }
+      .lab { font-size: 16px; font-weight: 700; fill: #2b2730; }
+      .lab-s { font-size: 14px; fill: #6a5e57; }
+      .on-dark { fill: #fff; }
+      .on-dark-s { fill: #d6d8e0; }
+      .bg0 { stop-color: #fff3e3; } .bg1 { stop-color: #ffe6c7; }
+      .card { fill: #fffdf9; }
+      .mini { fill: url(#alu); }
+      .chip { fill: #ffffff; stroke: #e6d8c8; stroke-width: 1.5; }
+      .chip-p { fill: #f3ecff; stroke: #cdb8f2; stroke-width: 1.5; }
+      .chip-o { fill: #fff1e2; stroke: #f2cfa5; stroke-width: 1.5; }
+      .pill { fill: #fffdf9; stroke: #e6d8c8; stroke-width: 1.5; }
+      @media (prefers-color-scheme: dark) {
+        .bg0 { stop-color: #23202d; } .bg1 { stop-color: #1b1924; }
+        .title, .chip-t, .lab { fill: #f1ece6; } .sub, .chip-s, .lab-s { fill: #b9aea6; }
+        .card { fill: #2c2938; } .mini { fill: #34313f; }
+        .chip { fill: #3a3748; stroke: #4a4659; }
+        .chip-p { fill: #3a3354; stroke: #5b4c85; }
+        .chip-o { fill: #42331f; stroke: #6b5232; }
+        .pill { fill: #2c2938; stroke: #4a4659; }
+      }
+    </style>
+  </defs>
+  <rect width="1280" height="680" rx="22" fill="url(#bg)"/>
+
+  <!-- the Mac mini -->
+  <g filter="url(#lift)"><rect x="40" y="70" width="380" height="410" rx="28" class="mini"/></g>
+  <circle cx="392" cy="98" r="4" fill="#52d17f"/>
+  <text x="68" y="106" class="title">Your Mac mini</text>
+  <text x="68" y="128" class="sub">where your agents live</text>
+
+  <rect x="62" y="152" width="336" height="94" rx="16" class="chip-p"/>
+  <text x="80" y="182" class="chip-t">Ouroboros</text>
+  <text x="80" y="204" class="chip-s">the agent that does the work; its peer watch</text>
+  <text x="80" y="224" class="chip-s">wakes it, and runs ouro up when asked</text>
+
+  <rect x="62" y="262" width="336" height="76" rx="16" class="chip"/>
+  <text x="80" y="292" class="chip-t">watch-kvm</text>
+  <text x="80" y="314" class="chip-s">a LaunchAgent: is the sitter still looking?</text>
+
+  <rect x="62" y="354" width="336" height="94" rx="16" class="chip-o"/>
+  <text x="80" y="384" class="chip-t">The screen and a USB port</text>
+  <text x="80" y="406" class="chip-s">FileVault, the login window, the desktop</text>
+  <text x="80" y="426" class="chip-s">its own port: works before anyone logs in</text>
+
+  <!-- the Comet KVM -->
+  <g filter="url(#lift)"><rect x="620" y="70" width="380" height="410" rx="28" fill="url(#kvm)"/></g>
+  <circle cx="972" cy="104" r="22" fill="url(#eye)"/><circle cx="972" cy="104" r="7" fill="#fff4cf"/>
+  <text x="648" y="106" class="title on-dark">Comet KVM</text>
+  <text x="648" y="128" class="sub on-dark-s">about $100, right beside the mini</text>
+
+  <rect x="642" y="152" width="336" height="94" rx="16" class="chip-p"/>
+  <text x="660" y="182" class="chip-t">Housesitter, the agent</text>
+  <text x="660" y="204" class="chip-s">an Ouro agent that lives here, for judgment:</text>
+  <text x="660" y="224" class="chip-s">looks, asks, tells Ouroboros what it sees</text>
+
+  <rect x="642" y="262" width="336" height="76" rx="16" class="chip"/>
+  <text x="660" y="292" class="chip-t">The sitter</text>
+  <text x="660" y="314" class="chip-s">fixed rules; reads the clock on its NPU</text>
+
+  <rect x="642" y="354" width="336" height="94" rx="16" class="chip-o"/>
+  <text x="660" y="384" class="chip-t">kvmd</text>
+  <text x="660" y="406" class="chip-s">the Mac's picture in; keyboard and mouse out</text>
+  <text x="660" y="426" class="chip-s">types only on the prompt it was taught</text>
+
+  <!-- cables: eyes and hands -->
+  <path d="M398 392 C 470 392, 550 392, 636 392" fill="none" stroke="#3b7dd8" stroke-width="7" stroke-linecap="round" marker-end="url(#ab)"/>
+  <path d="M636 424 C 550 424, 470 424, 404 424" fill="none" stroke="#2e9e5b" stroke-width="7" stroke-linecap="round" marker-end="url(#ag)"/>
+  <text x="520" y="376" text-anchor="middle" class="lab"><tspan fill="#3b7dd8">HDMI</tspan> · eyes</text>
+  <text x="520" y="452" text-anchor="middle" class="lab"><tspan fill="#2e9e5b">USB-C</tspan> · hands</text>
+
+  <!-- the watch: Mac asks the sitter -->
+  <path d="M398 300 C 470 300, 550 300, 636 300" fill="none" stroke="#e28a2b" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 11" marker-end="url(#ao)"/>
+  <text x="520" y="284" text-anchor="middle" class="lab">asks over SSH</text>
+  <text x="520" y="322" text-anchor="middle" class="lab-s">every minute</text>
+
+  <!-- the buddies: peer link -->
+  <path d="M404 190 C 470 190, 550 190, 636 190" fill="none" stroke="#8a5cd6" stroke-width="6" stroke-linecap="round" marker-start="url(#ap)" marker-end="url(#ap)"/>
+  <text x="520" y="168" text-anchor="middle" class="lab">the buddies</text>
+  <text x="520" y="214" text-anchor="middle" class="lab-s">two secret gists</text>
+
+  <!-- smart plug -->
+  <path d="M800 480 C 800 520, 800 540, 760 548 L 540 548" fill="none" stroke="#c9a46b" stroke-width="2.5" stroke-dasharray="2 7" stroke-linecap="round"/>
+  <path d="M290 548 L 232 548 C 220 548, 220 548, 220 536 L 220 480" fill="none" stroke="#c9a46b" stroke-width="2.5" stroke-dasharray="2 7" stroke-linecap="round"/>
+  <rect x="290" y="524" width="250" height="48" rx="14" class="pill"/>
+  <circle cx="314" cy="548" r="9" fill="#52d17f"/>
+  <text x="334" y="544" class="lab">Smart plug <tspan class="lab-s">(optional)</tspan></text>
+  <text x="334" y="562" class="lab-s">cuts power to a frozen Mac</text>
+  <text x="800" y="512" class="lab-s" dx="12">Wi-Fi or Bluetooth</text>
+
+  <!-- you -->
+  <g filter="url(#lift)"><rect x="1050" y="70" width="190" height="410" rx="28" class="card"/></g>
+  <text x="1145" y="106" text-anchor="middle" class="title">You</text>
+  <text x="1145" y="128" text-anchor="middle" class="sub">and your phone</text>
+  <rect x="1066" y="152" width="158" height="94" rx="16" class="chip"/>
+  <text x="1145" y="182" text-anchor="middle" class="chip-t">One message</text>
+  <text x="1145" y="206" text-anchor="middle" class="chip-s">only when it needs you,</text>
+  <text x="1145" y="226" text-anchor="middle" class="chip-s">and when it's fixed</text>
+  <rect x="1066" y="354" width="158" height="94" rx="16" class="chip-o"/>
+  <text x="1145" y="384" text-anchor="middle" class="chip-t">Reach the KVM</text>
+  <text x="1145" y="406" text-anchor="middle" class="chip-s">your tailnet, your LAN,</text>
+  <text x="1145" y="426" text-anchor="middle" class="chip-s">or a GitHub outbox</text>
+
+  <path d="M978 200 C 1010 200, 1030 200, 1060 200" fill="none" stroke="#8a5cd6" stroke-width="5" stroke-linecap="round" marker-end="url(#ap)"/>
+  <path d="M1060 400 C 1030 400, 1010 400, 984 400" fill="none" stroke="#e28a2b" stroke-width="5" stroke-linecap="round" marker-end="url(#ao)"/>
+
+  <!-- the Mac tells you if the KVM goes quiet -->
+  <path d="M130 480 C 130 626, 160 626, 330 626 L 1100 626 C 1140 626, 1145 626, 1145 596 L 1145 484" fill="none" stroke="#e28a2b" stroke-width="4" stroke-linecap="round" stroke-dasharray="1 11" marker-end="url(#ao)"/>
+  <text x="640" y="652" text-anchor="middle" class="lab">If the KVM itself goes quiet for 5 minutes, the Mac is the one that tells you</text>
+</svg>
