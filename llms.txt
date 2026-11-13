@@ -10,6 +10,7 @@
 ## For agents driving a Mac
 - `housesitter ls <mac>` then `housesitter do <mac> <action> '<json>'` (Ouro Reins shape; refusals action-unavailable / input-invalid / action-failed; exit 0 ok, 2 refused, 1 failed)
 - `housesitter computer <mac> '{"action":"left_click","coordinate":[x,y]}'` (Anthropic computer-use input as-is)
+- To drive the app windows themselves (the accessibility tree, with this KVM's pixels as the fallback), use [hackamore](https://github.com/ourostack/hackamore): `hackamore ls <app> --kvm <mac>`.
 - Library: `import { open } from '@ouro.bot/housesitter'` → `screenshot/click/type/key/scroll/computer`
 - Coordinates are in the last screenshot's pixels.
 - Never type a password; `type` refuses anything that looks like one. Ask the sitter: `housesitter unlock <mac>`.

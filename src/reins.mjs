@@ -2,9 +2,14 @@
 // Same shape as Ouro Reins (ourostack/ouro-ui-apple): the state, and only the actions available right now, each
 // with a JSON Schema; refusals are action-unavailable (with the available names), input-invalid (with the JSON
 // path) and action-failed. Exit codes: 0 ok, 2 refused, 1 failed. This is the pixel layer's contract: an
-// accessibility-tree driver composes with it, and falls back to it when there is no tree (pre-boot, a frozen app).
+// accessibility-tree driver composes with it, and falls back to it when there is no tree (pre-boot, a frozen app):
+// hackamore (ourostack/hackamore) is that driver, and uses housesitter's `open(mac)` as its pixel layer's hands.
 
+import { validate } from '@ouro.bot/hackamore/schema';
 import { Refusal } from './hands.mjs';
+
+// One copy of the Reins schema check: hackamore's, which drives the apps above the pixels (accessibility tree).
+export { validate };
 
 const obj = (props = {}, required = []) => ({ type: 'object', properties: props, required, additionalProperties: false });
 const point = { type: 'array', items: { type: 'integer', minimum: 0 }, minItems: 2, maxItems: 2 };
@@ -24,31 +29,6 @@ export function actionsFor({ kvm, sitter }) {
   if (sitter && sitter.lock_policy && sitter.obs?.screen !== 'desktop') add('want_desktop', obj({ minutes: { type: 'integer', minimum: 1, maximum: 60 } }), 'ask the sitter to unlock the lock screen so you can drive the UI (it tries now, and keeps the request for some minutes)');
   if (sitter?.can?.plug) { add('power_cycle', obj(), 'smart plug off, then on by itself (one per 30 min, three a day)'); add('power_on', obj(), 'smart plug on'); }
   return a;
-}
-
-export function validate(schema, value, at = '$') {
-  if (schema.enum) return schema.enum.includes(value) ? null : { path: at, message: `${at}: one of ${schema.enum.join(', ')}` };
-  if (schema.type === 'object') {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return { path: at, message: `${at}: expected an object` };
-    for (const k of schema.required || []) if (!(k in value)) return { path: `${at}.${k}`, message: `${at}.${k}: required` };
-    for (const [k, v] of Object.entries(value)) {
-      const sub = schema.properties?.[k];
-      if (!sub) { if (schema.additionalProperties === false) return { path: `${at}.${k}`, message: `${at}.${k}: not an input (inputs: ${Object.keys(schema.properties || {}).join(', ') || 'none'})` }; continue; }
-      const e = validate(sub, v, `${at}.${k}`);
-      if (e) return e;
-    }
-    return null;
-  }
-  if (schema.type === 'array') {
-    if (!Array.isArray(value)) return { path: at, message: `${at}: expected an array` };
-    if (schema.minItems != null && value.length < schema.minItems) return { path: at, message: `${at}: at least ${schema.minItems} items` };
-    if (schema.maxItems != null && value.length > schema.maxItems) return { path: at, message: `${at}: at most ${schema.maxItems} items` };
-    for (let i = 0; i < value.length; i++) { const e = validate(schema.items, value[i], `${at}[${i}]`); if (e) return e; }
-    return null;
-  }
-  if (schema.type === 'integer') return Number.isInteger(value) && (schema.minimum == null || value >= schema.minimum) && (schema.maximum == null || value <= schema.maximum) ? null : { path: at, message: `${at}: an integer${schema.minimum != null ? ` >= ${schema.minimum}` : ''}${schema.maximum != null ? ` <= ${schema.maximum}` : ''}` };
-  if (schema.type === 'string') return typeof value === 'string' && value.length >= (schema.minLength || 0) && value.length <= (schema.maxLength ?? Infinity) ? null : { path: at, message: `${at}: a string${schema.minLength ? ` of at least ${schema.minLength}` : ''}` };
-  return null;
 }
 
 export function screen(name, { kvm, sitter, via }) {
