@@ -14,7 +14,7 @@
 
 **Status:** experimental. Hands-off on our Mac mini: 70 seconds from Restart to desktop. The smart plug and a real freeze are next.
 
-[Set it up](#three-cables-then-one-restart) · [The NPU](#the-kvms-npu-reads-the-clock) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [Who watches the KVM](#who-watches-the-kvm) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
+[How it fits](#how-it-all-fits) · [Set it up](#three-cables-then-one-restart) · [The NPU](#the-kvms-npu-reads-the-clock) · [Why I built it](#why-i-built-it) · [housesitter doctor](#housesitter-doctor) · [Who watches the KVM](#who-watches-the-kvm) · [The password rules](#the-password-rules) · [What's verified](#whats-verified) · [More from Ouro](https://github.com/ourostack)
 
 ```sh
 npx github:ourostack/housesitter demo         # the day it was built for, real frames
@@ -102,6 +102,22 @@ One screen: a glimpse of what the KVM sees (40 by 22 pixels of its own picture, 
 - **…a smart plug?** It restarts the Mac straight into the FileVault screen, where it waits for you.
 - **…a PiKVM, or any KVM?** You can type the password from your phone, once you notice, if you're awake. housesitter is that KVM, with nobody needing to notice.
 - **…macOS 26's SSH unlock?** Use it if you can. It needs Remote Login on and the network up before boot, and it can't help a Mac whose login window has crashed or that froze.
+
+## How it all fits
+
+The KVM sits beside the Mac mini. Its HDMI cable is its eyes, its USB-C cable is its hands, and its Ethernet cable is how it reaches you. Two things live on the KVM: the **sitter**, fixed rules that read the screen and type, and **Housesitter**, an Ouro agent for judgment. Two things live on the mini: **Ouroboros**, the agent that does the work, and a pair of small LaunchAgents, its peer watch and `watch-kvm`.
+
+<p align="center"><img src="assets/how-it-fits.svg" alt="The Mac mini on the left holds Ouroboros with its peer watch, the watch-kvm LaunchAgent, and the screen and a USB port. The Comet KVM beside it holds Housesitter the agent, the sitter, and kvmd. An HDMI cable carries the Mac's picture to the KVM (eyes); a USB-C cable carries its keyboard and mouse back (hands). Ouroboros and Housesitter, the buddies, talk through two secret gists. The Mac's watch-kvm asks the sitter over SSH every minute. An optional smart plug is switched by the KVM over Wi-Fi or Bluetooth. On the right, you get one message when the sitter needs you, and the Mac tells you if the KVM itself goes quiet for 5 minutes. You and your agents reach the KVM over a tailnet, a LAN or a GitHub outbox." width="100%"></p>
+
+### Who brings whom back
+
+Ouroboros and Housesitter are buddies: each is the other's way back from silence. The Mac's peer watch tells Housesitter when Ouroboros's daemon stops answering, and Housesitter can ask for it back, which makes the peer watch run `ouro up` and report what happened. Going the other way, `watch-kvm` on the mini tells you when the KVM goes quiet. The four cases below say what's been run for real and what hasn't.
+
+<p align="center"><img src="assets/who-brings-whom-back.svg" alt="Four rows, each read left to right as what happens, who notices, what they do and how it ends. The mini restarts at FileVault; the sitter sees the prompt it was taught and types once; the desktop is back in 70 seconds (ran on real hardware). Ouroboros goes silent; the Mac's peer watch tells Housesitter; Housesitter asks and the peer watch runs ouro up; Ouroboros is back (tested with fakes). The KVM goes quiet; watch-kvm on the Mac notices; after 5 minutes it sends one message, and one more when the KVM is back; you hear about 8 minutes after its last look (ran on real hardware). The mini freezes solid; the sitter sees a stopped clock for 5 minutes and three looks agree; the smart plug cuts power for 10 seconds; the mini reboots (not run yet: no plug)." width="100%"></p>
+
+<p align="center"><img src="docs/img/ouro-status.png" alt="ouro status on our Mac mini at 02:33 on 13 November: the Ouroboros daemon, version 0.1.0-alpha.1112, running, health ok; one agent, ouroboros, enabled and homed on this machine; and seven health checks, all ok." width="100%"></p>
+
+*`ouro status` on our mini at 02:33 on 13 November: the Ouroboros daemon the peer link asks about, running. I cut it down to the daemon, its agent and the health checks; the rest lists connections that aren't for a public page.*
 
 ## Three cables, then one restart
 

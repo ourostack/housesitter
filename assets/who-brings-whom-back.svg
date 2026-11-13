@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="t d">
+  <title id="t">Who brings whom back</title>
+  <desc id="d">Four things that can go wrong, each read left to right as what happens, who notices, what they do, and how it ends. One: the Mac restarts and stops at the FileVault screen; the sitter on the KVM sees the prompt it was taught and types the sealed password once; the desktop is back in 70 seconds on our Mac mini, hands-off, which has run on real hardware. Two: Ouroboros's daemon stops answering; the Mac's peer watch tells Housesitter; Housesitter asks for it back and the peer watch runs ouro up and reports the result; this is tested with fakes. Three: the KVM goes quiet; the Mac's watch-kvm notices; after five minutes it sends you one message, and one more when the KVM is back; this has run on real hardware, with a test message that reached a real inbox after we stopped the sitter. Four: the Mac freezes solid; the sitter sees a clock that has not moved for five minutes and three more looks agree; the smart plug cuts power for ten seconds and turns it back on; this has not been run yet because there is no plug.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" class="bg0" stop-color="#fff3e3"/>
+      <stop offset="1" class="bg1" stop-color="#ffe6c7"/>
+    </linearGradient>
+    <marker id="ar" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9b8f86"/></marker>
+    <filter id="lift" x="-10%" y="-20%" width="120%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#7a4b22" flood-opacity="0.16"/>
+    </filter>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .head { font-size: 15px; font-weight: 700; fill: #8a7d74; letter-spacing: .08em; }
+      .t { font-size: 17px; font-weight: 700; fill: #2b2730; }
+      .s { font-size: 14px; fill: #6a5e57; }
+      .tag { font-size: 13px; font-weight: 800; letter-spacing: .02em; }
+      .bg0 { stop-color: #fff3e3; } .bg1 { stop-color: #ffe6c7; }
+      .box { fill: #fffdf9; stroke: #ead9c5; stroke-width: 1.5; }
+      .bad { fill: #ffe9e4; stroke: #f1bdb1; stroke-width: 1.5; }
+      .real { fill: #e2f4e8; stroke: #9fd5b1; stroke-width: 1.5; } .real-t { fill: #1f7a46; }
+      .fake { fill: #fff1d6; stroke: #f0cd8d; stroke-width: 1.5; } .fake-t { fill: #94600c; }
+      .not { fill: #efeaf2; stroke: #cfc5d6; stroke-width: 1.5; stroke-dasharray: 6 5; } .not-t { fill: #6b5f78; }
+      .arrow { stroke: #9b8f86; }
+      @media (prefers-color-scheme: dark) {
+        .bg0 { stop-color: #23202d; } .bg1 { stop-color: #1b1924; }
+        .head { fill: #9a8f87; } .t { fill: #f1ece6; } .s { fill: #b9aea6; }
+        .box { fill: #2c2938; stroke: #4a4659; }
+        .bad { fill: #4a2b2b; stroke: #7a4545; }
+        .real { fill: #1f3a2b; stroke: #36694b; } .real-t { fill: #7fdc9f; }
+        .fake { fill: #3f331c; stroke: #6b5530; } .fake-t { fill: #f0c36d; }
+        .not { fill: #2f2b38; stroke: #5a5367; } .not-t { fill: #c3b8d2; }
+      }
+    </style>
+  </defs>
+  <rect width="1280" height="640" rx="22" fill="url(#bg)"/>
+
+  <text x="50" y="52" class="head">WHAT HAPPENS</text>
+  <text x="360" y="52" class="head">WHO NOTICES</text>
+  <text x="670" y="52" class="head">WHAT THEY DO</text>
+  <text x="980" y="52" class="head">HOW IT ENDS</text>
+
+  <!-- row 1 -->
+  <g filter="url(#lift)">
+    <rect x="40" y="72" width="270" height="108" rx="18" class="bad"/>
+    <rect x="350" y="72" width="270" height="108" rx="18" class="box"/>
+    <rect x="660" y="72" width="270" height="108" rx="18" class="box"/>
+    <rect x="970" y="72" width="270" height="108" rx="18" class="real"/>
+  </g>
+  <text x="60" y="108" class="t">The mini restarts</text>
+  <text x="60" y="132" class="s">after an update or a panic,</text>
+  <text x="60" y="152" class="s">and waits at FileVault</text>
+  <text x="370" y="108" class="t">The sitter</text>
+  <text x="370" y="132" class="s">sees the prompt it was taught</text>
+  <text x="370" y="152" class="s">on the KVM's own picture</text>
+  <text x="680" y="108" class="t">Types, once</text>
+  <text x="680" y="132" class="s">its sealed copy of the password,</text>
+  <text x="680" y="152" class="s">only where the prompt is</text>
+  <text x="990" y="108" class="t">Desktop in 70 s</text>
+  <text x="990" y="132" class="s">on our mini, hands-off</text>
+  <text x="990" y="156" class="tag real-t">RAN ON REAL HARDWARE</text>
+
+  <!-- row 2 -->
+  <g filter="url(#lift)">
+    <rect x="40" y="202" width="270" height="108" rx="18" class="bad"/>
+    <rect x="350" y="202" width="270" height="108" rx="18" class="box"/>
+    <rect x="660" y="202" width="270" height="108" rx="18" class="box"/>
+    <rect x="970" y="202" width="270" height="108" rx="18" class="fake"/>
+  </g>
+  <text x="60" y="238" class="t">Ouroboros goes silent</text>
+  <text x="60" y="262" class="s">its daemon stops answering</text>
+  <text x="60" y="282" class="s">on the mini</text>
+  <text x="370" y="238" class="t">The Mac's peer watch</text>
+  <text x="370" y="262" class="s">tells Housesitter over</text>
+  <text x="370" y="282" class="s">the buddy link</text>
+  <text x="680" y="238" class="t">Housesitter asks</text>
+  <text x="680" y="262" class="s">for it back; the peer watch</text>
+  <text x="680" y="282" class="s">runs ouro up, and reports</text>
+  <text x="990" y="238" class="t">Ouroboros is back</text>
+  <text x="990" y="262" class="s">and Housesitter is told</text>
+  <text x="990" y="286" class="tag fake-t">TESTED WITH FAKES</text>
+
+  <!-- row 3 -->
+  <g filter="url(#lift)">
+    <rect x="40" y="332" width="270" height="108" rx="18" class="bad"/>
+    <rect x="350" y="332" width="270" height="108" rx="18" class="box"/>
+    <rect x="660" y="332" width="270" height="108" rx="18" class="box"/>
+    <rect x="970" y="332" width="270" height="108" rx="18" class="real"/>
+  </g>
+  <text x="60" y="368" class="t">The KVM goes quiet</text>
+  <text x="60" y="392" class="s">power, network or firmware</text>
+  <text x="60" y="412" class="s">takes the sitter away</text>
+  <text x="370" y="368" class="t">The Mac itself</text>
+  <text x="370" y="392" class="s">watch-kvm asks every minute</text>
+  <text x="370" y="412" class="s">and hears nothing back</text>
+  <text x="680" y="368" class="t">After 5 minutes</text>
+  <text x="680" y="392" class="s">one message to you, and one</text>
+  <text x="680" y="412" class="s">more when the KVM is back</text>
+  <text x="990" y="368" class="t">You hear, once</text>
+  <text x="990" y="392" class="s">about 8 min after its last look</text>
+  <text x="990" y="416" class="tag real-t">RAN ON REAL HARDWARE</text>
+
+  <!-- row 4 -->
+  <g filter="url(#lift)">
+    <rect x="40" y="462" width="270" height="108" rx="18" class="bad"/>
+    <rect x="350" y="462" width="270" height="108" rx="18" class="box"/>
+    <rect x="660" y="462" width="270" height="108" rx="18" class="box"/>
+    <rect x="970" y="462" width="270" height="108" rx="18" class="not"/>
+  </g>
+  <text x="60" y="498" class="t">The mini freezes solid</text>
+  <text x="60" y="522" class="s">nothing answers, the</text>
+  <text x="60" y="542" class="s">desktop clock has stopped</text>
+  <text x="370" y="498" class="t">The sitter</text>
+  <text x="370" y="522" class="s">5 minutes of a stopped clock,</text>
+  <text x="370" y="542" class="s">then three looks that agree</text>
+  <text x="680" y="498" class="t">The smart plug</text>
+  <text x="680" y="522" class="s">cuts the power for 10 s,</text>
+  <text x="680" y="542" class="s">then turns it back on</text>
+  <text x="990" y="498" class="t">The mini reboots</text>
+  <text x="990" y="522" class="s">and the first row takes over</text>
+  <text x="990" y="546" class="tag not-t">NOT RUN YET: NO PLUG</text>
+
+  <!-- arrows -->
+  <g class="arrow" stroke-width="3" fill="none" stroke-linecap="round" marker-end="url(#ar)">
+    <path d="M314 126 L 342 126"/><path d="M624 126 L 652 126"/><path d="M934 126 L 962 126"/>
+    <path d="M314 256 L 342 256"/><path d="M624 256 L 652 256"/><path d="M934 256 L 962 256"/>
+    <path d="M314 386 L 342 386"/><path d="M624 386 L 652 386"/><path d="M934 386 L 962 386"/>
+    <path d="M314 516 L 342 516"/><path d="M624 516 L 652 516"/><path d="M934 516 L 962 516"/>
+  </g>
+
+  <text x="640" y="606" text-anchor="middle" class="s">Green ran on our mini and its KVM. Amber has tests, not a real run. Dashed has not run yet. The README's "What's verified" table has the evidence.</text>
+</svg>
