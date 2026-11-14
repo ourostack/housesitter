@@ -88,7 +88,12 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            ask working sessions to reach a safe point, quit through the app's Quit menu
                                            (hackamore), relaunch, then send each session that was working a resume message
                                            and check it took a turn. --dry-run lists what it would do now; --detach runs it
-                                           as a launchd job that survives the app quitting; --status shows the last run
+                                           as a launchd job that survives the app quitting; --status shows the run now or the last
+                                           (state, step, start time, result)
+  housesitter restart-copilot --resume-only [--watch] [--dry-run]   resume what an app stop left unfinished (a crash, an
+                                           update, a login), restarting nothing; --watch does it for every new app process
+  housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
+                                           that runs --resume-only --watch at login and keeps it running
       [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
       [--settle 90] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
@@ -208,19 +213,32 @@ async function restartCopilot() {
   if ([opts.t.settle, opts.t.grace, opts.t.person].some((n) => !Number.isFinite(n) || n < 0)) throw new Refusal('input-invalid', '--settle, --grace and --person-wait take a number of seconds');
   const stateDir = Copilot.stateDir();
   if (flag('--status')) {
-    const f = path.join(stateDir, 'last.json');
-    if (!fs.existsSync(f)) { say('no restart has run on this Mac yet'); return 0; }
-    const r = JSON.parse(fs.readFileSync(f, 'utf8'));
-    if (json) emit(r); else say(`${r.ok ? 'ok' : 'FAILED'} ${r.started_at}: ${r.steps.map((s) => s.step).join(' → ')}${r.failed ? `\n  failed at ${r.failed.stage}: ${r.failed.why}` : ''}${(r.resume || []).map((x) => `\n  ${x.id.slice(0, 8)} ${x.title || ''}: ${x.outcome}`).join('')}`);
+    const s = Copilot.readState(stateDir);
+    if (json) emit(s); else say(Copilot.renderState(s));
+    return s.state === 'failed' ? 1 : 0;
+  }
+  if (flag('--install-keeper')) {
+    const r = await Copilot.installKeeper({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') });
+    if (json) emit(r); else say(r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Copilot.KEEPER_LABEL}); it resumes sessions after every app start. Log: ${r.log}` : `✗ launchctl would not load it: ${r.error}`);
     return r.ok ? 0 : 1;
   }
-  const deps = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore') });
+  if (flag('--resume-only')) {
+    const deps0 = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir });
+    const out = (m) => console.log(`${new Date().toISOString()} copilot-resume: ${m}`);
+    if (flag('--watch')) { await Copilot.watch(opts, deps0, out); return 0; }
+    const r = await Copilot.resumeOnly(opts, deps0, json ? () => {} : out);
+    if (json) emit(r); else if (r.dry_run) say(`DRY RUN: would resume ${r.resume.length}: ${r.resume.map((x) => `${x.id.slice(0, 8)} ${x.title || ''}`.trim()).join('; ') || 'none'}`);
+    return r.ok ? 0 : 1;
+  }
+  const deps = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir });
   deps.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
   if (flag('--dry-run')) {
     const p = await Copilot.plan(opts, deps);
     if (json) emit({ dry_run: true, ...p }); else say(Copilot.render({ dry_run: true, ...p }));
     return p.quit.method === 'unavailable' ? 1 : 0;
   }
+  const busy = Copilot.runInProgress(stateDir);
+  if (busy) throw new Refusal('action-unavailable', `a restart is already running (step "${busy.step}", started ${busy.started}); read it with housesitter restart-copilot --status, and start another when it has finished`);
   if (flag('--detach')) {
     const keep = args.filter((a, i) => a !== '--detach' && a !== '--json' && a !== 'restart-copilot' && args[i - 1] !== '--hackamore' && a !== '--hackamore');
     const hk = deps.hackamore ? ['--hackamore', deps.hackamore.join(' ')] : [];
