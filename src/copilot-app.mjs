@@ -625,6 +625,9 @@ export function readState(dir = stateDir(), now = Date.now()) {
   return { ...base, state: st.state, step: st.step, started: st.started, updated: st.updated, age_s: age, stale: st.state === 'running' && age > 600, ...(st.failed ? { failed: st.failed } : {}), ...(st.not_resumed ? { not_resumed: st.not_resumed } : {}), result };
 }
 
+// A restart job that is running now (its last step under ten minutes ago): starting another would end it mid-way.
+export const runInProgress = (dir = stateDir(), now = Date.now()) => { const s = readState(dir, now); return s.state === 'running' && !s.stale ? s : null; };
+
 export function renderState(s) {
   if (s.state === 'none') return `no restart has run on this Mac yet${s.resumer ? `\n${renderResumer(s.resumer)}` : ''}`;
   const L = [];

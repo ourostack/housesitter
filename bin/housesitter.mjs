@@ -237,6 +237,8 @@ async function restartCopilot() {
     if (json) emit({ dry_run: true, ...p }); else say(Copilot.render({ dry_run: true, ...p }));
     return p.quit.method === 'unavailable' ? 1 : 0;
   }
+  const busy = Copilot.runInProgress(stateDir);
+  if (busy) throw new Refusal('action-unavailable', `a restart is already running (step "${busy.step}", started ${busy.started}); read it with housesitter restart-copilot --status, and start another when it has finished`);
   if (flag('--detach')) {
     const keep = args.filter((a, i) => a !== '--detach' && a !== '--json' && a !== 'restart-copilot' && args[i - 1] !== '--hackamore' && a !== '--hackamore');
     const hk = deps.hackamore ? ['--hackamore', deps.hackamore.join(' ')] : [];

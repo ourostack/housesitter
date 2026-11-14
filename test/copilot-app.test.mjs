@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, resumeText, settleText } from '../src/copilot-app.mjs';
+import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, runInProgress, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -259,6 +259,8 @@ test('readState: --status reports a run in progress from status.json, not the pr
   assert.match(text, /run-2026-11-14T19-49-26-146Z\.log/);
   assert.match(text, /quit sent \{"method":"menu"\}/);
   assert.equal(readState(dir, now + 3600000).stale, true, 'a running job with no step for an hour is flagged');
+  assert.equal(runInProgress(dir, now).step, 'quit sent', 'a second restart must not start over a running one');
+  assert.equal(runInProgress(dir, now + 3600000), null, 'a dead job does not block a new one');
   put('last.json', { ok: false, started_at: '2026-11-14T19:49:26.700Z', failed: { stage: 'quit', why: 'x' }, steps: [{ step: 'snapshot {}' }, { step: 'FAILED at quit {}' }], resume: [] });
   put('status.json', { started: '2026-11-14T19:49:26.576Z', updated: '2026-11-14T19:53:16.000Z', state: 'failed', step: 'failed at quit', failed: { stage: 'quit', why: 'x' } });
   const f = readState(dir, now);
