@@ -29,6 +29,21 @@ test('demo: two incidents fixed by itself, one message for the one it could not 
   assert.equal(real.steps.at(-1).key, 'handsoff');
 });
 
+// A clone that has not run `npm install` has no @ouro.bot/hackamore: this hook makes it unresolvable.
+const NO_HACKAMORE = `data:text/javascript,${encodeURIComponent(`import { register } from 'node:module';
+register('data:text/javascript,' + encodeURIComponent("export async function resolve(s, c, n) { if (s.startsWith('@ouro.bot/hackamore')) throw Object.assign(new Error(\\"Cannot find package '@ouro.bot/hackamore' imported from reins\\"), { code: 'ERR_MODULE_NOT_FOUND' }); return n(s, c); }"));`)}`;
+const bare = (args, config = path.join(scratch, 'config.json')) => spawnSync(process.execPath, ['--import', NO_HACKAMORE, BIN, ...args], { encoding: 'utf8', env: { ...process.env, HOUSESITTER_CONFIG: config } });
+
+test('CLI without hackamore installed: everything but ls and do still runs, and ls and do say what to install', () => {
+  assert.match(bare(['help']).stdout, /housesitter demo/);
+  assert.equal(JSON.parse(bare(['demo', 'night', '--json']).stdout).rehearsal, true);
+  const config = path.join(scratch, 'bare.json');
+  fs.writeFileSync(config, JSON.stringify({ macs: { studio: { kvm: { endpoints: [] } } } }));
+  const r = bare(['ls', 'studio'], config);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /ls and do need @ouro\.bot\/hackamore.*npm install/);
+});
+
 test('CLI: help, adopt --fake, and refusal exit codes', () => {
   assert.match(cli(['help']).stdout, /housesitter demo/);
   const a = cli(['adopt', 'studio', '--fake', '--json']);
