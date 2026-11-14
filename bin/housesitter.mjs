@@ -20,6 +20,7 @@ import * as O from '../src/outbox.mjs';
 import os from 'node:os';
 import * as R from '../src/reins.mjs';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
+import * as Copilot from '../src/copilot-app.mjs';
 
 const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac), { key: mac.kvm?.ssh_key || null });
 const sitterDir = (mac) => mac.kvm?.sitter_home || '/etc/kvmd/user/housesitter';
@@ -75,6 +76,13 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter peer drill <label> [--minutes 60] | --end   mark a planned drill: the link labels everything sent meanwhile
                                            wake the agent with ouro msg when Housesitter writes (marks nothing read),
                                            and send its queued messages when due; logs to peer-watch.log beside the config
+  housesitter restart-copilot [--resume] [--dry-run|--detach]   restart the GitHub Copilot app on this Mac and lose no session's work:
+                                           ask working sessions to reach a safe point, quit through the app's Quit menu
+                                           (hackamore), relaunch, then send each session that was working a resume message
+                                           and check it took a turn. --dry-run lists what it would do now; --detach runs it
+                                           as a launchd job that survives the app quitting; --status shows the last run
+      [--why "a Desk runtime upgrade"] [--also <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
+      [--settle 90] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
   housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 
@@ -83,7 +91,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--hackamore', '--app', '--settle', '--grace', '--person-wait', '--copilot-home'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -179,6 +187,46 @@ async function watchKvm(mac) {
   for (;;) { await tick(); await new Promise((r) => setTimeout(r, 60000)); }
 }
 
+async function restartCopilot() {
+  const all = (f) => args.flatMap((a, i) => (a === f && args[i + 1] ? [args[i + 1]] : []));
+  const sec = (f, d) => (val(f) == null ? d : Number(val(f)) * 1000);
+  const app = val('--app') || Copilot.DEFAULT_APP;
+  const opts = {
+    app, why: val('--why'), also: all('--also'), resume: flag('--resume'), sigterm: flag('--sigterm'), dry_run: flag('--dry-run'),
+    stand_in: app !== Copilot.DEFAULT_APP && !val('--copilot-home'),
+    t: { settle: sec('--settle', Copilot.T.settle), grace: sec('--grace', Copilot.T.grace), person: sec('--person-wait', Copilot.T.person) },
+  };
+  if ([opts.t.settle, opts.t.grace, opts.t.person].some((n) => !Number.isFinite(n) || n < 0)) throw new Refusal('input-invalid', '--settle, --grace and --person-wait take a number of seconds');
+  const stateDir = Copilot.stateDir();
+  if (flag('--status')) {
+    const f = path.join(stateDir, 'last.json');
+    if (!fs.existsSync(f)) { say('no restart has run on this Mac yet'); return 0; }
+    const r = JSON.parse(fs.readFileSync(f, 'utf8'));
+    if (json) emit(r); else say(`${r.ok ? 'ok' : 'FAILED'} ${r.started_at}: ${r.steps.map((s) => s.step).join(' → ')}${r.failed ? `\n  failed at ${r.failed.stage}: ${r.failed.why}` : ''}${(r.resume || []).map((x) => `\n  ${x.id.slice(0, 8)} ${x.title || ''}: ${x.outcome}`).join('')}`);
+    return r.ok ? 0 : 1;
+  }
+  const deps = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore') });
+  deps.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
+  if (flag('--dry-run')) {
+    const p = await Copilot.plan(opts, deps);
+    if (json) emit({ dry_run: true, ...p }); else say(Copilot.render({ dry_run: true, ...p }));
+    return p.quit.method === 'unavailable' ? 1 : 0;
+  }
+  if (flag('--detach')) {
+    const keep = args.filter((a, i) => a !== '--detach' && a !== '--json' && a !== 'restart-copilot' && args[i - 1] !== '--hackamore' && a !== '--hackamore');
+    const hk = deps.hackamore ? ['--hackamore', deps.hackamore.join(' ')] : [];
+    const r = await Copilot.detach({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), args: ['restart-copilot', ...keep, ...hk], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() } });
+    if (json) emit(r); else say(r.ok ? `started as a launchd job (${Copilot.LABEL}); it does not depend on this session. Log: ${r.log}\nRead the result with: housesitter restart-copilot --status` : `✗ launchctl would not start it: ${r.error}`);
+    return r.ok ? 0 : 1;
+  }
+  fs.mkdirSync(stateDir, { recursive: true });
+  const log = (m) => console.log(`${new Date().toISOString()} restart-copilot: ${m}`);
+  const report = await Copilot.restart(opts, deps, log);
+  fs.writeFileSync(path.join(stateDir, 'last.json'), JSON.stringify(report, null, 2));
+  if (json) emit(report);
+  return report.ok ? 0 : 1;
+}
+
 function need(n, usage) { if (!n) throw new Refusal('input-invalid', `usage: ${usage}`); }
 
 async function main() {
@@ -256,6 +304,7 @@ async function main() {
   }
 
   if (cmd === 'peer') return peerCmd();
+  if (cmd === 'restart-copilot') return restartCopilot();
 
   need(name, `housesitter ${cmd} <mac>`);
   const mac = macConfig(name);
