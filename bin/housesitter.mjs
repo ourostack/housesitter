@@ -18,7 +18,6 @@ import * as Plug from '../src/plug.mjs';
 import * as Watch from '../src/watch.mjs';
 import * as O from '../src/outbox.mjs';
 import os from 'node:os';
-import * as R from '../src/reins.mjs';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 import * as Copilot from '../src/copilot-app.mjs';
 
@@ -28,6 +27,15 @@ const onSitter = (mac, args) => `${mac.kvm?.sitter_home ? `HOUSESITTER_HOME='${m
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+
+// ls and do check actions against hackamore's schema, the one dependency. Loaded only for them, so every other command
+// runs from a clone that has not run `npm install`.
+async function reinsLayer() {
+  try { return await import('../src/reins.mjs'); } catch (e) {
+    if (e.code !== 'ERR_MODULE_NOT_FOUND' || !/@ouro\.bot\/hackamore/.test(e.message)) throw e;
+    throw new Refusal('action-failed', `ls and do need @ouro.bot/hackamore, which is not installed here. Run \`npm install\` in ${ROOT}, or run housesitter with \`npx github:ourostack/housesitter\`. Every other command works without it.`);
+  }
+}
 
 const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you're away.
 
@@ -391,6 +399,7 @@ async function main() {
   }
 
   if (cmd === 'ls' || cmd === 'do') {
+    const R = await reinsLayer();
     const [kvm, sit] = await Promise.all([kvmLook(mac).catch(() => null), sitterClient(mac).status().catch(() => ({}))]);
     const scr = R.screen(name, { kvm, sitter: sit.status, via: { kvm: kvm?.via || null, sitter: sit.via || null } });
     if (cmd === 'ls') { console.log(JSON.stringify(scr, null, json ? 0 : 2)); return 0; }
