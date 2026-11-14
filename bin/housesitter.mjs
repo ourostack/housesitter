@@ -20,6 +20,7 @@ import * as O from '../src/outbox.mjs';
 import os from 'node:os';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 import * as Copilot from '../src/copilot-app.mjs';
+import * as Fleet from '../src/fleet.mjs';
 
 const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac), { key: mac.kvm?.ssh_key || null });
 const sitterDir = (mac) => mac.kvm?.sitter_home || '/etc/kvmd/user/housesitter';
@@ -97,6 +98,9 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
       [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
       [--settle 90] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
+  housesitter fleet [--stale-min 15] [--disk-floor-gb 20] [--always-on <mac>,<mac>] [--from <gist.json>]   every Mac side by side from the fleet
+                                           gist's health records: how old each is and what is wrong (exit 1 when anything is);
+                                           HOUSESITTER_FLEET_GIST and HOUSESITTER_FLEET_USER choose the gist and the gh account
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
   housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 
@@ -105,7 +109,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--grace', '--person-wait', '--copilot-home'];
+const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--grace', '--person-wait', '--copilot-home'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -276,6 +280,19 @@ async function main() {
     const r = await night();
     if (json) emit({ rehearsal: true, lines: r.lines, incidents: r.incidents }); else console.log(render(r, { color: useColor() }));
     return 0;
+  }
+
+  if (cmd === 'fleet') {
+    let beats;
+    try {
+      beats = val('--from') ? Fleet.beatsFromGist(JSON.parse(fs.readFileSync(path.resolve(val('--from')), 'utf8'))) : await Fleet.readFleet();
+    } catch (e) {
+      throw new Refusal('action-failed', `could not read the fleet's health records: ${e.message}. Check that gh is signed in (gh auth status) and HOUSESITTER_FLEET_GIST names the gist, or read a saved copy with housesitter fleet --from <gist.json>`);
+    }
+    const num = (f) => (val(f) == null ? undefined : Number(val(f)));
+    const rows = Fleet.fleetRows(beats, { staleMin: num('--stale-min'), diskFloorGb: num('--disk-floor-gb'), alwaysOn: val('--always-on') ? val('--always-on').split(',') : [] });
+    if (json) emit({ rows }); else console.log(Fleet.renderFleet(rows).join('\n'));
+    return rows.every((r) => r.healthy) ? 0 : 1;
   }
 
   if (cmd === 'tailnet-policy') { console.log(fs.readFileSync(path.join(ROOT, 'docs', 'tailnet-policy.hujson'), 'utf8')); return 0; }
