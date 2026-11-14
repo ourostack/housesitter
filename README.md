@@ -220,6 +220,22 @@ The sitter is deterministic on purpose. For judgment around it, [plugins/housesi
 
 Housesitter and the agent on the Mac (Ouroboros) talk in free text through two secret gists. On the Mac: `housesitter peer send <text> [--re <id>] [--now]`, `housesitter peer inbox` and `housesitter peer flush`; on the KVM, the `peer_send` and `peer_inbox` tools. Sends are queued and go out in batches within 6 minutes (`--now` / `now` at once), at most 10 gist writes an hour each way, because GitHub caps gist writes per user across the whole fleet. On the Mac, `housesitter peer watch --agent ouroboros` (a LaunchAgent) wakes Ouroboros with `ouro msg` when Housesitter writes and sends its queued messages when due; it reads with ETags and marks nothing read. Without `GH_TOKEN`, the Mac end uses gh's token for the gists' owner (`peer.user` in the config, default `arimendelow`), not gh's active account, because GitHub limits gist reads per token. Before a planned drill (a battle test that stops either agent's daemon on purpose), run `housesitter peer drill <label> [--minutes 60]` on the Mac and write the same `{"label", "until"}` to `drill.json` in the KVM's peer state (`/userdata/ouro/housesitter/`). Until it ends (`--end`), everything sent on the link starts with `[planned drill: <label>]` and every wake says it's a drill, so neither agent reports it to Ari as a real incident. Install, environment and the message format: [the plugin's README](plugins/housesitter/README.md).
 
+## Restart the Copilot app without losing a session
+
+A restart of the GitHub Copilot app stops every session in it. `housesitter restart-copilot` does the restart from outside the app, so it survives the app quitting, and brings every session back:
+
+```sh
+housesitter restart-copilot --resume --dry-run   # what it would do now: the sessions it would ask and resume
+housesitter restart-copilot --resume --detach    # run it as a launchd job; read the result with --status
+```
+
+1. **Before.** It reads each session's mode and whether its agent loop is working (the app's database, and the session's own history), then asks every working session to reach a safe point: commit and push, or save notes, and stop. It waits up to `--settle` seconds (90); what is still working at the quit is recorded as interrupted.
+2. **Quit.** Through the app's own Quit menu item, driven by [hackamore](https://github.com/ourostack/hackamore), which refuses while a person is using the Mac (it waits up to `--person-wait` seconds, then stops without quitting). `--sigterm` quits by SIGTERM to the exact pid instead. It waits until every process of the app has exited; a straggler gets SIGTERM by exact pid, and a process that will not die stops the run before any relaunch.
+3. **Relaunch.** `open -a`, then it waits for the app's local socket.
+4. **After.** Each session that was working, that the app marks interrupted by this restart, or that you named with `--also <session id>` gets one message through the app's socket (`--why "an update"` completes "restarted at 11:40 for …"). A session something else already continued is left alone, and an old crash flag nobody resumed is not touched. Each session must then take a turn; one that does not is reported by id, with its reason.
+
+`--app "<name>"` rehearses the same sequence on another app (it quits and reopens it and skips the sessions). Exit codes: 0 every session resumed, 1 something failed (the report says where), 2 refused.
+
 ## Hardware
 
 **What to buy** (prices approximate, November 2026):
@@ -302,6 +318,7 @@ housesitter is experimental (0.4). Honest status, as of 9 November 2026. "Our wa
 | Who can reach the KVM (home and away) | **Done on real hardware, by housesitter 0.3.2** on 9 November, with the sitter's hash recorded on the KVM: at home our laptop and a Mac on the LAN reached SSH, HTTP and HTTPS; with away applied, neither got an answer over the LAN while the tailnet still did; 94 s later the sitter's own recheck found the rules weren't home and put them back. Nothing public was tried at home, because nothing public can reach our Comet; UDP (NTP, mDNS) isn't filtered ([proof](docs/proof/2026-11-09-ingress/)) |
 | The Mac watching its KVM | **Done on real hardware, by housesitter 0.2.4** on 9 November: our mini's LaunchAgent, with its own watch-only key and its own ntfy token. We stopped only the sitter on the Comet at 01:13:32 PT (kvmd, the Comet and the mini untouched). With `--test --silent-min 2` (the quiet limit cut from 5 minutes to 2 for the test), the mini sent "TEST: mini's KVM is silent" at 01:18:16, 4 min 44 s later, and it reached the owner's HEY Imbox at 01:18:18. We started the sitter at 01:18:44; "TEST: mini's KVM is back" went at 01:19:18 and reached HEY at 01:19:20. Both are in the sitter's ledger, counted against the shared email cap ([the log](https://github.com/ourostack/housesitter/blob/proof/2026-11-09-hardware/docs/proof/2026-11-09-v0.2/watch-kvm-024.txt)). Then reinstalled without `--test` |
 | Housesitter as an Ouro agent (the plugin, the peer link, the watcher) | **Live on our Comet** since 10 November 2026 ([the setup, step by step](docs/agent-setup.md)): hatched there through Ouro's serpent guide, survived a Comet reboot, answered Ouroboros with an accurate status of the mini, handled a drill end to end with Ouroboros, and ran for two hours with MemAvailable never below 324 MB and the sitter's heartbeat never older than 68 s. The tests also run against fakes: a fake sitter, a local stand-in for GitHub's gist API and a fake `ouro`. |
+| Restarting the Copilot app without losing sessions | **Rehearsed on this Mac, not yet run on the real app.** `restart-copilot` ran end to end on a stand-in app (TextEdit, quit through hackamore's menu action, reopened, as a launchd job too) against a pretend app socket; its resume step ran on the real Copilot app against a throwaway session, which took a turn 3 s after the message. hackamore reads the real app's Quit menu item; the real quit is the one step not yet pressed |
 | Shelly over Bluetooth from the KVM | **Not yet verified**: depends on the KVM's Bluetooth stack |
 
 ## Friends and prior art

@@ -22,6 +22,7 @@ const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8'))
 const writeJson = (f, v) => { const t = `${f}.${process.pid}.tmp`; fs.writeFileSync(t, JSON.stringify(v)); fs.renameSync(t, f); };
 const oneLine = (t, n) => { const s = String(t).replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 const LOG_MAX = 1 << 20;
+const RESTART_STALE_MS = 20 * 60000;
 
 // The first executable called name on PATH, or null.
 export function which(name, PATH = process.env.PATH || '') {
@@ -49,7 +50,8 @@ export const socketAnswers = (sock) => new Promise((res) => {
 // p: a peer() from src/peer.mjs. ouro: the ouro executable (null: not found). bin: the housesitter CLI the wake names.
 // exec, clock and print are for tests.
 export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, exec = runFile, clock = Date.now, print = () => {},
-  socket = '/tmp/ouroboros-daemon.sock', probe = socketAnswers, host = os.hostname().replace(/\.local$/, '') }) {
+  socket = '/tmp/ouroboros-daemon.sock', probe = socketAnswers, host = os.hostname().replace(/\.local$/, ''),
+  restartDir = path.join(os.homedir(), 'Library', 'Caches', 'housesitter', 'restart-copilot') }) {
   const stateFile = path.join(dir, 'peer-watch.json');
   const logFile = path.join(dir, 'peer-watch.log');
   const log = (line) => {
@@ -139,6 +141,23 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     }
   }
 
+  // `housesitter restart-copilot` keeps status.json. A restart that failed, or whose job stopped updating, is told once
+  // to Housesitter (who can look at the Mac's screen) and to the agent (who can resume the sessions).
+  async function restartCheck(st) {
+    const s = readJson(path.join(restartDir, 'status.json'), null);
+    if (!s || !s.started || st.restart_told === s.started) return;
+    const stale = s.state === 'running' && clock() - Date.parse(s.updated) > RESTART_STALE_MS;
+    if (s.state !== 'failed' && !stale) return;
+    st.restart_told = s.started;
+    const what = stale ? `stopped updating at step "${s.step}" (the job may have died)` : `failed at ${s.failed?.stage}: ${oneLine(s.failed?.why || '', 200)}`;
+    const not = s.not_resumed?.length ? ` Sessions not resumed: ${s.not_resumed.join(', ')}.` : '';
+    log(`the Copilot app restart from ${s.started} ${what}; telling Housesitter and ${agent}`);
+    await tell(`peer-watch on ${host}: the Copilot app restart that started ${s.started} ${what}.${not} If the app is not on the Mac's screen, look with sitter_look and say so.`);
+    if (!ouro) return;
+    const res = await exec(ouro, ['msg', '--to', agent, `The Copilot app restart that started ${s.started} on ${host} ${what}.${not} Read the report with: node ${bin} restart-copilot --status; then check each session with app_sessions_list and send app_sessions_resume to any that is not running.`]);
+    if (res.code !== 0) log(`wake about the restart failed: ouro msg exited ${res.code}`);
+  }
+
   function backoff(st, now, why) {
     st.wake_fails = (st.wake_fails || 0) + 1;
     const wait = Math.min(900, every * 2 ** st.wake_fails);
@@ -151,6 +170,7 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     const st = readJson(stateFile, {}) || {};
     await health(st);
     await read(st);
+    await restartCheck(st).catch((e) => log(`restart check failed: ${oneLine(e.message, 300)}`));
     writeJson(stateFile, st);
     try {
       const f = await p.flush();

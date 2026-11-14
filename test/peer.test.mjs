@@ -454,3 +454,27 @@ test('a planned drill: `peer drill` labels everything sent until it ends, and th
   assert.doesNotMatch(x.calls.at(-1)[4], /planned drill/);
   await gh.close();
 });
+
+test('peer watch tells Housesitter and the agent, once, when a Copilot app restart fails or its job stops updating', async () => {
+  const { gists, gh, dir, time, p } = await setup();
+  const restartDir = fs.mkdtempSync(path.join(scratchRoot, 'restart-'));
+  const x = fakeExec();
+  const w = peerWatch({ p, dir, ouro: '/bin/ouro', bin: 'hs', exec: x.exec, clock: () => time.now, probe: async () => true, restartDir });
+  const status = (o) => fs.writeFileSync(path.join(restartDir, 'status.json'), JSON.stringify(o));
+  const sent = () => Object.values(gists[O_TO_H]).map((c) => JSON.parse(c).text).filter((t) => /Copilot app restart/.test(t));
+  status({ started: '2026-11-09T12:00:00Z', updated: new Date(time.now).toISOString(), state: 'running', step: 'quit sent' });
+  await w.tick();
+  assert.equal(sent().length, 0, 'a running restart is left alone');
+  time.now += 21 * 60000;
+  await w.tick();
+  assert.equal(sent().length, 1);
+  assert.match(sent()[0], /stopped updating at step "quit sent" \(the job may have died\)/);
+  assert.match(x.calls.at(-1)[4], /restart-copilot --status; then check each session with app_sessions_list/);
+  await w.tick();
+  assert.equal(sent().length, 1, 'told once');
+  status({ started: '2026-11-09T13:00:00Z', updated: new Date(time.now).toISOString(), state: 'failed', failed: { stage: 'quit', why: 'someone is using this Mac' }, not_resumed: ['abc'] });
+  await w.tick();
+  assert.equal(sent().length, 2);
+  assert.match(sent()[1], /failed at quit: someone is using this Mac\. Sessions not resumed: abc\./);
+  await gh.close();
+});
