@@ -81,7 +81,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            (hackamore), relaunch, then send each session that was working a resume message
                                            and check it took a turn. --dry-run lists what it would do now; --detach runs it
                                            as a launchd job that survives the app quitting; --status shows the last run
-      [--why "a Desk runtime upgrade"] [--also <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
+      [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
       [--settle 90] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
   housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
@@ -91,7 +91,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--hackamore', '--app', '--settle', '--grace', '--person-wait', '--copilot-home'];
+const VALUED = ['--address', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--grace', '--person-wait', '--copilot-home'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -192,10 +192,11 @@ async function restartCopilot() {
   const sec = (f, d) => (val(f) == null ? d : Number(val(f)) * 1000);
   const app = val('--app') || Copilot.DEFAULT_APP;
   const opts = {
-    app, why: val('--why'), also: all('--also'), resume: flag('--resume'), sigterm: flag('--sigterm'), dry_run: flag('--dry-run'),
+    app, why: val('--why'), also: all('--also'), skip: all('--skip'), resume: flag('--resume'), sigterm: flag('--sigterm'), dry_run: flag('--dry-run'),
     stand_in: app !== Copilot.DEFAULT_APP && !val('--copilot-home'),
     t: { settle: sec('--settle', Copilot.T.settle), grace: sec('--grace', Copilot.T.grace), person: sec('--person-wait', Copilot.T.person) },
   };
+  if (opts.skip.some((id) => id.length < 8)) throw new Refusal('input-invalid', '--skip takes a session id or its first 8 characters or more');
   if ([opts.t.settle, opts.t.grace, opts.t.person].some((n) => !Number.isFinite(n) || n < 0)) throw new Refusal('input-invalid', '--settle, --grace and --person-wait take a number of seconds');
   const stateDir = Copilot.stateDir();
   if (flag('--status')) {
