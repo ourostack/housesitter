@@ -90,10 +90,11 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            and check it took a turn. --dry-run lists what it would do now; --detach runs it
                                            as a launchd job that survives the app quitting; --status shows the run now or the last
                                            (state, step, start time, result)
-  housesitter restart-copilot --resume-only [--watch] [--dry-run]   resume what an app stop left unfinished (a crash, an
-                                           update, a login), restarting nothing; --watch does it for every new app process
+  housesitter restart-copilot --resume-only [--watch [--open-at-login]] [--dry-run]   resume what an app stop left unfinished
+                                           (a crash, an update, a login), restarting nothing; --watch does it for every new app
+                                           process; --open-at-login also opens a closed app once per login
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
-                                           that runs --resume-only --watch at login and keeps it running
+                                           that runs --resume-only --watch --open-at-login at login and keeps it running
       [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
       [--settle 90] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
   housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
@@ -205,7 +206,7 @@ async function restartCopilot() {
   const sec = (f, d) => (val(f) == null ? d : Number(val(f)) * 1000);
   const app = val('--app') || Copilot.DEFAULT_APP;
   const opts = {
-    app, why: val('--why'), also: all('--also'), skip: all('--skip'), resume: flag('--resume'), sigterm: flag('--sigterm'), dry_run: flag('--dry-run'),
+    app, why: val('--why'), also: all('--also'), skip: all('--skip'), resume: flag('--resume'), sigterm: flag('--sigterm'), dry_run: flag('--dry-run'), open_at_login: flag('--open-at-login'),
     stand_in: app !== Copilot.DEFAULT_APP && !val('--copilot-home'),
     t: { settle: sec('--settle', Copilot.T.settle), grace: sec('--grace', Copilot.T.grace), person: sec('--person-wait', Copilot.T.person) },
   };

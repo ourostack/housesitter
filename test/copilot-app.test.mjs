@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, runInProgress, resumeText, settleText } from '../src/copilot-app.mjs';
+import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, runInProgress, watch, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -295,6 +295,25 @@ test('resumeOnly: resumes what was working when the app stopped, once per app pr
   await w.done(); await w2.done();
 });
 
+test('watch: opens a closed app once per login, then resumes the sessions of each new app process', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  w.procs = [];
+  let marked = null, claims = 1;
+  w.deps.generation = { get: () => marked, set: (k) => { marked = k; } };
+  w.deps.loginClaim = () => claims-- > 0;
+  const log = [];
+  let laps = 0;
+  const opts = { ...w.opts, open_at_login: true, t: { ...w.opts.t, grace: 0 } };
+  await watch(opts, w.deps, (m) => log.push(m), { every: 1, stop: () => laps++ >= 40 || w.app.received.some((m) => m.id === C && /restarted at/.test(m.prompt)) });
+  assert.equal(w.opens, 1);
+  assert.ok(log.some((l) => /was closed at login: opened it in the background/.test(l)));
+  assert.deepEqual([...new Set(w.app.received.filter((m) => /restarted at/.test(m.prompt)).map((m) => m.id))].sort(), [A, C]);
+  w.procs = [];
+  await watch(opts, w.deps, () => {}, { every: 1, stop: () => laps++ >= 45 });
+  assert.equal(w.opens, 1, 'the second start in the same login opens nothing');
+  await w.done();
+});
+
 test('installKeeper writes the launch agent for the resume watcher and loads it', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-keeper-'));
   const calls = [];
@@ -302,7 +321,7 @@ test('installKeeper writes the launch agent for the resume watcher and loads it'
   const text = fs.readFileSync(r.plist, 'utf8');
   assert.equal(r.ok, true);
   assert.match(text, new RegExp(`<string>${KEEPER_LABEL}</string>`));
-  assert.match(text, /<string>\/n\/node<\/string>\s*<string>\/h\/bin\/housesitter\.mjs<\/string>\s*<string>restart-copilot<\/string>\s*<string>--resume-only<\/string>\s*<string>--watch<\/string>/);
+  assert.match(text, /<string>\/n\/node<\/string>\s*<string>\/h\/bin\/housesitter\.mjs<\/string>\s*<string>restart-copilot<\/string>\s*<string>--resume-only<\/string>\s*<string>--watch<\/string>\s*<string>--open-at-login<\/string>/);
   assert.match(text, /<key>RunAtLoad<\/key><true\/>[\s\S]*<key>KeepAlive<\/key><true\/>/);
   assert.deepEqual(calls.map((c) => c[0]), ['bootout', 'bootstrap']);
   assert.equal((await installKeeper({ node: '/n/node', bin: '/b', home, dry: true })).dry_run, true);

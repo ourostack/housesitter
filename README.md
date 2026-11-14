@@ -241,7 +241,7 @@ housesitter restart-copilot --status             # the run now or the last one: 
 
 The restart job resumes what it stopped. For an app that stopped some other way, `housesitter restart-copilot --resume-only` does step 4 alone: every session whose own history says it was working, that nothing has continued since the app process started, gets one message, and each must take a turn. It restarts nothing, and it resumes a given app process once (a restart job that relaunched the app claims it, so the two never both send). `--dry-run` lists who it would resume.
 
-`housesitter restart-copilot --install-keeper` writes and loads a launchd agent (`bot.ouro.housesitter.copilot-resume`) that runs `--resume-only --watch` at login and keeps it running: it notices each new app process and resumes its sessions. Its log is `~/Library/Logs/housesitter-copilot-resume.log`, and `--status` shows its last pass.
+`housesitter restart-copilot --install-keeper` writes and loads a launchd agent (`bot.ouro.housesitter.copilot-resume`) that runs `--resume-only --watch --open-at-login` at login and keeps it running: it notices each new app process and resumes its sessions, and the first pass after a login opens the app in the background if macOS did not reopen it (an app you quit later stays quit). Its log is `~/Library/Logs/housesitter-copilot-resume.log`, and `--status` shows its last pass.
 
 `--app "<name>"` rehearses the same sequence on another app (it quits and reopens it and skips the sessions). Exit codes: 0 every session resumed, 1 something failed (the report says where), 2 refused.
 

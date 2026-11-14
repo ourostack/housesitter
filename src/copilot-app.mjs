@@ -15,7 +15,7 @@
 //
 // Everything that touches the Mac goes through `deps`, so tests run the whole sequence against a pretend Mac.
 
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -241,6 +241,15 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     generation: {
       get: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'resumed.json'), 'utf8')).key || null; } catch { return null; } },
       set: (key, by) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resumed.json'), JSON.stringify({ key, by, at: new Date().toISOString() })); },
+    },
+    // True once per login (the login window's pid names it).
+    loginClaim: () => {
+      const id = String(spawnSync('/usr/bin/pgrep', ['-x', 'loginwindow'], { encoding: 'utf8' }).stdout || '').split('\n')[0].trim();
+      if (!id) return false;
+      const f = path.join(state, `login-${id}`);
+      if (fs.existsSync(f)) return false;
+      try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(f, new Date().toISOString()); for (const old of fs.readdirSync(state)) if (/^login-\d+$/.test(old) && old !== `login-${id}`) fs.rmSync(path.join(state, old), { force: true }); } catch { return false; }
+      return true;
     },
     restartState: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'status.json'), 'utf8')); } catch { return null; } },
     recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
@@ -589,6 +598,11 @@ export async function resumeOnly(opts, deps, log = () => {}) {
 // Resume-only for every new app process, for as long as this runs (launchd keeps it up; see installKeeper).
 export async function watch(opts, deps, log = () => {}, { every = 5000, stop = () => false } = {}) {
   let last = null;
+  // The first pass after a login opens a closed app, so its sessions come back after a reboot (once per login: an app the person quit later stays quit).
+  if (opts.open_at_login && deps.loginClaim?.() && !(await appGeneration(opts, deps)).main) {
+    const o = await deps.open(opts.app || DEFAULT_APP, { background: true });
+    log(o.code === 0 ? `${opts.app || DEFAULT_APP} was closed at login: opened it in the background` : `${opts.app || DEFAULT_APP} was closed at login and would not open: ${o.stderr.trim().slice(0, 200)}`);
+  }
   while (!stop()) {
     try {
       const g = await appGeneration(opts, deps);
@@ -664,7 +678,7 @@ export function keeperPlist({ node, bin, env = {}, log }) {
   <key>Label</key><string>${KEEPER_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-${[node, bin, 'restart-copilot', '--resume-only', '--watch'].map((a) => `    <string>${x(a)}</string>`).join('\n')}
+${[node, bin, 'restart-copilot', '--resume-only', '--watch', '--open-at-login'].map((a) => `    <string>${x(a)}</string>`).join('\n')}
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -682,7 +696,7 @@ ${envs}
 `;
 }
 
-// Write (and, unless dry, load) the agent that runs `restart-copilot --resume-only --watch` at login and keeps it running.
+// Write (and, unless dry, load) the agent that runs `restart-copilot --resume-only --watch --open-at-login` at login and keeps it running.
 export async function installKeeper({ node, bin, env, home = os.homedir(), dry = false, launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid() }) {
   const file = path.join(home, 'Library', 'LaunchAgents', `${KEEPER_LABEL}.plist`);
   const log = path.join(home, 'Library', 'Logs', 'housesitter-copilot-resume.log');
