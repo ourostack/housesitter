@@ -219,8 +219,10 @@ async function restartCopilot() {
     return s.state === 'failed' ? 1 : 0;
   }
   if (flag('--install-keeper')) {
-    const r = await Copilot.installKeeper({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') });
-    if (json) emit(r); else say(r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Copilot.KEEPER_LABEL}); it resumes sessions after every app start. Log: ${r.log}` : `✗ launchctl would not load it: ${r.error}`);
+    const d = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir });
+    const before = async () => { const g = await Copilot.appGeneration(opts, d).catch(() => ({})); if (g.key) d.generation.set(g.key, 'install-keeper'); };
+    const r = await Copilot.installKeeper({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run'), before });
+    if (json) emit(r); else say(r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Copilot.KEEPER_LABEL}); it resumes sessions after every app start from now on (the app that is up now is not resumed). Log: ${r.log}` : `✗ launchctl would not load it: ${r.error}`);
     return r.ok ? 0 : 1;
   }
   if (flag('--resume-only')) {

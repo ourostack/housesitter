@@ -324,6 +324,9 @@ test('installKeeper writes the launch agent for the resume watcher and loads it'
   assert.match(text, /<string>\/n\/node<\/string>\s*<string>\/h\/bin\/housesitter\.mjs<\/string>\s*<string>restart-copilot<\/string>\s*<string>--resume-only<\/string>\s*<string>--watch<\/string>\s*<string>--open-at-login<\/string>/);
   assert.match(text, /<key>RunAtLoad<\/key><true\/>[\s\S]*<key>KeepAlive<\/key><true\/>/);
   assert.deepEqual(calls.map((c) => c[0]), ['bootout', 'bootstrap']);
+  const order = [];
+  await installKeeper({ node: '/n', bin: '/b', home, uid: 1, before: async () => order.push('before'), launchctl: async (a) => { order.push(a[0]); return { code: 0, stderr: '' }; } });
+  assert.deepEqual(order, ['before', 'bootout', 'bootstrap'], 'the app that is already up is marked before the agent can see it');
   assert.equal((await installKeeper({ node: '/n/node', bin: '/b', home, dry: true })).dry_run, true);
   fs.rmSync(home, { recursive: true, force: true });
 });

@@ -697,7 +697,8 @@ ${envs}
 }
 
 // Write (and, unless dry, load) the agent that runs `restart-copilot --resume-only --watch --open-at-login` at login and keeps it running.
-export async function installKeeper({ node, bin, env, home = os.homedir(), dry = false, launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid() }) {
+// `before` runs once the agent is written and before it loads: installing it must not resume the app that is already up.
+export async function installKeeper({ node, bin, env, home = os.homedir(), dry = false, before = async () => {}, launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid() }) {
   const file = path.join(home, 'Library', 'LaunchAgents', `${KEEPER_LABEL}.plist`);
   const log = path.join(home, 'Library', 'Logs', 'housesitter-copilot-resume.log');
   const text = keeperPlist({ node, bin, env, log });
@@ -705,6 +706,7 @@ export async function installKeeper({ node, bin, env, home = os.homedir(), dry =
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.mkdirSync(path.dirname(log), { recursive: true });
   fs.writeFileSync(file, text);
+  await before();
   await launchctl(['bootout', `gui/${uid}/${KEEPER_LABEL}`]);
   const r = await launchctl(['bootstrap', `gui/${uid}`, file]);
   return { ok: r.code === 0, plist: file, log, error: r.stderr.trim() };
