@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { family, findMain, loopState, parsePs, pickTargets, plan, quitItem, realDeps, restart, resumeText, settleText } from '../src/copilot-app.mjs';
+import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -35,6 +35,13 @@ test('findMain and family: the app, what it started and anything run from its bu
   const ps = parsePs(` 100 1 ${BUNDLE}/Contents/MacOS/fake\n 101 100 runtime --server\n 102 101 mcp\n 103 1 ${BUNDLE}/Contents/Resources/helper\n 104 1 other\n 105 100 ${BUNDLE}/Contents/MacOS/fake-child`);
   assert.equal(findMain(ps, BUNDLE).pid, 100);
   assert.deepEqual(family(ps, 100, BUNDLE), [100, 101, 102, 103, 105]);
+});
+
+test('findMain: the app itself, not a helper in the same folder that has a lower pid', () => {
+  const ps = parsePs(` 41409 95046 ${BUNDLE}/Contents/MacOS/git-credential-copilot --internal-git-lifetime-watchdog /x\n 95046 1 ${BUNDLE}/Contents/MacOS/github --restart-handoff-token=t\n 95100 95046 runtime`);
+  assert.equal(findMain(ps, BUNDLE).pid, 95046, 'a helper that is the child of an app process is not the app');
+  const orphan = parsePs(` 41409 1 ${BUNDLE}/Contents/MacOS/git-credential-copilot --watch\n 95046 1 ${BUNDLE}/Contents/MacOS/github`);
+  assert.equal(findMain(orphan, BUNDLE, 'github').pid, 95046, 'the bundle\'s own executable wins when it is known');
 });
 
 test('quitItem finds the Quit entry in a hackamore ls reply', () => {
@@ -200,4 +207,102 @@ test('restart keeps status.json current: running at each step, then done, or fai
   await restart(w2.opts, w2.deps);
   await w2.done();
   assert.equal(seen2.at(-1).state, 'done');
+});
+
+test('restart: an app that does not quit by itself gets SIGTERM to its own pid first, then what is left, and the log says why', { skip }, async () => {
+  const w = await world({ sessions: sessions(), stubborn: true });
+  const log = [];
+  const hk = w.deps.hk;
+  w.deps.hk = async (a) => (a[0] === 'ls' ? { code: 0, json: { actions: [{ name: 'menu', input: { properties: { item: { enum: ['App > Quit Fake'] } } } }], state: { elements: [{ role: 'button', label: 'Cancel', ref: 'button[Cancel]' }] } } } : hk(a));
+  w.deps.sleep = (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5)));
+  const r = await restart(w.opts, w.deps, (m) => log.push(m));
+  await w.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed));
+  assert.deepEqual(w.kills, [[100, 'SIGTERM'], [101, 'SIGTERM']], 'the app first, then the straggler');
+  assert.ok(log.some((l) => /the app did not quit within \d+ s of the Quit item \(its own process 100 is still running\).*no confirmation dialog, no Quit button/.test(l)), log.join('\n'));
+});
+
+test('restart: a quit confirmation with a Quit button is answered through hackamore', { skip }, async () => {
+  const w = await world({ sessions: sessions(), stubborn: true });
+  const log = [];
+  const hk = w.deps.hk;
+  let up = false;
+  w.deps.hk = async (a) => {
+    if (a[0] === 'ls') return { code: 0, json: { actions: [{ name: 'menu', input: { properties: { item: { enum: ['App > Quit Fake'] } } } }], state: { elements: up ? [{ role: 'button', label: 'Cancel', ref: 'button[Cancel]' }, { role: 'button', label: 'Quit', ref: 'button[Quit]' }] : [] } } };
+    if (a[1] === 'menu') { up = true; return { code: 0, json: {} }; }
+    if (a[1] === 'click') { w.clicked = JSON.parse(a[2]); w.procs = []; return { code: 0, json: {} }; }
+    return hk(a);
+  };
+  w.opts.t.dialog = 30;
+  w.opts.t.quit = 3000;
+  const r = await restart(w.opts, w.deps, (m) => log.push(m));
+  await w.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed));
+  assert.deepEqual(w.clicked, { element: 'button[Quit]', app: 'Fake Copilot' });
+  assert.deepEqual(w.kills, [], 'answered, so nothing was signalled');
+  assert.ok(log.some((l) => /the app asked to confirm the quit; answered it/.test(l)));
+});
+
+test('readState: --status reports a run in progress from status.json, not the previous run\'s report', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-state-'));
+  const put = (f, o) => fs.writeFileSync(path.join(dir, f), typeof o === 'string' ? o : JSON.stringify(o));
+  assert.equal(readState(dir).state, 'none');
+  assert.match(renderState(readState(dir)), /no restart has run on this Mac yet/);
+  put('last.json', { ok: true, started_at: '2026-11-13T10:00:00.000Z', steps: [{ step: 'snapshot {"n":1}' }], resume: [] });
+  put('status.json', { started: '2026-11-14T19:49:26.576Z', updated: '2026-11-14T19:51:01.000Z', state: 'running', step: 'quit sent' });
+  put('run-2026-11-14T19-49-26-146Z.log', 'a\nb\nquit sent {"method":"menu"}\n');
+  const now = Date.parse('2026-11-14T19:51:31.000Z');
+  const s = readState(dir, now);
+  assert.deepEqual([s.state, s.step, s.started, s.age_s, s.result], ['running', 'quit sent', '2026-11-14T19:49:26.576Z', 30, null]);
+  const text = renderState(s);
+  assert.match(text, /^restart-copilot RUNNING: quit sent\n  started 2026-11-14T19:49:26.576Z, last step 30 s ago/);
+  assert.match(text, /run-2026-11-14T19-49-26-146Z\.log/);
+  assert.match(text, /quit sent \{"method":"menu"\}/);
+  assert.equal(readState(dir, now + 3600000).stale, true, 'a running job with no step for an hour is flagged');
+  put('last.json', { ok: false, started_at: '2026-11-14T19:49:26.700Z', failed: { stage: 'quit', why: 'x' }, steps: [{ step: 'snapshot {}' }, { step: 'FAILED at quit {}' }], resume: [] });
+  put('status.json', { started: '2026-11-14T19:49:26.576Z', updated: '2026-11-14T19:53:16.000Z', state: 'failed', step: 'failed at quit', failed: { stage: 'quit', why: 'x' } });
+  const f = readState(dir, now);
+  assert.equal(f.state, 'failed');
+  assert.match(renderState(f), /FAILED: failed at quit[\s\S]*failed at quit: x[\s\S]*steps: snapshot → FAILED at quit/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('resumeOnly: resumes what was working when the app stopped, once per app process, and never over a running restart job', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  w.startedAt = Date.now() - 300000;
+  let marked = null, running = false;
+  w.deps.generation = { get: () => marked, set: (k) => { marked = k; } };
+  w.deps.restartState = () => (running ? { state: 'running', updated: new Date().toISOString() } : null);
+  const t = { ...w.opts, t: { ...w.opts.t, grace: 0 } };
+  const dry = await resumeOnly({ ...t, dry_run: true }, w.deps);
+  assert.deepEqual(dry.resume.map((x) => x.id), [A, C]);
+  assert.equal(marked, null, 'a dry run marks nothing');
+  running = true;
+  assert.equal((await resumeOnly(t, w.deps)).skipped, 'a restart is running');
+  assert.equal(w.app.received.length, 0);
+  running = false;
+  const r = await resumeOnly(t, w.deps);
+  assert.equal(r.ok, true, JSON.stringify(r.resume));
+  assert.deepEqual(r.resume.map((x) => [x.id, x.outcome]).sort(), [[A, 'resumed'], [C, 'resumed']]);
+  assert.match(w.app.received.find((m) => m.id === A).prompt, /^The app was restarted at \d\d:\d\d/);
+  assert.equal((await resumeOnly(t, w.deps)).skipped, 'already resumed');
+  assert.equal(w.app.received.filter((m) => m.id === A).length, 1, 'a second pass sends nothing');
+  const w2 = await world({ sessions: sessions() });
+  w2.procs = [];
+  assert.equal((await resumeOnly(w2.opts, w2.deps)).skipped, 'app not running');
+  await w.done(); await w2.done();
+});
+
+test('installKeeper writes the launch agent for the resume watcher and loads it', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-keeper-'));
+  const calls = [];
+  const r = await installKeeper({ node: '/n/node', bin: '/h/bin/housesitter.mjs', env: { HOME: home }, home, uid: 501, launchctl: async (a) => { calls.push(a); return { code: 0, stderr: '' }; } });
+  const text = fs.readFileSync(r.plist, 'utf8');
+  assert.equal(r.ok, true);
+  assert.match(text, new RegExp(`<string>${KEEPER_LABEL}</string>`));
+  assert.match(text, /<string>\/n\/node<\/string>\s*<string>\/h\/bin\/housesitter\.mjs<\/string>\s*<string>restart-copilot<\/string>\s*<string>--resume-only<\/string>\s*<string>--watch<\/string>/);
+  assert.match(text, /<key>RunAtLoad<\/key><true\/>[\s\S]*<key>KeepAlive<\/key><true\/>/);
+  assert.deepEqual(calls.map((c) => c[0]), ['bootout', 'bootstrap']);
+  assert.equal((await installKeeper({ node: '/n/node', bin: '/b', home, dry: true })).dry_run, true);
+  fs.rmSync(home, { recursive: true, force: true });
 });

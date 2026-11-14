@@ -10,6 +10,9 @@
 //   4. After: every session that was working, was interrupted by the quit, or was named with --also (and is not named with --skip) gets one resume
 //      message through the app's socket, unless something already continued it. Each one must then take a turn.
 //
+// `--resume-only` runs just step 4 for an app that stopped some other way (a crash, an update, a login, a reboot), and
+// `--resume-only --watch` does it for every new app process, as a launchd agent that `--install-keeper` writes.
+//
 // Everything that touches the Mac goes through `deps`, so tests run the whole sequence against a pretend Mac.
 
 import { execFile } from 'node:child_process';
@@ -24,12 +27,11 @@ import { which } from './peer-watch.mjs';
 export const DEFAULT_APP = 'GitHub Copilot';
 export const LOOKBACK_MS = 24 * 3600000;
 export const TAIL_BYTES = 4 * 1024 * 1024;
-export const T = { settle: 90000, quit: 60000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3 };
+export const T = { settle: 90000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3 };
 export const LABEL = 'bot.ouro.housesitter.restart-copilot';
 
 const sleepReal = (ms) => new Promise((r) => setTimeout(r, ms));
 const hhmm = (ms) => new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const short = (id) => String(id).slice(0, 8);
 
 // ---------- pure ----------
@@ -38,10 +40,14 @@ export function parsePs(text) {
   return String(text).split('\n').map((l) => l.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean).map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), command: m[3] }));
 }
 
-// The app's own process: the lowest pid running its executable (helpers live elsewhere in the bundle).
-export function findMain(procs, bundleDir) {
-  const re = new RegExp(`^${esc(bundleDir)}/Contents/MacOS/`);
-  return procs.filter((p) => re.test(p.command)).sort((a, b) => a.pid - b.pid)[0] || null;
+// The app's own process. Helpers live in the same folder (a credential helper started by the app is one), so the app's
+// own executable comes first, then a process that is not the child of another process of the bundle, then the lowest pid.
+export function findMain(procs, bundleDir, exe = null) {
+  const prefix = `${bundleDir}/Contents/MacOS/`;
+  const inside = procs.filter((p) => p.command.startsWith(prefix));
+  const pids = new Set(inside.map((p) => p.pid));
+  const rank = (p) => [exe && p.command.slice(prefix.length).split(' ')[0] === exe ? 0 : 1, pids.has(p.ppid) ? 1 : 0, p.pid];
+  return inside.sort((a, b) => { const x = rank(a), y = rank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; })[0] || null;
 }
 
 // Every process that must be gone before a relaunch: the app, what it started, and anything run from its bundle.
@@ -206,7 +212,7 @@ function bundledHackamore() {
   try { return [process.execPath, path.join(path.dirname(fileURLToPath(import.meta.resolve('@ouro.bot/hackamore'))), '..', 'bin', 'hackamore.mjs')]; } catch { return null; }
 }
 
-export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), hackamore = null } = {}) {
+export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), hackamore = null, state = stateDir() } = {}) {
   const given = hackamore || process.env.HOUSESITTER_HACKAMORE || which('hackamore');
   const cmd = given ? given.trim().split(/\s+/) : bundledHackamore();
   return {
@@ -230,6 +236,14 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     kill: (pid, sig) => { try { process.kill(pid, sig); return true; } catch { return false; } },
     open: async (appName, { background }) => run('/usr/bin/open', [...(background ? ['-g'] : []), '-a', appName]),
     exchange: (messages, opts) => exchange(copilotHome, messages, opts),
+    appExe: async (dir) => (await run('/usr/bin/plutil', ['-extract', 'CFBundleExecutable', 'raw', '-o', '-', path.join(dir, 'Contents', 'Info.plist')])).stdout.trim() || null,
+    // Which app process (pid and start time) has had its sessions resumed already, so two resumers never both send.
+    generation: {
+      get: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'resumed.json'), 'utf8')).key || null; } catch { return null; } },
+      set: (key, by) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resumed.json'), JSON.stringify({ key, by, at: new Date().toISOString() })); },
+    },
+    restartState: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'status.json'), 'utf8')); } catch { return null; } },
+    recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
     appDir: (name) => ['/Applications', '/System/Applications', path.join(os.homedir(), 'Applications')].map((d) => path.join(d, `${name}.app`)).find((p) => fs.existsSync(p)) || null,
   };
 }
@@ -299,13 +313,35 @@ async function hackamoreQuit(deps, app, { personWaitMs, log }) {
   }
 }
 
+const QUIT_BUTTON = /^(quit|quit anyway|quit and stop|quit now|stop (all )?(sessions )?and quit|force quit|quit github( copilot)?)$/i;
+
+// What a read of the app shows that could be a quit confirmation: buttons, any system alert. Changes nothing.
+async function readDialog(deps, app) {
+  const ls = await deps.hk(['ls', app]);
+  if (ls.code !== 0 || !ls.json) return { buttons: [], summary: `hackamore ls failed: ${ls.text || `exit ${ls.code}`}` };
+  const els = ls.json.state?.elements || [];
+  const quit = els.filter((e) => e.role === 'button' && QUIT_BUTTON.test(String(e.label || '').trim()));
+  const alerts = (ls.json.state?.alerts || []).map((a) => `${a.owner || 'alert'}${a.text ? `: ${a.text}` : ''}`);
+  return { quit, alerts, buttons: els.filter((e) => e.role === 'button').length, summary: alerts.length ? `system alert: ${alerts.join('; ')}` : quit.length ? `Quit button: "${quit[0].label}"` : 'no confirmation dialog, no Quit button, no system alert on screen' };
+}
+
+// Press the Quit button of a confirmation the app put up after the Quit menu item (each label once).
+async function answerQuitDialog(deps, app, answered) {
+  const d = await readDialog(deps, app);
+  const b = (d.quit || []).find((e) => !answered.includes(e.label));
+  if (!b) return { pressed: null };
+  answered.push(b.label);
+  const r = await deps.hk(['do', 'click', JSON.stringify({ element: b.ref, app })]);
+  return { pressed: r.code === 0 ? b.label : null, why: r.code === 0 ? null : r.text };
+}
+
 // The whole plan from what is true now; changes nothing. Used by --dry-run and by the real run's first step.
 export async function plan(opts, deps) {
   const app = opts.app || DEFAULT_APP;
   const dir = deps.appDir(app);
   if (!dir) throw new Refusal('input-invalid', `no app called ${app} in /Applications, /System/Applications or ~/Applications: pass --app with the app's name`);
   const procs = await deps.ps();
-  const main = findMain(procs, dir);
+  const main = findMain(procs, dir, await deps.appExe?.(dir));
   const sessions = opts.stand_in ? [] : await snapshot(deps, undefined, opts.skip);
   const busy = sessions.filter((s) => s.state === 'busy');
   const also = (opts.also || []).filter((id) => !(opts.skip || []).some((p) => id.startsWith(p))).map((id) => sessions.find((s) => s.id.startsWith(id))?.id || id);
@@ -342,6 +378,13 @@ export async function restart(opts, deps, log = () => {}) {
   const started = new Date(deps.now()).toISOString();
   const write = (o) => { try { deps.status?.({ started, updated: new Date(deps.now()).toISOString(), ...o }); } catch { /* the status file is a courtesy */ } };
   const r = await restartSteps(opts, deps, (m) => { log(m); write({ state: 'running', step: m.split(' {')[0] }); });
+  if (r.restarted_at) {
+    // The app can restart itself right after a relaunch (an update): mark the process that is up now too.
+    try {
+      const dir = deps.appDir(r.app), m = findMain(await deps.ps(), dir, await deps.appExe?.(dir));
+      if (m) deps.generation?.set(`${m.pid}:${(await deps.startedAt(m.pid)) || ''}`, 'restart-copilot');
+    } catch { /* the marker only stops a second resumer */ }
+  }
   const not = r.not_resumed || (r.resume || []).filter((x) => !['resumed', 'already continued'].includes(x.outcome)).map((x) => x.id);
   write({ state: r.ok ? 'done' : 'failed', step: r.failed ? `failed at ${r.failed.stage}` : 'finished', ...(r.failed ? { failed: r.failed } : {}), ...(not.length ? { not_resumed: not } : {}) });
   return r;
@@ -359,7 +402,7 @@ async function restartSteps(opts, deps, log) {
   if (!p.running) return fail('before', `${app} is not running: nothing to restart: open it first`);
   if (p.quit.method === 'unavailable') return fail('before', p.quit.why);
   const procs0 = await deps.ps();
-  const mainBefore = findMain(procs0, dir);
+  const mainBefore = findMain(procs0, dir, await deps.appExe?.(dir));
   const before = opts.stand_in ? [] : await snapshot(deps, undefined, opts.skip);
   report.before = before.map(({ id, title, mode, state, why, interrupted }) => ({ id, title, mode, state, why, interrupted }));
   step('snapshot', { sessions: before.length, busy: before.filter((s) => s.state === 'busy').length, pid: mainBefore.pid });
@@ -389,11 +432,31 @@ async function restartSteps(opts, deps, log) {
   step('quit sent', { method: q.method, ...(q.item ? { item: q.item } : {}) });
   const alive = async () => { const ps = await deps.ps(); const set = new Set(familyPids); return ps.filter((x) => set.has(x.pid) || x.command.includes(`${dir}/Contents/`)).map((x) => x.pid); };
   let left = await alive();
-  for (const end = deps.now() + t.quit; left.length && deps.now() < end;) { await deps.sleep(1000); left = await alive(); }
+  const quitSentAt = deps.now();
+  const answered = [];
+  for (let next = deps.now() + t.dialog, end = deps.now() + t.quit; left.length && deps.now() < end;) {
+    await deps.sleep(1000);
+    left = await alive();
+    // The app asks its window to confirm a quit; if a dialog with a Quit button is up, press it.
+    if (left.length && q.method === 'menu' && deps.now() >= next) { next = deps.now() + t.dialog; const d = await answerQuitDialog(deps, app, answered); if (d.pressed) step('the app asked to confirm the quit; answered it', { button: d.pressed, via: 'hackamore' }); }
+  }
   if (left.length) {
-    step('stragglers after the quit wait; SIGTERM to exactly these pids', { pids: left });
-    for (const pid of left) deps.kill(pid, 'SIGTERM');
-    for (const end = deps.now() + Math.min(t.quit, 20000); left.length && deps.now() < end;) { await deps.sleep(1000); left = await alive(); }
+    // The app did not finish the quit by itself. Its window confirms a quit and waits for the answer (strings in the app:
+    // "No app window is ready to handle Quit. The app is still running."), and nothing in the app's log shows it starting
+    // to exit; so this is the usual path when it is busy, not a surprise. Ask the app itself to stop first so it can
+    // close its sessions, then what its own stop leaves.
+    const seen = await readDialog(deps, app);
+    const mainLeft = mainBefore && left.includes(mainBefore.pid);
+    step(`the app did not quit within ${Math.round((deps.now() - quitSentAt) / 1000)} s of the Quit item${mainLeft ? ` (its own process ${mainBefore.pid} is still running)` : ''}; stopping it with SIGTERM to exact pids`, { alive: left.length, dialog: seen.summary });
+    if (mainLeft) {
+      deps.kill(mainBefore.pid, 'SIGTERM');
+      for (const end = deps.now() + Math.min(t.quit, 15000); left.includes(mainBefore.pid) && deps.now() < end;) { await deps.sleep(1000); left = await alive(); }
+    }
+    if (left.length) {
+      step('stragglers after the app stopped; SIGTERM to exactly these pids', { pids: left });
+      for (const pid of left) deps.kill(pid, 'SIGTERM');
+      for (const end = deps.now() + Math.min(t.quit, 20000); left.length && deps.now() < end;) { await deps.sleep(1000); left = await alive(); }
+    }
   }
   if (left.length) return fail('quit', `${left.length} process(es) of ${app} still running after the quit and a SIGTERM: ${left.join(', ')}. Nothing was relaunched; look at them (ps -p ${left[0]}) before trying again`);
   step('app exited', { processes: familyPids.length });
@@ -402,9 +465,10 @@ async function restartSteps(opts, deps, log) {
   const opened = await deps.open(app, { background: opts.background !== false });
   if (opened.code !== 0) return fail('relaunch', `open -a "${app}" failed: ${opened.stderr.trim().slice(0, 200)}`);
   let main = null;
-  for (const end = deps.now() + t.up; !main && deps.now() < end;) { main = findMain(await deps.ps(), dir); if (!main) await deps.sleep(1000); }
+  for (const end = deps.now() + t.up; !main && deps.now() < end;) { main = findMain(await deps.ps(), dir, await deps.appExe?.(dir)); if (!main) await deps.sleep(1000); }
   if (!main) return fail('relaunch', `${app} did not start within ${Math.round(t.up / 1000)} s`);
   const startedAt = (await deps.startedAt(main.pid)) || deps.now();
+  deps.generation?.set(`${main.pid}:${startedAt}`, 'restart-copilot');
   report.restarted_at = new Date(deps.now()).toISOString();
   step('relaunched', { pid: main.pid, from: mainBefore.pid });
   if (opts.stand_in) { report.ok = true; return report; }
@@ -476,4 +540,155 @@ export function detach({ node, bin, args, env, home = os.homedir(), launchctl = 
   const file = path.join(d, 'job.plist');
   fs.writeFileSync(file, plist({ node, bin, args, env, log }));
   return launchctl(['bootout', `gui/${uid}/${LABEL}`]).then(() => launchctl(['bootstrap', `gui/${uid}`, file])).then((r) => ({ ok: r.code === 0, log, plist: file, error: r.stderr.trim() }));
+}
+
+// ---------- resume only (a crash, an update, a login, a reboot) ----------
+
+// An app process is a "generation": its pid and start time. One generation's sessions are resumed once, by whoever
+// gets there first (this, or the restart job that relaunched the app).
+export async function appGeneration(opts, deps) {
+  const app = opts.app || DEFAULT_APP;
+  const dir = deps.appDir(app);
+  if (!dir) throw new Refusal('input-invalid', `no app called ${app} in /Applications, /System/Applications or ~/Applications: pass --app with the app's name`);
+  const main = findMain(await deps.ps(), dir, await deps.appExe?.(dir));
+  if (!main) return { dir, main: null };
+  const startedAt = (await deps.startedAt(main.pid)) || null;
+  return { dir, main, startedAt, key: `${main.pid}:${startedAt ?? ''}` };
+}
+
+// A restart job that is running resumes the sessions itself.
+const restartRunning = (deps, now) => { const s = deps.restartState?.(); return Boolean(s && s.state === 'running' && now - Date.parse(s.updated || s.started || 0) < 15 * 60000); };
+
+// Resume what the app's last stop left unfinished: every session whose own history says it was working, that nothing
+// has continued since this app process started. Restarts nothing. Idempotent per app process.
+export async function resumeOnly(opts, deps, log = () => {}) {
+  const t = { ...T, ...Object.fromEntries(Object.entries(opts.t || {})) };
+  const g = await appGeneration(opts, deps);
+  if (!g.main) { log(`${opts.app || DEFAULT_APP} is not running: nothing to resume`); return { ok: true, skipped: 'app not running', resume: [] }; }
+  if (!opts.dry_run && deps.generation?.get() === g.key) { log(`app process ${g.key}: already resumed`); return { ok: true, skipped: 'already resumed', key: g.key, resume: [] }; }
+  if (!opts.dry_run && restartRunning(deps, deps.now())) { log('a restart-copilot job is running and resumes the sessions itself'); return { ok: true, skipped: 'a restart is running', key: g.key, resume: [], retry: true }; }
+  let ready = false;
+  for (const end = deps.now() + t.up; !ready && deps.now() < end;) { ready = await appReady(deps); if (!ready) await deps.sleep(2000); }
+  if (!ready) return { ok: false, key: g.key, failed: { stage: 'relaunch', why: `the app is running (pid ${g.main.pid}) but its socket did not answer within ${Math.round(t.up / 1000)} s` }, resume: [] };
+  // The restart job may have claimed this process while we waited.
+  if (!opts.dry_run && deps.generation?.get() === g.key) { log(`app process ${g.key}: resumed by the restart job`); return { ok: true, skipped: 'already resumed', key: g.key, resume: [] }; }
+  if (!opts.dry_run && restartRunning(deps, deps.now())) return { ok: true, skipped: 'a restart is running', key: g.key, resume: [], retry: true };
+  const startedAt = g.startedAt || deps.now();
+  const sessions = await snapshot(deps, undefined, opts.skip);
+  // Working now because something started a turn after the app came up: not left over from the stop.
+  const before = sessions.map((s) => (s.state === 'busy' && tookTurnSince(deps.history(s.id).lines, startedAt) ? { ...s, state: 'idle', why: 'took a turn since the app started' } : s));
+  log(`app process ${g.key}: ${before.filter((s) => s.state === 'busy').length} of ${sessions.length} session(s) were working when the app stopped`);
+  if (opts.dry_run) return { ok: true, dry_run: true, key: g.key, resume: pickTargets({ before, after: [], also: opts.also || [] }).map(({ id, title, why }) => ({ id, title, why })) };
+  deps.generation?.set(g.key, 'resume-only');
+  const res = await resumeAfter({ before, opts: { ...opts, also: opts.also || [] }, startedAt, restartedAt: startedAt, t }, deps, log);
+  const not = res.filter((r) => !['resumed', 'already continued'].includes(r.outcome));
+  log(not.length ? `some sessions did not resume ${JSON.stringify(not.map((r) => `${short(r.id)}: ${r.outcome}`))}` : `resumed ${res.length} session(s)`);
+  return { ok: not.length === 0, key: g.key, resume: res };
+}
+
+// Resume-only for every new app process, for as long as this runs (launchd keeps it up; see installKeeper).
+export async function watch(opts, deps, log = () => {}, { every = 5000, stop = () => false } = {}) {
+  let last = null;
+  while (!stop()) {
+    try {
+      const g = await appGeneration(opts, deps);
+      const key = g.main ? g.key : null;
+      if (key && key !== last) {
+        const r = await resumeOnly(opts, deps, log);
+        if (!r.retry) last = key;
+        deps.recorded?.({ at: new Date(deps.now()).toISOString(), key, ok: r.ok, skipped: r.skipped || null, resumed: (r.resume || []).map((x) => ({ id: x.id, title: x.title, outcome: x.outcome })), failed: r.failed || null });
+      }
+      if (!key) last = null;
+    } catch (e) { log(`watch: ${e.message || e}`); }
+    await deps.sleep(every);
+  }
+}
+
+// ---------- reading the state ----------
+
+// What --status tells: the run in progress or the last one, from status.json (written at every step), last.json (the
+// finished report) and the newest run log.
+export function readState(dir = stateDir(), now = Date.now()) {
+  const json = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { return null; } };
+  const st = json('status.json'), last = json('last.json'), resumer = json('resume-only.json');
+  let log = null, tail = [];
+  try {
+    log = fs.readdirSync(dir).filter((f) => /^run-.*\.log$/.test(f)).sort().at(-1) || null;
+    if (log) tail = fs.readFileSync(path.join(dir, log), 'utf8').trim().split('\n').slice(-4);
+  } catch { /* no folder yet */ }
+  const base = { dir, log: log ? path.join(dir, log) : null, tail, resumer };
+  if (!st && !last) return { ...base, state: 'none' };
+  if (!st) return { ...base, state: last.ok ? 'done' : 'failed', step: last.failed ? `failed at ${last.failed.stage}` : 'finished', started: last.started_at, result: last };
+  const age = Math.max(0, Math.round((now - Date.parse(st.updated || st.started)) / 1000));
+  // last.json is the report of the run that wrote status.json only once that run has finished.
+  const result = st.state !== 'running' && last && Math.abs(Date.parse(last.started_at) - Date.parse(st.started)) < 10000 ? last : null;
+  return { ...base, state: st.state, step: st.step, started: st.started, updated: st.updated, age_s: age, stale: st.state === 'running' && age > 600, ...(st.failed ? { failed: st.failed } : {}), ...(st.not_resumed ? { not_resumed: st.not_resumed } : {}), result };
+}
+
+export function renderState(s) {
+  if (s.state === 'none') return `no restart has run on this Mac yet${s.resumer ? `\n${renderResumer(s.resumer)}` : ''}`;
+  const L = [];
+  const head = { running: `RUNNING: ${s.step || 'starting'}`, done: 'DONE', failed: `FAILED: ${s.step || ''}` }[s.state] || s.state;
+  L.push(`restart-copilot ${head}`);
+  L.push(`  started ${s.started}${s.updated ? `, last step ${s.age_s} s ago (${s.updated})` : ''}`);
+  if (s.stale) L.push(`  no step for ${Math.round(s.age_s / 60)} min: the job may have died; read the log below`);
+  if (s.failed) L.push(`  failed at ${s.failed.stage}: ${s.failed.why}`);
+  if (s.not_resumed?.length) L.push(`  not resumed: ${s.not_resumed.map((id) => id.slice(0, 8)).join(', ')}`);
+  const r = s.result;
+  if (r) {
+    L.push(`  steps: ${r.steps.map((x) => x.step.split(' {')[0]).join(' → ')}`);
+    for (const x of r.resume || []) L.push(`  ${x.id.slice(0, 8)} ${x.title || ''}: ${x.outcome}`);
+  }
+  if (s.log) L.push(`  log: ${s.log}`);
+  if (s.state === 'running') for (const l of s.tail) L.push(`    ${l}`);
+  if (s.resumer) L.push(renderResumer(s.resumer));
+  return L.join('\n');
+}
+
+const renderResumer = (r) => `resume watcher: last app process ${r.key} at ${r.at}: ${r.skipped ? r.skipped : r.ok ? `resumed ${r.resumed.length}` : `NOT everything resumed (${(r.resumed || []).filter((x) => !/^(resumed|already continued)/.test(x.outcome)).map((x) => `${short(x.id)}: ${x.outcome}`).join('; ') || r.failed?.why})`}`;
+
+// ---------- the launchd agent for the resume watcher ----------
+
+export const KEEPER_LABEL = 'bot.ouro.housesitter.copilot-resume';
+
+export function keeperPlist({ node, bin, env = {}, log }) {
+  const x = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const envs = Object.entries(env).map(([k, v]) => `    <key>${x(k)}</key><string>${x(v)}</string>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${KEEPER_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+${[node, bin, 'restart-copilot', '--resume-only', '--watch'].map((a) => `    <string>${x(a)}</string>`).join('\n')}
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+${envs}
+  </dict>
+  <key>StandardOutPath</key><string>${x(log)}</string>
+  <key>StandardErrorPath</key><string>${x(log)}</string>
+</dict>
+</plist>
+`;
+}
+
+// Write (and, unless dry, load) the agent that runs `restart-copilot --resume-only --watch` at login and keeps it running.
+export async function installKeeper({ node, bin, env, home = os.homedir(), dry = false, launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid() }) {
+  const file = path.join(home, 'Library', 'LaunchAgents', `${KEEPER_LABEL}.plist`);
+  const log = path.join(home, 'Library', 'Logs', 'housesitter-copilot-resume.log');
+  const text = keeperPlist({ node, bin, env, log });
+  if (dry) return { ok: true, dry_run: true, plist: file, log, text };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  fs.writeFileSync(file, text);
+  await launchctl(['bootout', `gui/${uid}/${KEEPER_LABEL}`]);
+  const r = await launchctl(['bootstrap', `gui/${uid}`, file]);
+  return { ok: r.code === 0, plist: file, log, error: r.stderr.trim() };
 }
