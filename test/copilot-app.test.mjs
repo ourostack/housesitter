@@ -8,6 +8,8 @@ import path from 'node:path';
 import { family, findMain, loopState, parsePs, pickTargets, plan, quitItem, realDeps, restart, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
+// The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
+const skip = !haveSqlite() || typeof WebSocket !== 'function';
 const BUNDLE = '/Applications/Fake Copilot.app';
 const ev = (type, data = {}, at = Date.now()) => JSON.stringify({ type, data, timestamp: new Date(at).toISOString() });
 const A = 'aaaaaaaa-0000-4000-8000-000000000001', B = 'bbbbbbbb-0000-4000-8000-000000000002', C = 'cccccccc-0000-4000-8000-000000000003', D = 'dddddddd-0000-4000-8000-000000000004';
@@ -83,7 +85,7 @@ const sessions = () => [
   { id: D, title: 'old crash', interrupted: true, events: DONE },
 ];
 
-test('restart: asks working sessions to settle, quits, relaunches, resumes the working ones and checks they took a turn', { skip: !haveSqlite() }, async () => {
+test('restart: asks working sessions to settle, quits, relaunches, resumes the working ones and checks they took a turn', { skip }, async () => {
   const w = await world({ sessions: sessions() });
   const r = await restart(w.opts, w.deps);
   await w.done();
@@ -98,7 +100,7 @@ test('restart: asks working sessions to settle, quits, relaunches, resumes the w
   assert.deepEqual(r.interrupted_at_quit.sort(), [A, C], 'they were still working when the quit came: recorded as interrupted');
 });
 
-test('restart: a session something already continued is not messaged twice, and one the app drops is reported', { skip: !haveSqlite() }, async () => {
+test('restart: a session something already continued is not messaged twice, and one the app drops is reported', { skip }, async () => {
   const w = await world({ sessions: sessions(), appOpts: { drop: [C] } });
   // After the relaunch a resumer (not us) has already written to A.
   const open = w.deps.open;
@@ -111,7 +113,7 @@ test('restart: a session something already continued is not messaged twice, and 
   assert.equal(w.app.received.filter((m) => m.id === A && /restarted at/.test(m.prompt)).length, 0);
 });
 
-test('restart: a session another resumer messaged but that never took a turn still gets ours', { skip: !haveSqlite() }, async () => {
+test('restart: a session another resumer messaged but that never took a turn still gets ours', { skip }, async () => {
   const w = await world({ sessions: sessions() });
   const open = w.deps.open;
   w.deps.open = async (...a) => { const x = await open(...a); fs.appendFileSync(path.join(w.home, 'session-state', A, 'events.jsonl'), `${ev('user.message', {}, Date.now() + 5000)}\n`); return x; };
@@ -120,7 +122,7 @@ test('restart: a session another resumer messaged but that never took a turn sti
   assert.deepEqual(r.resume.find((x) => x.id === A), { id: A, title: 'busy a', why: r.resume.find((x) => x.id === A).why, outcome: 'resumed', tries: 1 });
 });
 
-test('restart: a session the app has archived is reported gone, not retried', { skip: !haveSqlite() }, async () => {
+test('restart: a session the app has archived is reported gone, not retried', { skip }, async () => {
   const w = await world({ sessions: sessions(), appOpts: { refuse: [A] } });
   const r = await restart({ ...w.opts, also: [D] }, w.deps);
   await w.done();
@@ -129,7 +131,7 @@ test('restart: a session the app has archived is reported gone, not retried', { 
   assert.equal(w.app.received.filter((m) => m.id === A && /restarted at/.test(m.prompt)).length, 1);
 });
 
-test('restart: waits while someone is using the Mac, then quits; never quits over them', { skip: !haveSqlite() }, async () => {
+test('restart: waits while someone is using the Mac, then quits; never quits over them', { skip }, async () => {
   const w = await world({ sessions: sessions(), person: 2 });
   const r = await restart(w.opts, w.deps);
   assert.equal(r.ok, true);
@@ -144,7 +146,7 @@ test('restart: waits while someone is using the Mac, then quits; never quits ove
   assert.equal(w2.opens, 0, 'the app is left running');
 });
 
-test('restart: a straggler gets SIGTERM by exact pid; one that will not die stops the run before any relaunch', { skip: !haveSqlite() }, async () => {
+test('restart: a straggler gets SIGTERM by exact pid; one that will not die stops the run before any relaunch', { skip }, async () => {
   const w = await world({ sessions: sessions(), stubborn: true });
   w.deps.hk = async (argv) => { if (argv[0] === 'ls') return { code: 0, json: { actions: [{ name: 'menu', input: { properties: { item: { enum: ['App > Quit Fake'] } } } }] } }; w.procs = w.procs.filter((p) => p.pid === 101); return { code: 0, json: {} }; };
   const r = await restart(w.opts, w.deps);
@@ -160,7 +162,7 @@ test('restart: a straggler gets SIGTERM by exact pid; one that will not die stop
   assert.equal(w2.opens, 0);
 });
 
-test('plan: changes nothing and names what it would do; no Quit item or no hackamore is said plainly', { skip: !haveSqlite() }, async () => {
+test('plan: changes nothing and names what it would do; no Quit item or no hackamore is said plainly', { skip }, async () => {
   const w = await world({ sessions: sessions() });
   const p = await plan(w.opts, w.deps);
   assert.deepEqual([p.sessions.busy, p.resume.map((x) => x.id), p.quit.method, p.relaunch], [2, [A, C], 'menu', 'open -a "Fake Copilot"']);
@@ -173,7 +175,7 @@ test('plan: changes nothing and names what it would do; no Quit item or no hacka
   await w.done(); await n.done();
 });
 
-test('restart keeps status.json current: running at each step, then done, or failed with the sessions not resumed', { skip: !haveSqlite() }, async () => {
+test('restart keeps status.json current: running at each step, then done, or failed with the sessions not resumed', { skip }, async () => {
   const w = await world({ sessions: sessions(), appOpts: { drop: [C] } });
   const seen = [];
   w.deps.status = (o) => seen.push(o);
