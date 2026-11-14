@@ -7,7 +7,7 @@
 //   2. Quit: through the app's own Quit menu item with hackamore (which refuses while a person is using the Mac), or
 //      SIGTERM to the exact pid with --sigterm. Wait until every process of the app has exited.
 //   3. Relaunch: open -a, then wait until the app answers on its local socket.
-//   4. After: every session that was working, was interrupted by the quit, or was named with --also gets one resume
+//   4. After: every session that was working, was interrupted by the quit, or was named with --also (and is not named with --skip) gets one resume
 //      message through the app's socket, unless something already continued it. Each one must then take a turn.
 //
 // Everything that touches the Mac goes through `deps`, so tests run the whole sequence against a pretend Mac.
@@ -149,7 +149,7 @@ export function pickTargets({ before, after, also = [] }) {
 }
 
 export const settleText = ({ at, inSec, why }) => `Heads up: the GitHub Copilot app restarts at about ${hhmm(at)} (in about ${Math.round(inSec)} seconds)${why ? ` for ${why}` : ''}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, start nothing long, then stop. You will be sent a message to resume once the app is back.`;
-export const resumeText = ({ at, why }) => `The app was restarted at ${hhmm(at)}${why ? ` for ${why}` : ''}; resume where you left off. Anything that was in flight when it stopped (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish.`;
+export const resumeText = ({ at, why }) => `The app was restarted at ${hhmm(at)}${why ? ` for ${why}` : ''}; resume where you left off. Anything that was in flight when it stopped (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish. Your background subagents and shell jobs were stopped; restart any unfinished ones from their pushed state.`;
 
 // The quit menu item in a hackamore `ls` reply, or null.
 export function quitItem(ls) {
@@ -272,9 +272,9 @@ const ROWS = `SELECT s.id, s.title, s.mode, s.is_running AS running, s.was_inter
 FROM sessions s LEFT JOIN workspaces w ON w.session_id = s.id
 WHERE s.archived_at IS NULL AND w.archived_at IS NULL`;
 
-// Every local, unarchived session: its mode, and whether its agent loop is working (busy) or not (idle).
-export async function snapshot(deps, now = deps.now()) {
-  const rows = (await deps.sql(ROWS)).filter((r) => r.loc === 'local' || !r.loc);
+// Every local, unarchived session (except those whose id starts with an entry of skip): its mode, and whether its agent loop is working (busy) or not (idle).
+export async function snapshot(deps, now = deps.now(), skip = []) {
+  const rows = (await deps.sql(ROWS)).filter((r) => (r.loc === 'local' || !r.loc) && !skip.some((p) => r.id.startsWith(p)));
   return rows.map((r) => {
     const h = deps.history(r.id);
     const v = h.mtime >= now - LOOKBACK_MS ? loopState(h.lines) : { working: false, why: 'no recent activity' };
@@ -306,9 +306,9 @@ export async function plan(opts, deps) {
   if (!dir) throw new Refusal('input-invalid', `no app called ${app} in /Applications, /System/Applications or ~/Applications: pass --app with the app's name`);
   const procs = await deps.ps();
   const main = findMain(procs, dir);
-  const sessions = opts.stand_in ? [] : await snapshot(deps);
+  const sessions = opts.stand_in ? [] : await snapshot(deps, undefined, opts.skip);
   const busy = sessions.filter((s) => s.state === 'busy');
-  const also = (opts.also || []).map((id) => sessions.find((s) => s.id.startsWith(id))?.id || id);
+  const also = (opts.also || []).filter((id) => !(opts.skip || []).some((p) => id.startsWith(p))).map((id) => sessions.find((s) => s.id.startsWith(id))?.id || id);
   const targets = pickTargets({ before: sessions, after: [], also });
   let quit;
   if (opts.sigterm) quit = { method: 'sigterm', pid: main?.pid || null };
@@ -360,7 +360,7 @@ async function restartSteps(opts, deps, log) {
   if (p.quit.method === 'unavailable') return fail('before', p.quit.why);
   const procs0 = await deps.ps();
   const mainBefore = findMain(procs0, dir);
-  const before = opts.stand_in ? [] : await snapshot(deps);
+  const before = opts.stand_in ? [] : await snapshot(deps, undefined, opts.skip);
   report.before = before.map(({ id, title, mode, state, why, interrupted }) => ({ id, title, mode, state, why, interrupted }));
   step('snapshot', { sessions: before.length, busy: before.filter((s) => s.state === 'busy').length, pid: mainBefore.pid });
   const asked = before.filter((s) => s.state === 'busy');
@@ -373,7 +373,7 @@ async function restartSteps(opts, deps, log) {
     let left = asked.map((s) => s.id);
     for (const end = deps.now() + t.settle; left.length && deps.now() < end;) {
       await deps.sleep(Math.min(5000, Math.max(0, end - deps.now())));
-      const now = await snapshot(deps);
+      const now = await snapshot(deps, undefined, opts.skip);
       left = left.filter((id) => now.find((s) => s.id === id)?.state === 'busy');
     }
     report.settled = asked.filter((s) => !left.includes(s.id)).map((s) => s.id);
@@ -427,8 +427,8 @@ async function restartSteps(opts, deps, log) {
 
 export async function resumeAfter({ before, opts, startedAt, restartedAt, t }, deps, log = () => {}) {
   await deps.sleep(t.grace);
-  const after = await snapshot(deps);
-  const targets = pickTargets({ before, after, also: (opts.also || []).map((id) => after.find((s) => s.id.startsWith(id))?.id || id) });
+  const after = await snapshot(deps, undefined, opts.skip);
+  const targets = pickTargets({ before, after, also: (opts.also || []).filter((id) => !(opts.skip || []).some((p) => id.startsWith(p))).map((id) => after.find((s) => s.id.startsWith(id))?.id || id) });
   const text = resumeText({ at: restartedAt, why: opts.why });
   return Promise.all(targets.map(async (tg) => {
     const rec = { id: tg.id, title: tg.title, why: tg.why };

@@ -122,6 +122,16 @@ test('restart: a session another resumer messaged but that never took a turn sti
   assert.deepEqual(r.resume.find((x) => x.id === A), { id: A, title: 'busy a', why: r.resume.find((x) => x.id === A).why, outcome: 'resumed', tries: 1 });
 });
 
+test('--skip leaves a session out of the ask, the targets and the resume; the resume text says what was stopped', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  assert.deepEqual((await plan({ ...w.opts, skip: [A.slice(0, 8)] }, w.deps)).resume.map((x) => x.id), [C]);
+  const r = await restart({ ...w.opts, skip: [A.slice(0, 8)], also: [A] }, w.deps);
+  await w.done();
+  assert.deepEqual(r.resume.map((x) => x.id), [C]);
+  assert.equal(w.app.received.some((m) => m.id === A), false, 'a skipped session gets no message at all');
+  assert.match(w.app.received.find((m) => /restarted at/.test(m.prompt)).prompt, /Your background subagents and shell jobs were stopped; restart any unfinished ones from their pushed state\.$/);
+});
+
 test('restart: a session the app has archived is reported gone, not retried', { skip }, async () => {
   const w = await world({ sessions: sessions(), appOpts: { refuse: [A] } });
   const r = await restart({ ...w.opts, also: [D] }, w.deps);
