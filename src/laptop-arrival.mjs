@@ -67,7 +67,7 @@ const HS = '$HOME/code/housesitter';
 
 export const SCRIPTS = {
   facts: `${PATH_PREFIX}
-echo "boot=$(sysctl -n kern.boottime | sed -n 's/.*sec = \\([0-9]*\\).*/\\1/p')"
+echo "boot=$(sysctl -n kern.boottime | sed -n 's/^{ sec = \\([0-9]*\\),.*/\\1/p')"
 echo "now=$(date +%s)"
 echo "user=$(id -un)"
 echo "app=$(defaults read "${APP}/Contents/Info" CFBundleShortVersionString 2>/dev/null)"
