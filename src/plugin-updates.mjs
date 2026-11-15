@@ -92,15 +92,65 @@ export function newestReleases(cacheDir) {
     const man = readManifest(path.join(cacheDir, 'entries', e.dir_name));
     if (!man) continue;
     const had = out.get(man.name);
-    if (!had || e.fetched_at > had.fetched_at) out.set(man.name, { version: man.version, sha: e.resolved_sha || null, spec: e.spec, fetched_at: e.fetched_at });
+    if (!had || e.fetched_at > had.fetched_at) out.set(man.name, { version: man.version, sha: e.resolved_sha || null, spec: e.spec, fetched_at: e.fetched_at, dir: path.join(cacheDir, 'entries', e.dir_name) });
   }
   return out;
 }
 
-// What is stale: for each plugin the newest release has a higher version than some loaded copy (every loaded plugin, or only those in `watched`).
-// [{ name, from (the oldest loaded), to, sha, sessions (processes on an older one), loaded: [versions] }].
-export function findUpdates(loaded, newest, watched = null) {
+// ---------- what a restart would change ----------
+//
+// A restart only helps with what a process fixes at its start: its skills (text and descriptions), hooks, agents and
+// manifests, and the MCP tool list. Desk's own runtime updates in place (a release changes `mcp/src` under a running
+// server), so a release that touches only that is no reason to restart; what counts is the MCP session layer, the tool
+// names, descriptions and schemas the host registered when the session began. Every other plugin (cit, MS Desk, Crew, ...)
+// counts on any skill, hook or agent change. A manifest is compared without its version, so a bare version bump is nothing.
+
+export const FIXED = ['skills/', 'agents/', 'hooks/', 'plugin.json', '.claude-plugin/plugin.json', '.mcp.json', '.mcp.copilot.json', '.mcp.claude-codex.json', 'agency.json', 'settings.json'];
+export const DESK_SESSION_LAYER = ['mcp/src/tool-names.js', 'mcp/src/tool-schemas.js', 'mcp/src/tool-schema-parts.js', 'mcp/web-catalog.json'];
+
+export const fixedPaths = (name) => (name === 'desk' ? [...FIXED, ...DESK_SESSION_LAYER] : FIXED);
+const inSpec = (rel, paths) => paths.some((p) => (p.endsWith('/') ? rel.startsWith(p) : rel === p));
+
+function walk(root, dir = '', out = new Map()) {
+  let entries = [];
+  try { entries = fs.readdirSync(path.join(root, dir), { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    const rel = dir ? `${dir}/${e.name}` : e.name;
+    if (e.isDirectory() && !['node_modules', '.git'].includes(e.name)) walk(root, rel, out);
+    else if (e.isFile()) out.set(rel, path.join(root, rel));
+  }
+  return out;
+}
+
+function contentOf(file, rel) {
+  try {
+    const buf = fs.readFileSync(file);
+    if (!rel.endsWith('plugin.json')) return buf;
+    const { version, ...rest } = JSON.parse(buf.toString('utf8'));
+    return Buffer.from(JSON.stringify(rest));
+  } catch { return null; }
+}
+
+// The fixed-per-process files that differ between a loaded copy and the newer release (added, removed or changed).
+export function changedFixed(loadedRoot, newRoot, name) {
+  const paths = fixedPaths(name);
+  const a = walk(loadedRoot), b = walk(newRoot);
   const out = [];
+  for (const rel of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    if (!inSpec(rel, paths)) continue;
+    const x = a.has(rel) ? contentOf(a.get(rel), rel) : null, y = b.has(rel) ? contentOf(b.get(rel), rel) : null;
+    if (!x || !y || !x.equals(y)) out.push(rel);
+  }
+  return out;
+}
+
+// What is stale: for each plugin the newest release has a higher version than some loaded copy (every loaded plugin, or only
+// those in `watched`) AND changes something fixed per process. { updates, runtime_only }: updates are
+// [{ name, from (the oldest loaded), to, sha, sessions (processes on an older one), loaded: [versions], changed: [paths] }];
+// runtime_only are the releases that are newer but change nothing a restart would pick up.
+export function findUpdates(loaded, newest, { watched = null, changes = changedFixed } = {}) {
+  const updates = [], runtime_only = [];
+  const seen = new Map();
   for (const name of [...new Set(loaded.map((l) => l.name))].sort()) {
     if (watched && !watched.includes(name)) continue;
     const rel = newest.get(name);
@@ -109,16 +159,27 @@ export function findUpdates(loaded, newest, watched = null) {
     const older = mine.filter((l) => cmpVersion(l.version, rel.version) < 0);
     if (!older.length) continue;
     const from = older.map((l) => l.version).sort(cmpVersion)[0];
-    out.push({ name, from, to: rel.version, sha: rel.sha, sessions: new Set(older.map((l) => l.pid)).size, loaded: [...new Set(mine.map((l) => l.version))].sort(cmpVersion) });
+    const changed = new Set();
+    // One comparison per version a process loaded: the same version is the same files.
+    for (const o of older) {
+      const key = `${name}|${o.version}|${rel.version}`;
+      if (!seen.has(key)) seen.set(key, changes(o.root, rel.dir, name));
+      for (const f of seen.get(key)) changed.add(f);
+    }
+    const u = { name, from, to: rel.version, sha: rel.sha, sessions: new Set(older.map((l) => l.pid)).size, loaded: [...new Set(mine.map((l) => l.version))].sort(cmpVersion), changed: [...changed].sort() };
+    (changed.size ? updates : runtime_only).push(u);
   }
-  return out;
+  return { updates, runtime_only };
 }
+
+const changedText = (updates) => updates.map((u) => `${u.name}: ${u.changed.slice(0, 3).join(', ')}${u.changed.length > 3 ? ` +${u.changed.length - 3} more` : ''}`).join('; ');
 
 export const reasonFor = (updates) => `a plugin update (${updates.map((u) => `${u.name} ${u.from} → ${u.to}`).join(', ')})`;
 
 // The whole decision from what is true now: { action: 'restart' | 'hold', code, why }.
-export function decide({ appRunning, updates, state = {}, now, runInProgress: busy = false, person, cooldownMs = COOLDOWN_MS }) {
+export function decide({ appRunning, updates, runtimeOnly = [], state = {}, now, runInProgress: busy = false, person, cooldownMs = COOLDOWN_MS }) {
   if (!appRunning) return { action: 'hold', code: 'app-not-running', why: 'the Copilot app is not running' };
+  if (!updates.length && runtimeOnly.length) return { action: 'hold', code: 'runtime-only', why: `${reasonFor(runtimeOnly)}: the newer release changes nothing a process fixes at its start (no skill, hook, agent or MCP session file), so a restart would add nothing` };
   if (!updates.length) return { action: 'hold', code: 'current', why: 'every loaded plugin is at the newest release Agency has fetched' };
   const fresh = updates.filter((u) => state.attempted?.[u.name] !== u.to);
   const label = reasonFor(updates);
@@ -197,26 +258,26 @@ export async function pass(opts, deps, say = () => {}) {
   const procs = g.main ? await deps.ps() : [];
   const mine = new Set(g.main ? family(procs, g.main.pid, g.dir) : []);
   const loaded = g.main ? loadedPlugins(deps.sessionsDir, (pid) => mine.has(pid)) : [];
-  const updates = findUpdates(loaded, newestReleases(deps.cacheDir), opts.watched);
+  const { updates, runtime_only: runtimeOnly } = findUpdates(loaded, newestReleases(deps.cacheDir), { watched: opts.watched, changes: deps.changes });
   const state = reconcile(deps.readState?.() || {}, deps, now, out, !opts.dry_run);
   // The gate is only read when it could matter.
   const person = g.main && updates.length ? await deps.person() : null;
-  const d = decide({ appRunning: Boolean(g.main), updates, state, now, runInProgress: g.main ? deps.runInProgress() : false, person, cooldownMs: opts.cooldown_ms ?? COOLDOWN_MS });
-  const res = { decision: d, updates, loaded_processes: new Set(loaded.map((l) => l.pid)).size, restarted: false };
+  const d = decide({ appRunning: Boolean(g.main), updates, runtimeOnly, state, now, runInProgress: g.main ? deps.runInProgress() : false, person, cooldownMs: opts.cooldown_ms ?? COOLDOWN_MS });
+  const res = { decision: d, updates, runtime_only: runtimeOnly, loaded_processes: new Set(loaded.map((l) => l.pid)).size, restarted: false };
   if (d.action === 'hold') { out(`hold (${d.code}): ${d.why}`); return res; }
   const reason = reasonFor(updates);
   if (opts.dry_run) {
     res.would_run = `housesitter restart-copilot --resume --detach --why "${reason}" --person-wait ${PERSON_WAIT_SEC}`;
     const p = await deps.plan?.(opts).catch(() => null);
     if (p) res.sessions = p.sessions;
-    out(`would restart: ${reason}${p ? `; it would ask ${p.sessions.busy} working session(s) to reach a safe point and resume them, and leave ${p.sessions.idle} idle one(s) alone` : ''}`);
+    out(`would restart: ${reason}; changed: ${changedText(updates)}${p ? `; it would ask ${p.sessions.busy} working session(s) to reach a safe point and resume them, and leave ${p.sessions.idle} idle one(s) alone` : ''}`);
     return res;
   }
   // Recorded before the job starts: a failure to start must not become a restart loop.
   deps.writeState?.({ ...state, restarted_at: new Date(now).toISOString(), reason, pending: Object.fromEntries(updates.map((u) => [u.name, u.to])) });
   const r = await deps.startRestart(reason);
   res.restarted = r.ok;
-  out(r.ok ? `restart started: ${reason}` : `restart did not start: ${reason}: ${r.text}`);
+  out(r.ok ? `restart started: ${reason}; changed: ${changedText(updates)}` : `restart did not start: ${reason}: ${r.text}`);
   return res;
 }
 
@@ -275,8 +336,9 @@ export async function uninstallPluginAgent({ home = os.homedir(), launchctl = (a
 export function renderPass(r) {
   const L = [`${r.decision.action.toUpperCase()} (${r.decision.code}): ${r.decision.why}`];
   L.push(`loaded by ${r.loaded_processes} session process(es) of the app`);
-  for (const u of r.updates) L.push(`  ${u.name}: ${u.from} → ${u.to}${u.sha ? ` (${u.sha.slice(0, 8)})` : ''}; ${u.sessions} process(es) behind; loaded: ${u.loaded.join(', ')}`);
-  if (!r.updates.length) L.push('  no watched plugin is behind');
+  for (const u of r.updates) L.push(`  ${u.name}: ${u.from} → ${u.to}${u.sha ? ` (${u.sha.slice(0, 8)})` : ''}; ${u.sessions} process(es) behind; loaded: ${u.loaded.join(', ')}; fixed per process and changed: ${u.changed.slice(0, 5).join(', ')}${u.changed.length > 5 ? ` +${u.changed.length - 5} more` : ''}`);
+  for (const u of r.runtime_only || []) L.push(`  ${u.name}: ${u.from} → ${u.to} is newer but runtime-only: nothing a restart would pick up`);
+  if (!r.updates.length && !(r.runtime_only || []).length) L.push('  no plugin is behind');
   if (r.would_run) L.push(`would run: ${r.would_run}`);
   return L.join('\n');
 }

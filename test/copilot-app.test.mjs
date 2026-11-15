@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, runInProgress, saidReady, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
+import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, recheckAfter, recheckText, restart, resumeOnly, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -25,20 +25,33 @@ test('loopState: working mid-turn, between tool turns and on a running subagent;
   assert.equal(run().working, false);
 });
 
-test('saidReady and settleVerdict: ready, idle, stalled and out of time are told apart; progress extends the wait', () => {
+test('lastReply, recheckAfter and settleVerdict: ready, defer (with its lanes), idle, stalled and out of time are told apart', () => {
   const t0 = 1_000_000;
   const msg = (text, at) => ev('assistant.message', { content: text }, at);
-  assert.equal(saidReady([msg('Pushed.\nREADY-TO-RESTART', t0 + 5)], t0), true);
-  assert.equal(saidReady([msg('`READY-TO-RESTART`.', t0 + 5)], t0), true, 'markdown around the line does not matter');
-  assert.equal(saidReady([msg('I will say READY-TO-RESTART when done', t0 + 5)], t0), false, 'only a line of its own counts');
-  assert.equal(saidReady([msg('READY-TO-RESTART', t0 - 5)], t0), false, 'a message from before the ask does not count');
-  const v = (o) => settleVerdict({ state: 'busy', lines: [], mtime: t0, askedAt: t0, now: t0, settle: 90000, settleMax: 600000, ...o });
+  assert.deepEqual(lastReply([msg('Pushed.\nREADY-TO-RESTART', t0 + 5)], t0), { kind: 'ready', at: t0 + 5 });
+  assert.equal(lastReply([msg('`READY-TO-RESTART`.', t0 + 5)], t0).kind, 'ready', 'markdown around the line does not matter');
+  assert.equal(lastReply([msg('I will say READY-TO-RESTART when done', t0 + 5)], t0), null, 'only a line of its own counts');
+  assert.equal(lastReply([msg('READY-TO-RESTART', t0 - 5)], t0), null, 'a message from before the ask does not count');
+  assert.deepEqual(lastReply([msg('Two lanes are mid-run.\nDEFER: 3 lanes running, about 45 min', t0 + 5)], t0), { kind: 'defer', at: t0 + 5, lanes: 3, minutes: 45 });
+  assert.deepEqual(lastReply([msg('**DEFER: 1 lane running**', t0 + 5)], t0), { kind: 'defer', at: t0 + 5, lanes: 1, minutes: null }, 'the estimate is optional');
+  assert.equal(lastReply([msg('DEFER: 3 lanes running, about 45 min', t0 + 5), msg('READY-TO-RESTART', t0 + 9)], t0).kind, 'ready', 'the latest answer counts');
+  assert.equal(lastReply([msg('READY-TO-RESTART', t0 + 5), msg('DEFER: 2 lanes running, about 5 min', t0 + 9)], t0).kind, 'defer');
+  const t = { recheckMin: 120000, recheckMax: 1200000 };
+  assert.deepEqual([{ minutes: 1 }, { minutes: 10 }, { minutes: 90 }, { minutes: null }].map((r) => recheckAfter(r, t)), [120000, 600000, 1200000, 600000], 'its own estimate, kept between the bounds');
+  const v = (o) => settleVerdict({ state: 'busy', lines: [], mtime: t0, askedAt: t0, firstAskedAt: t0, now: t0, settle: 90000, settleMax: 600000, ...o }).outcome;
   assert.equal(v({ state: 'idle' }), 'idle');
   assert.equal(v({ lines: [msg('READY-TO-RESTART', t0 + 1)] }), 'ready');
   assert.equal(v({ now: t0 + 89000 }), null, 'still inside the quiet window');
   assert.equal(v({ now: t0 + 91000 }), 'stalled');
   assert.equal(v({ now: t0 + 300000, mtime: t0 + 250000 }), null, 'a step 50 s ago: it is making progress, so it keeps its time');
-  assert.equal(v({ now: t0 + 600000, mtime: t0 + 599000 }), 'capped', 'progress buys time, but not past the cap');
+  assert.equal(v({ now: t0 + 600000, mtime: t0 + 599000 }), 'capped', 'progress buys time, but not past the ceiling');
+  const deferred = [msg('DEFER: 2 lanes running, about 30 min', t0 + 1)];
+  assert.equal(v({ lines: deferred, state: 'idle', now: t0 + 300000 }), null, 'a session that deferred is waited for even when its turn ended');
+  assert.equal(v({ lines: deferred, now: t0 + 599000, deferred: true }), null, 'and is never cut off as quiet');
+  assert.equal(v({ lines: deferred, now: t0 + 600000 }), 'capped', 'until the ceiling');
+  assert.equal(v({ state: 'busy', mtime: t0, now: t0 + 500000, deferred: true }), null, 'a deferring session with no answer yet to the recheck is not cut off as quiet');
+  assert.equal(v({ state: 'idle', askedAt: t0 + 100, now: t0 + 200 }), null, 'asked again and idle: it has not taken a turn yet, so it has not answered');
+  assert.equal(v({ state: 'idle', askedAt: t0 + 100, now: t0 + 200, lines: [ev('assistant.turn_start', {}, t0 + 150)] }), 'idle', 'it took a turn and ended it without an answer');
 });
 
 test('pickTargets: what was working, what the restart interrupted, and what was named; an old crash flag is left alone', () => {
@@ -69,10 +82,14 @@ test('quitItem finds the Quit entry in a hackamore ls reply', () => {
 test('messages say when, why and what to do', () => {
   const at = new Date(2026, 10, 14, 13, 5).getTime();
   assert.match(resumeText({ at, why: 'a Desk runtime upgrade' }), /^The app was restarted at 13:05 for a Desk runtime upgrade; resume where you left off\./);
-  const m = settleText({ by: at, stallSec: 90, why: 'a plugin update (desk 3.2.154 → 3.2.167)' });
+  const m = settleText({ by: at, stallSec: 600, why: 'a plugin update (desk 3.2.154 → 3.2.167)' });
   assert.match(m, /restarts for a plugin update \(desk 3\.2\.154 → 3\.2\.167\), as soon as every working session is ready and no later than about 13:05\. Reach a safe point/);
-  assert.match(m, /end your turn with a line that is exactly READY-TO-RESTART\./);
-  assert.match(m, /goes 90 seconds without a step/);
+  assert.match(m, /a line that is exactly READY-TO-RESTART\./);
+  assert.match(m, /answer instead with a line of its own, DEFER: <n> lanes running, about <m> min, and the restart waits for you and asks again when your estimate is up\./);
+  assert.match(m, /goes 10 minutes without a step is not waited for/);
+  assert.match(recheckText({ by: at, why: null }), /^Recheck for the restart: are you at a safe point yet\?.*READY-TO-RESTART, or DEFER.*about 13:05/);
+  assert.match(resumeText({ at, why: null, lanes: { lanes: 3, minutes: 45 } }), /You had said 3 lanes were still running \(about 45 min from done\): the restart went ahead without waiting longer, so those lanes were stopped; restart them from their pushed state\.$/);
+  assert.doesNotMatch(resumeText({ at, why: null }), /You had said/);
 });
 
 // A pretend Mac around a pretend app.
@@ -165,6 +182,27 @@ test('restart: when the quit is refused the app is untouched, and the sessions t
   assert.deepEqual(told, [A, C]);
   assert.match(w.app.received.find((m) => /was called off/.test(m.prompt)).prompt, /nothing was stopped\. Carry on/);
   assert.equal(w.opens, 0);
+});
+
+test('restart: a session that defers is asked again at its estimate and waited for; one still deferring at the ceiling is resumed with its lanes named', { skip }, async () => {
+  let rechecks = 0;
+  const w = await world({ sessions: sessions(), appOpts: { react: (id, prompt, append) => {
+    if (/Heads up/.test(prompt)) append('assistant.message', { content: `Lanes are mid-run.\nDEFER: ${id === A ? 2 : 4} lanes running, about 1 min`, toolRequests: [] });
+    if (/Recheck for the restart/.test(prompt) && id === A) { rechecks++; append('assistant.message', { content: 'Pushed.\nREADY-TO-RESTART', toolRequests: [] }); }
+  } } });
+  w.opts.t = { ...w.opts.t, settle: 300, settleMax: 1500, recheckMin: 100, recheckMax: 100 };
+  const t0 = Date.now();
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed || r.resume));
+  assert.ok(Date.now() - t0 >= 1400, 'it waited for C until the ceiling');
+  assert.deepEqual(r.said_ready, [A], 'A deferred, was asked again and said ready');
+  assert.equal(rechecks, 1, 'once ready, A is not asked again');
+  assert.deepEqual(r.interrupted_at_quit, [C]);
+  assert.deepEqual(r.deferred_at_quit, [{ id: C, lanes: 4, minutes: 1 }]);
+  assert.ok(w.app.received.filter((m) => m.id === C && /Recheck for the restart/.test(m.prompt)).length >= 2, 'C is asked again at each estimate');
+  assert.match(w.app.received.find((m) => m.id === C && /restarted at/.test(m.prompt)).prompt, /You had said 4 lanes were still running \(about 1 min from done\): the restart went ahead without waiting longer/);
+  assert.doesNotMatch(w.app.received.find((m) => m.id === A && /restarted at/.test(m.prompt)).prompt, /You had said/);
 });
 
 test('restart: a session something already continued is not messaged twice, and one the app drops is reported', { skip }, async () => {
