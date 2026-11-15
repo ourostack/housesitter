@@ -263,7 +263,9 @@ export async function pass(opts, deps, say = () => {}) {
   // The gate is only read when it could matter.
   const person = g.main && updates.length ? await deps.person() : null;
   const d = decide({ appRunning: Boolean(g.main), updates, runtimeOnly, state, now, runInProgress: g.main ? deps.runInProgress() : false, person, cooldownMs: opts.cooldown_ms ?? COOLDOWN_MS });
-  const res = { decision: d, updates, runtime_only: runtimeOnly, loaded_processes: new Set(loaded.map((l) => l.pid)).size, restarted: false };
+  // Which version of each plugin the app's processes run now, for callers that need a floor (the laptop's arrival check).
+  const running = [...new Map(loaded.map((l) => [`${l.name}@${l.version}`, { name: l.name, version: l.version }])).values()];
+  const res = { decision: d, updates, runtime_only: runtimeOnly, loaded: running, loaded_processes: new Set(loaded.map((l) => l.pid)).size, restarted: false };
   if (d.action === 'hold') { out(`hold (${d.code}): ${d.why}`); return res; }
   const reason = reasonFor(updates);
   if (opts.dry_run) {

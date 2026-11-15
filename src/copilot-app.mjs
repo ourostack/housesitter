@@ -616,6 +616,12 @@ async function restartSteps(opts, deps, log) {
     return fail('relaunch', `${app} is running but its socket did not answer within ${Math.round(t.up / 1000)} s; the ${report.not_resumed.length} session(s) that were working (report.not_resumed) were not resumed`);
   }
   step('socket answering');
+  // The Hub daemon outlives the app, but the sessions the app brings back must be readable through it: check, and repair at once.
+  if (deps.steering) {
+    const sr = await deps.steering().catch((e) => ({ ok: false, why: String(e.message || e).slice(0, 120) }));
+    report.steering = sr;
+    step(sr.ok ? 'Agency Hub still tracks every session (the laptop can see and drive them)' : `Agency Hub's route is not intact: ${sr.why}`);
+  }
   if (!opts.resume) { report.ok = true; return report; }
 
   // 4. Resume and verify.

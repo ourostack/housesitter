@@ -28,6 +28,8 @@ import * as SudoRule from '../src/sudo-rule.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
+import * as Steer from '../src/steer.mjs';
+import * as Arrival from '../src/laptop-arrival.mjs';
 
 const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac), { key: mac.kvm?.ssh_key || null });
 const sitterDir = (mac) => mac.kvm?.sitter_home || '/etc/kvmd/user/housesitter';
@@ -139,6 +141,15 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            that runs --plugin-updates every 5 minutes; --uninstall-plugin-updates removes it
       [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
       [--settle 600] [--settle-max 10800] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
+  housesitter steer [--repair] [--list] [--no-sessions] [--peer <device name>] [--install|--uninstall]   can another computer see and drive this Mac's
+                                           agent sessions through Agency Hub? The daemon connected, tracking every session and under launchd; this Mac's
+                                           device and live sessions readable in Hub's service; whether new sessions start with Remote control on.
+                                           --repair puts the daemon back under launchd with track-all; --list shows the sessions as Hub reads them;
+                                           --peer says whether this Mac can read another Mac's device (the laptop's view of the mini);
+                                           --install loads bot.ouro.housesitter.steer (every 2 min, no model turns); exit 1 when something is wrong
+  housesitter laptop-arrival [--config <file>] [--dry-run] [--status] [--install|--uninstall]   when a Mac that was away is back online, bring it up to
+                                           date and tell the agent once: update and restart its Copilot app (sessions saved and resumed), unload the jobs
+                                           this Mac took over, verify its Hub daemon; every step checks first, so a second run changes nothing
   housesitter fleet [--stale-min 15] [--disk-floor-gb 20] [--always-on <mac>,<mac>] [--from <gist.json>]   every Mac side by side from the fleet
                                            gist's health records: how old each is and what is wrong (exit 1 when anything is);
                                            HOUSESITTER_FLEET_GIST and HOUSESITTER_FLEET_USER choose the gist and the gh account
@@ -150,7 +161,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--mac', '--window', '--listing'];
+const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--mac', '--window', '--listing', '--peer', '--config'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -273,6 +284,44 @@ async function appleAccount() {
   return ['filled', 'no-dialog', 'left-alone', 'waiting'].includes(r.status) ? 0 : 1;
 }
 
+async function steerCmd() {
+  const deps = Steer.realSteerDeps();
+  const bin = fileURLToPath(import.meta.url);
+  if (flag('--install') || flag('--uninstall')) {
+    const a = Rec.AGENTS.steer;
+    const r = flag('--uninstall') ? await Rec.uninstallAgent({ label: a.label }) : await Rec.installAgent({ label: a.label, program: [Watch.stableNode(process.execPath), bin, ...a.args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: a.every, logName: a.logName, dry: flag('--dry-run') });
+    if (json) emit(r); else say(flag('--uninstall') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${a.label})` : `✗ launchctl would not load it: ${r.error}`);
+    return r.ok ? 0 : 1;
+  }
+  const r = await Steer.pass({ repair: flag('--repair'), sessions: !flag('--no-sessions'), peer: val('--peer') }, deps, (l) => { if (!json && !flag('--quiet')) console.log(l); });
+  const ok = r.bad.length === 0;
+  if (json) emit({ ok, problems: r.bad.map((b) => b.code), ...r.facts, repaired: r.repaired });
+  else if (!flag('--quiet') || !ok) {
+    say(Steer.renderFacts(r.facts, r.bad));
+    if (r.facts.peer) say(`peer         ${r.facts.peer.name}: ${r.facts.peer.online ? `online, ${r.facts.peer.activeSessionCount} active sessions` : 'OFFLINE or not listed'}`);
+    if (flag('--list') && r.facts.sessions) for (const s of r.facts.sessions.rows) say(`  ${s.id.slice(0, 8)}  ${String(s.status).padEnd(9)} ${String(s.detail || '').padEnd(22).slice(0, 22)} ${String(s.title || '').slice(0, 70)}`);
+  }
+  return ok ? 0 : 1;
+}
+
+async function laptopArrival() {
+  const file = path.resolve(val('--config') || path.join(os.homedir(), '.config', 'housesitter', 'laptop-arrival.json'));
+  const bin = fileURLToPath(import.meta.url);
+  if (flag('--install') || flag('--uninstall')) {
+    const args = ['laptop-arrival', '--config', file, '--quiet'];
+    const r = flag('--uninstall') ? await Rec.uninstallAgent({ label: Arrival.LABEL }) : await Rec.installAgent({ label: Arrival.LABEL, program: [Watch.stableNode(process.execPath), bin, ...args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: Arrival.EVERY_SEC, logName: 'housesitter-laptop-arrival.launchd.log', dry: flag('--dry-run') });
+    if (json) emit(r); else say(flag('--uninstall') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${Arrival.LABEL}); every minute it checks whether the laptop is back, with no model turns` : `✗ launchctl would not load it: ${r.error}`);
+    return r.ok ? 0 : 1;
+  }
+  const cfg = Arrival.loadConfig(file);
+  const deps = Arrival.realArrivalDeps(cfg);
+  deps.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  if (flag('--status')) { const st = deps.readState(); json ? emit(st) : say(JSON.stringify(st, null, 2)); return 0; }
+  const r = await Arrival.pass({ cfg, dry_run: flag('--dry-run') }, deps, (l) => { if (!json && !flag('--quiet') && !flag('--dry-run')) console.log(l); });
+  if (json) emit({ action: r.action, why: r.why || null, steps: r.steps || null }); else if (!flag('--quiet') || flag('--dry-run')) say(Arrival.renderPass(r));
+  return r.steps && Object.values(r.steps).some((s) => s.status === 'fail') ? 1 : 0;
+}
+
 async function restartCopilot() {
   const all = (f) => args.flatMap((a, i) => (a === f && args[i + 1] ? [args[i + 1]] : []));
   const sec = (f, d) => (val(f) == null ? d : Number(val(f)) * 1000);
@@ -358,6 +407,11 @@ async function restartCopilot() {
   }
   const deps = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir });
   deps.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
+  // After the real app is back, make sure Agency Hub still tracks its sessions (a rehearsal on another app leaves Hub alone).
+  if (!val('--app')) deps.steering = async () => {
+    const r = await Steer.pass({ repair: true, sessions: false, immediate: true }, Steer.realSteerDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir }));
+    return { ok: r.bad.length === 0, why: r.bad.map((b) => b.code).join(', '), repaired: r.repaired };
+  };
   if (flag('--dry-run')) {
     const p = await Copilot.plan(opts, deps);
     if (json) emit({ dry_run: true, ...p }); else say(Copilot.render({ dry_run: true, ...p }));
@@ -473,6 +527,8 @@ async function main() {
   if (cmd === 'apple-account') return appleAccount();
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
+  if (cmd === 'steer') return steerCmd();
+  if (cmd === 'laptop-arrival') return laptopArrival();
 
   need(name, `housesitter ${cmd} <mac>`);
   const mac = macConfig(name);
