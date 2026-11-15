@@ -336,7 +336,8 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
       clear: () => { try { fs.rmSync(path.join(state, 'owed-resume.json'), { force: true }); } catch { /* none */ } },
     },
     restartState: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'status.json'), 'utf8')); } catch { return null; } },
-    recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
+    // Every pass is recorded; one that resumed sessions is also kept in resume-last.json, which a later "already resumed" pass must not replace (the health watch follows it).
+    recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); if ((o.resumed || []).length) fs.writeFileSync(path.join(state, 'resume-last.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
     appDir: (name) => ['/Applications', '/System/Applications', path.join(os.homedir(), 'Applications')].map((d) => path.join(d, `${name}.app`)).find((p) => fs.existsSync(p)) || null,
   };
 }
@@ -589,6 +590,14 @@ async function restartSteps(opts, deps, log) {
   if (left.length) return fail('quit', `${left.length} process(es) of ${app} still running after the quit and a SIGTERM: ${left.join(', ')}. Nothing was relaunched; look at them (ps -p ${left[0]}) before trying again`);
   step('app exited', { processes: familyPids.length });
 
+  // A step of the caller's own while the app is down (a macOS update that restarts the Mac). If it takes over, nothing is
+  // relaunched here; if it did not start, or the Mac is still up after its wait, the app is relaunched and resumed as usual.
+  if (opts.while_down) {
+    const a = await opts.while_down({ before, lanes, report });
+    step(a.ok ? (a.what || 'handed over: the Mac is restarting') : 'the step while the app is down did not take over; relaunching');
+    if (a.ok) { report.ok = true; report.handed_over = a.what || true; return report; }
+  }
+
   // 3. Relaunch.
   const opened = await deps.open(app, { background: opts.background !== false });
   if (opened.code !== 0) return fail('relaunch', `open -a "${app}" failed: ${opened.stderr.trim().slice(0, 200)}`);
@@ -612,6 +621,7 @@ async function restartSteps(opts, deps, log) {
   // 4. Resume and verify.
   const res = await resumeAfter({ before, opts, startedAt, restartedAt: deps.now(), t, lanes }, deps, log);
   report.resume = res;
+  deps.owed?.clear?.();
   report.ok = res.every((r) => r.outcome === 'resumed' || r.outcome === 'already continued');
   step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !['resumed', 'already continued'].includes(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
   return report;

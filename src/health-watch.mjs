@@ -58,7 +58,7 @@ export function diagnose({ since, now, lines, mtime, row, working, t = HW }) {
 
 // The roster a new generation of sessions starts with, from the newest record of a resume. null when there is nothing new.
 export function importRoster(dir, current) {
-  const a = readJson(path.join(dir, 'resume-only.json'));
+  const a = readJson(path.join(dir, 'resume-last.json')) || readJson(path.join(dir, 'resume-only.json'));
   const b = readJson(path.join(dir, 'last.json'));
   const cands = [];
   if (a?.resumed) {
@@ -78,7 +78,7 @@ export async function pass(opts, deps, say = () => {}) {
   const st = deps.readState() || {};
   const fresh = importRoster(deps.state, st.roster);
   if (fresh) {
-    if (!opts.dry_run) deps.writeState({ ...st, roster: { ...fresh, begun: iso(now), until: iso(fresh.since + t.window), told: [], sessions: Object.fromEntries(fresh.sessions.filter((s) => !/^gone/.test(s.outcome || '')).map((s) => [s.id, { title: s.title, outcome: s.outcome, status: 'pending' }])) } });
+    if (!opts.dry_run) deps.writeState({ ...st, roster: { ...fresh, begun: iso(now), until: iso(fresh.since + t.window), told: [], sessions: Object.fromEntries(fresh.sessions.filter((s) => !/^gone/.test(s.outcome || '') && !skipOf(opts, deps).some((p) => s.id.startsWith(p))).map((s) => [s.id, { title: s.title, outcome: s.outcome, status: 'pending' }])) } });
     out(`following ${fresh.sessions.length} session(s) resumed after ${fresh.why} (${hhmm(fresh.since)}) until ${hhmm(fresh.since + t.window)}`);
     if (opts.dry_run) return { action: 'import', roster: fresh };
     return pass(opts, deps, say);
