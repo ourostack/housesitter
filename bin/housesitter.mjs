@@ -250,8 +250,8 @@ async function restartCopilot() {
     return r.ok ? 0 : 1;
   }
   if (flag('--resume-only')) {
-    const deps0 = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir });
     const out = (m) => console.log(`${new Date().toISOString()} copilot-resume: ${m}`);
+    const deps0 = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir, warn: out });
     if (flag('--watch')) { await Copilot.watch(opts, deps0, out); return 0; }
     const r = await Copilot.resumeOnly(opts, deps0, json ? () => {} : out);
     if (json) emit(r); else if (r.dry_run) say(`DRY RUN: would resume ${r.resume.length}: ${r.resume.map((x) => `${x.id.slice(0, 8)} ${x.title || ''}`.trim()).join('; ') || 'none'}`);

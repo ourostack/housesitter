@@ -12,7 +12,7 @@ export const haveSqlite = () => spawnSync('/usr/bin/sqlite3', ['-version']).stat
 
 const ev = (type, data = {}, at = Date.now()) => JSON.stringify({ type, data, id: `${type}-${at}`, timestamp: new Date(at).toISOString() });
 
-// sessions: [{ id, title, mode, running, interrupted, loc, archived, events: [[type, data]...] }]
+// sessions: [{ id, title, mode, running, interrupted, loc, archived, ageMs (how long ago its history began), events: [[type, data]...] }]
 export function makeHome(home, sessions) {
   fs.mkdirSync(path.join(home, 'run'), { recursive: true });
   const db = path.join(home, 'data.db');
@@ -27,7 +27,7 @@ export function makeHome(home, sessions) {
   for (const s of sessions) {
     const d = path.join(home, 'session-state', s.id);
     fs.mkdirSync(d, { recursive: true });
-    const t0 = Date.now() - 600000;
+    const t0 = Date.now() - (s.ageMs || 600000);
     fs.writeFileSync(path.join(d, 'events.jsonl'), (s.events || []).map(([type, data], i) => ev(type, data, t0 + i * 1000)).join('\n') + '\n');
   }
 }
