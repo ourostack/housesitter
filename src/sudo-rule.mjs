@@ -90,14 +90,17 @@ export async function revoke({ deps }) {
   return { ok: r.code === 0, file: RULE_FILE, why: r.code === 0 ? null : r.stderr.trim() };
 }
 
-// The password: the Mac's reference in the config (or housesitter/<mac>-mac-password), else a hidden prompt on a terminal.
+// The password: the reference in the config, then the usual names; only a person at a terminal is asked. The copy sealed on the KVM is
+// never read back: the sitter types it at a prompt and has no way to hand it over.
 export function realGrantDeps({ mac = 'mini', stage, run = realRun, store = secretStore(), cfg = loadConfig(), tty = process.stdin } = {}) {
   return {
     run, stage,
     password: async () => {
-      const ref = cfg.macs?.[mac]?.mac_password || `keychain:housesitter/${mac}-mac-password`;
-      const held = store.get(ref);
-      if (held) return held;
+      // The reference the config names (the FileVault password housesitter holds), then the two names adopt and `secret` use.
+      for (const ref of [...new Set([cfg.macs?.[mac]?.mac_password, `keychain:housesitter/${mac}-mac`, `keychain:housesitter/${mac}-mac-password`].filter(Boolean))]) {
+        const held = store.get(ref);
+        if (held) return held;
+      }
       if (!tty.isTTY) return null;
       process.stderr.write(`administrator password for ${os.userInfo().username} (input hidden), then Return: `);
       spawnSync('/bin/stty', ['-echo'], { stdio: ['inherit', 'ignore', 'ignore'] });
