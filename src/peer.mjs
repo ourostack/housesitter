@@ -27,7 +27,7 @@ export const SEEN_MAX = 500;
 export const FLUSH_SEC = 360;
 export const MAX_PER_HOUR = 10;
 // The peer gists' owner. Without GH_TOKEN the link uses gh's token for this login, not gh's active account: GitHub
-// limits gist reads per token, and another account's token may be spent (2026-11-10, arimendelow_microsoft).
+// limits gist reads per token, and another account's token may be spent (2026-11-10, on another account).
 export const OWNER = 'arimendelow';
 const NAME = /^(\d{8})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{8}\.json$/;
 

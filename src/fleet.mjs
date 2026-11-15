@@ -18,7 +18,7 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 export function problems(rec, { diskFloorGb = DISK_FLOOR_GB, alwaysOn = [] } = {}) {
   const p = [];
   if (rec.panic?.this_boot) p.push(`booted after a kernel panic (${rec.panic.latest ?? 'no report named'})`);
-  if (rec.hub && rec.hub.connected === false) p.push('Agency Hub not connected');
+  if (rec.hub && rec.hub.connected === false) p.push('agent hub not connected');
   for (const d of rec.drains || []) if (!d.ok) p.push(`drain ${d.name}: ${d.loaded === false ? 'not loaded' : `${d.detectors} detectors`}`);
   const free = rec.disk?.free_gb;
   if (free != null && free < diskFloorGb) p.push(`disk ${free} GB free, below ${diskFloorGb} GB`);

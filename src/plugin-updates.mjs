@@ -1,8 +1,8 @@
 // `housesitter restart-copilot --plugin-updates`: restart the GitHub Copilot app when a plugin it has loaded is older
-// than the newest release Agency has fetched.
+// than the newest release in the app's plugin cache.
 //
-// The app keeps a skill's text in memory for the life of its process, so a plugin's skills (Desk, MS Desk, cit, Crew)
-// stay as they were at the app's start until the app restarts. Agency's cache (~/.local/agency/plugins/cache) holds the
+// The app keeps a skill's text in memory for the life of its process, so a plugin's skills
+// stay as they were at the app's start until the app restarts. The app's plugin cache (~/.local/agency/plugins/cache) holds the
 // newer release; the running roots (~/.local/agency/plugins/sessions/agency-plugin-<id>.p<pid>/root-N/<plugin>) show
 // what each session process loaded. When the cache is newer, this runs the proven `restart-copilot --resume --detach`,
 // which does the coordination: it asks every working session to reach a safe point and say so, waits, restarts, and
@@ -30,7 +30,7 @@ export const EVERY_SEC = 300;
 export const PERSON_WAIT_SEC = 300;
 const LOG_MAX = 1 << 20;
 
-export const agencyHome = (home = os.homedir()) => path.join(home, '.local', 'agency', 'plugins');
+export const pluginHome = (home = os.homedir()) => path.join(home, '.local', 'agency', 'plugins');
 
 // ---------- pure ----------
 
@@ -81,7 +81,7 @@ export function loadedPlugins(sessionsDir, owned) {
   return out;
 }
 
-// The newest release Agency has fetched for each plugin: its Copilot entries that follow a branch or tag (not a pinned
+// The newest release in the app's plugin cache for each plugin: its Copilot entries that follow a branch or tag (not a pinned
 // commit), the most recently fetched one per plugin name. Map name -> { version, sha, spec, fetched_at }.
 export function newestReleases(cacheDir) {
   const out = new Map();
@@ -102,7 +102,7 @@ export function newestReleases(cacheDir) {
 // A restart only helps with what a process fixes at its start: its skills (text and descriptions), hooks, agents and
 // manifests, and the MCP tool list. Desk's own runtime updates in place (a release changes `mcp/src` under a running
 // server), so a release that touches only that is no reason to restart; what counts is the MCP session layer, the tool
-// names, descriptions and schemas the host registered when the session began. Every other plugin (cit, MS Desk, Crew, ...)
+// names, descriptions and schemas the host registered when the session began. Every other plugin
 // counts on any skill, hook or agent change. A manifest is compared without its version, so a bare version bump is nothing.
 
 export const FIXED = ['skills/', 'agents/', 'hooks/', 'plugin.json', '.claude-plugin/plugin.json', '.mcp.json', '.mcp.copilot.json', '.mcp.claude-codex.json', 'agency.json', 'settings.json'];
@@ -180,7 +180,7 @@ export const reasonFor = (updates) => `a plugin update (${updates.map((u) => `${
 export function decide({ appRunning, updates, runtimeOnly = [], state = {}, now, runInProgress: busy = false, person, cooldownMs = COOLDOWN_MS }) {
   if (!appRunning) return { action: 'hold', code: 'app-not-running', why: 'the Copilot app is not running' };
   if (!updates.length && runtimeOnly.length) return { action: 'hold', code: 'runtime-only', why: `${reasonFor(runtimeOnly)}: the newer release changes nothing a process fixes at its start (no skill, hook, agent or MCP session file), so a restart would add nothing` };
-  if (!updates.length) return { action: 'hold', code: 'current', why: 'every loaded plugin is at the newest release Agency has fetched' };
+  if (!updates.length) return { action: 'hold', code: 'current', why: 'every loaded plugin is at the newest release in the plugin cache' };
   const fresh = updates.filter((u) => state.attempted?.[u.name] !== u.to);
   const label = reasonFor(updates);
   if (!fresh.length) return { action: 'hold', code: 'already-restarted', why: `${label}: the app was already restarted for these releases and still loads the older ones, so another restart would not help` };
@@ -205,8 +205,8 @@ export function realPluginDeps({ home = os.homedir(), copilotHome, hackamore, st
   const logFile = path.join(state, 'plugin-updates.log');
   return {
     ...base,
-    sessionsDir: path.join(agencyHome(home), 'sessions'),
-    cacheDir: path.join(agencyHome(home), 'cache'),
+    sessionsDir: path.join(pluginHome(home), 'sessions'),
+    cacheDir: path.join(pluginHome(home), 'cache'),
     // May an agent (and so a restart) touch this Mac now? hackamore's gate: unlocked, nobody used it for 90 s, no call.
     person: async () => {
       if (!base.hackamore) return { open: false, why: 'hackamore is not installed, so it cannot tell whether someone is using the Mac' };

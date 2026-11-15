@@ -97,8 +97,8 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            process; --open-at-login also opens a closed app once per login
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
-  housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded (Desk, MS Desk, cit, Crew) is older than the
-                                           newest release Agency has fetched and that release changes a skill, hook, agent or Desk's MCP tool list, run
+  housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded is older than the
+                                           newest release in the app's plugin cache and that release changes a skill, hook, agent or Desk's MCP tool list, run
                                            restart-copilot --resume --detach for it, unless someone is using the Mac, a restart ran in the last
                                            6 h (--cooldown-hours) or is running; logs the decision
   housesitter restart-copilot --install-plugin-updates [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.plugin-update-restart)
