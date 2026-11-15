@@ -121,6 +121,8 @@ export function realHeartbeatDeps({ home = os.homedir(), copilotHome, hackamore,
     readState: () => readJson(file, {}),
     writeState: (o) => writeJson(file, o),
     runInProgress: () => Boolean(runInProgress(state)),
+    // How many sessions the app says are running: one cheap query, so a gone app can be told from one a person quit.
+    busyCount: async () => Number((await d.sql('SELECT COUNT(*) AS n FROM sessions WHERE is_running = 1 AND archived_at IS NULL'))[0]?.n || 0),
     status: (o) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'status.json'), JSON.stringify(o)); },
     lastWrite: (o) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'last.json'), JSON.stringify(o, null, 2)); },
     tell,
@@ -265,7 +267,7 @@ export async function pass(opts, deps, say = () => {}) {
 
   const j = judge(sameApp ? st.bad : null, failures, now, t);
   const busy = sameApp ? st.app?.busy : undefined;
-  const appState = { key: g.key, pid: g.main.pid, started: g.startedAt, seen_at: iso(now), busy: busy ?? 0 };
+  const appState = { key: g.key, pid: g.main.pid, started: g.startedAt, seen_at: iso(now), busy: await deps.busyCount().catch(() => busy ?? 0) };
   if (!failures.length) {
     if (st.bad) out(`the app answers again (it did not for ${Math.round((now - Date.parse(st.bad.since)) / 1000)} s: ${st.bad.failures.join(', ')})`);
     save({ bad: null, app: appState });

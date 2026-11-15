@@ -361,7 +361,7 @@ export function exchange(copilotHome, messages, { done = () => false, waitMs = 1
 
 export const appReady = async (deps) => (await deps.exchange([], { done: (j) => j.type === 'server_hello', keep: (j) => j.type === 'server_hello', waitMs: 3000 })).some((j) => j.type === 'server_hello');
 
-async function sendTo(deps, id, prompt, waitMs) {
+export async function sendTo(deps, id, prompt, waitMs) {
   const request_id = randomUUID();
   const got = await deps.exchange([{ type: 'send_message', session_id: id, prompt, delivery_mode: 'immediate', request_id }], {
     keep: (j) => j.request_id === request_id || (j.session_id === id && /message_(sent|queued|delivery)/.test(j.type)) || j.type === 'socket_error',
