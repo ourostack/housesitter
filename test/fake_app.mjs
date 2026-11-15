@@ -57,8 +57,10 @@ function* frames(buf) {
 
 // drop: session ids that get the message accepted but never take a turn; refuse: ids the app answers with an error.
 // react: (id, prompt, append) => void, to play a session's side of a conversation (append writes one history event).
-export function startApp(home, { drop = [], refuse = [], token = 'tok', react = null } = {}) {
+export function startApp(home, { drop = [], refuse = [], token = 'tok', react = null, hung = false } = {}) {
   const received = [];
+  // hung: the server takes the connection and never speaks, as the real app's did when its window froze.
+  const mode = { hung };
   const server = http.createServer();
   const open = new Set();
   server.on('upgrade', (req, socket) => {
@@ -67,7 +69,7 @@ export function startApp(home, { drop = [], refuse = [], token = 'tok', react = 
     const key = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
     open.add(socket); socket.on('close', () => open.delete(socket));
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${key}\r\n\r\n`);
-    socket.write(frame(JSON.stringify({ type: 'server_hello' })));
+    if (!mode.hung) socket.write(frame(JSON.stringify({ type: 'server_hello' })));
     socket.on('data', (buf) => {
       for (const t of frames(buf)) {
         const m = JSON.parse(t);
@@ -86,7 +88,7 @@ export function startApp(home, { drop = [], refuse = [], token = 'tok', react = 
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => {
     fs.writeFileSync(path.join(home, 'run', 'ws.port'), String(server.address().port));
     fs.writeFileSync(path.join(home, 'run', 'ws.token'), token);
-    resolve({ received, port: server.address().port, close: () => new Promise((r) => { for (const x of open) x.destroy(); server.close(r); }) });
+    resolve({ received, port: server.address().port, setHung: (v) => { mode.hung = v; }, close: () => new Promise((r) => { for (const x of open) x.destroy(); server.close(r); }) });
   }));
 }
 

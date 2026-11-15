@@ -272,6 +272,19 @@ Every pass writes one line, with the reason, to `~/Library/Caches/housesitter/re
 
 `--app "<name>"` rehearses the same sequence on another app (it quits and reopens it and skips the sessions). Exit codes: 0 every session resumed, 1 something failed (the report says where), 2 refused.
 
+### What it does when the app freezes, crashes, or the Mac restarts
+
+On 15 November the app's window froze twice, it crashed once, and a macOS update then restarted the Mac. Nobody was told and nothing recovered by itself until a person did it by hand ([what the logs show](docs/proof/2026-11-15-freeze-and-reboot/)). Now:
+
+- **A heartbeat, no model turns.** `housesitter restart-copilot --heartbeat` is a plain program that launchd runs every 30 s. It asks the app's local socket for its hello (5 s) and reads the app's window through hackamore (15 s), which only the app's main thread can answer. The app's server kept answering while its window was frozen, so the socket alone calls a frozen app healthy; the window read does not.
+- **Freeze:** both or either failing for 2 minutes on at least three runs in a row. It asks once more with longer timeouts, so a slow minute is not a freeze. Then it takes a 5-second `sample` of the app (and of its web-content helpers), `ps`, memory and the app's last 256 KB of log into `~/Library/Logs/housesitter/incidents/<time>-freeze/`, records which sessions were working, stops the app with SIGTERM, then SIGKILL to exactly the pids of the app and what it started, relaunches it in the background, and resumes every working session (each must take a turn). The agent is told once, after the fact: "The Copilot app froze at 12:31: …; I restarted it and 15 of 15 sessions resumed. Evidence: …".
+- **Again:** a second freeze in an hour is recovered the same way, and the message names the pattern (the same failing probes, the same frame in the main thread's sample). After three recoveries in an hour it holds off a fourth, because the restart is not holding, and says so once.
+- **Crash:** the app is gone and a crash report names it (or sessions were working and it has been gone 5 minutes): it relaunches and resumes the same way. An app a person quit, with nothing working, stays quit.
+- **The Mac stopping:** if its own runs show a gap of 5 minutes or more, it records the cause from `kern.boottime`, `softwareupdate --history`, `pmset -g log`, the panic reports and launchd's log (a reboot, and for what; a sleep; "launchd stopped starting jobs while it prepared a restart"; or a hang, with load and memory), and tells the agent once after the sessions have resumed. A sleep also loads `bot.ouro.housesitter.keep-awake`, a user-level `caffeinate` that needs no password.
+- **If the job dies mid-recovery** (the Mac restarts), the sessions that were working are written to `owed-resume.json` first, and the resume watcher sends them after the next login.
+
+`--install-recovery` writes and loads the agents (the heartbeat and the keep-awake); `--uninstall-recovery` removes them; `--heartbeat --dry-run` prints what it sees and changes nothing. `node scripts/rehearse-freeze.mjs` rehearses the whole recovery live against a stand-in process that it hangs with `kill -STOP`: the probe times out, a real sample is taken, SIGTERM is ignored (a stopped process cannot handle it), SIGKILL goes to the exact pid, and the stand-in's sessions are resumed ([the transcript](docs/proof/2026-11-15-freeze-and-reboot/rehearsal.txt)).
+
 ## Hardware
 
 **What to buy** (prices approximate, November 2026):
