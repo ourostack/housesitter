@@ -95,9 +95,9 @@ export function classifyGap({ from, to, facts }) {
   const win = `${hhmm(from)} to ${hhmm(to)}`;
   if (f.boot && f.boot >= from - 60000 && f.boot <= to) {
     const upd = (f.installs || []).filter((i) => i.at <= f.boot && f.boot - i.at <= 30 * 60000).at(-1);
-    const planned = f.planned && f.boot - Date.parse(f.planned.at || 0) <= 60 * 60000 ? f.planned : null;
+    const planned = f.planned && f.boot - Date.parse(f.planned.at || 0) <= 4 * 3600000 ? f.planned : null;
     const panic = (f.panics || []).at(-1);
-    const why = planned ? `restarted at ${hhmm(f.boot)} for the macOS update housesitter scheduled (${planned.label || 'an update'})`
+    const why = planned ? `restarted at ${hhmm(f.boot)} for the macOS update (${planned.label || 'an update'}), with every session at a safe point first`
       : upd ? `restarted at ${hhmm(f.boot)} for ${upd.name} (installed ${hhmm(upd.at)}); housesitter did not schedule it, a person or the device's management did`
         : panic ? `restarted at ${hhmm(f.boot)} after a kernel panic (${panic})`
           : `restarted at ${hhmm(f.boot)} and the logs name no reason (no update recorded, no panic report)`;

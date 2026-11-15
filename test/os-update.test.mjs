@@ -1,11 +1,11 @@
-// housesitter restart-copilot --os-updates: a pending macOS update is installed only in the quiet hours with nobody at the
-// Mac, after every working session is at a safe point, with the Apple Account prompt armed and the sessions owed a resume
-// written down first; and when it cannot be installed without a password, the agent is told once what is needed.
+// housesitter restart-copilot --os-updates: macOS installs its own updates; housesitter reads what is pending and what macOS
+// will do (no admin rights), and shortly before it acts gets every session to a safe point, arms the Apple Account prompt and
+// writes the sessions owed a resume; it stands down if the Mac does not restart, and says once what to turn on if nothing will.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { consentText, decide, parseUpdates, pass, realOsDeps } from '../src/os-update.mjs';
+import { INSTALLING, OS, decide, nativeOffText, parseDefaults, parseEnforced, parseNative, parseUpdates, pass, realOsDeps } from '../src/os-update.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 const skip = !haveSqlite() || typeof WebSocket !== 'function';
@@ -30,27 +30,72 @@ test('parseUpdates reads softwareupdate -l and tells a restart from a plain upda
   assert.deepEqual(parseUpdates('No new software available.'), []);
 });
 
-test('decide: only in the quiet hours, with nobody at the Mac, and only when it can install without a password', () => {
-  const now = Date.parse('2026-11-16T03:00:00');
-  const go = { update: UPDATE, state: {}, now, hour: 3, idleMs: 30 * 60000, canInstall: true };
-  assert.equal(decide(go).action, 'run');
-  assert.equal(decide({ ...go, update: null }).code, 'nothing-pending');
-  assert.equal(decide({ ...go, hour: 14 }).code, 'outside-window');
-  assert.equal(decide({ ...go, hour: 5 }).code, 'outside-window', 'the window ends at 05:00');
-  assert.equal(decide({ ...go, idleMs: 60000 }).code, 'person-active');
-  assert.equal(decide({ ...go, idleMs: null }).code, 'person-active', 'idle time unknown is not quiet');
-  assert.equal(decide({ ...go, canInstall: false }).action, 'needs-consent');
-  assert.equal(decide({ ...go, state: { completed: { label: UPDATE.label, at: 'x' } } }).code, 'done');
-  assert.equal(decide({ ...go, hour: 14, idleMs: 0, force: true }).action, 'run', '--now skips the wait');
-  assert.match(consentText({ update: UPDATE, bin: '/b/housesitter.mjs', node: '/n/node' }), /administrator's password.*--grant-softwareupdate --mac mini.*three softwareupdate commands only.*--os-updates --prepare/);
+
+const LOG_LINE = '2026-11-15 11:41:10.557 Df softwareupdated[73513:8aeb985] [com.apple.SoftwareUpdateMacController:DDM] Sorted valid enforced-su declarations: ( "SUCoreDDMDeclaration (DeclarationKey:com.apple.RemoteManagement.SoftwareUpdateExtension/7341AD9C:MDE0=|EnforcedInstallDate:2026-11-21T00:00:00|VersionString:27.2.2|BuildVersionString:(null)|DetailsURL:(null)|NotificationsEnabled:YES)" )';
+
+const DEFAULTS = `{
+    AutomaticDownload = 1;
+    AutomaticallyInstallMacOSUpdates = 1;
+    CriticalUpdateInstall = 1;
+    DDMPersistedErrorKey =     {
+    };
+    FirstInstallTonightDateDictionary =     {
+        "MSU_UPDATE_26B131_patch_27.2.1_minor" = "2026-11-10 15:30:06 +0000";
+    };
+    InstallDateDictionary =     {
+        26B123 = "2026-11-06 17:36:58 +0000";
+        26B131 = "2026-11-15 19:54:12 +0000";
+    };
+    LastResultCode = 2;
+}`;
+
+test('parseNative and parseEnforced read what macOS and the management server have set, with no admin rights', () => {
+  const n = parseNative({ AutomaticCheckEnabled: 1, AutomaticDownload: 1, AutomaticallyInstallMacOSUpdates: 1, CriticalUpdateInstall: 1, FirstInstallTonightDateDictionary: { 'MSU_UPDATE_26B131_patch_27.2.1_minor': 'x' } });
+  assert.deepEqual([n.check, n.download, n.install, n.critical, n.scheduled.length], [true, true, true, true, 1]);
+  assert.equal(parseNative({ AutomaticDownload: 1 }).install, false);
+  const t = parseNative(parseDefaults(DEFAULTS));
+  assert.deepEqual([t.download, t.install, t.critical, t.scheduled, t.installed], [true, true, true, ['MSU_UPDATE_26B131_patch_27.2.1_minor'], ['26B123', '26B131']]);
+  const e = parseEnforced(`noise\n${LOG_LINE}\n`);
+  assert.equal(e.version, '27.2.2');
+  assert.equal(e.at, new Date(2026, 10, 21, 0, 0, 0).getTime(), 'a date without a zone is the Mac\'s local time');
+  assert.equal(parseEnforced('nothing here'), null);
+  assert.ok(INSTALLING.test('CurrentProgressStateName = SUMacControllerProgressStateApplying'));
+  assert.ok(!INSTALLING.test('CurrentProgressStateName = SUMacControllerProgressStatePrepared'));
 });
 
-async function world({ canInstall = true, installOk = true, hour = 3, idle = 3600000 } = {}) {
+test('decide: at the enforced deadline less the lead, in the quiet hours with nobody there, or when the install starts; never twice for the same trigger', () => {
+  const day = new Date(2026, 10, 20, 12, 0, 0).getTime();
+  const deadline = new Date(2026, 10, 21, 0, 0, 0).getTime();
+  const native = { install: true, download: true };
+  const enforced = { at: deadline, version: '27.2.2', date: '2026-11-21T00:00:00' };
+  const base = { update: UPDATE, native, enforced: null, state: {}, now: day, hour: 12, idleMs: 0, imminent: false };
+  assert.equal(decide({ ...base, update: null }).code, 'nothing-pending');
+  assert.equal(decide({ ...base, state: { completed: { label: UPDATE.label, at: 'x' } } }).code, 'done');
+  assert.equal(decide({ ...base, enforced }).code, 'before-deadline', 'noon is hours before the lead starts');
+  const lead = decide({ ...base, enforced, now: deadline - OS.lead + 60000, hour: 22 });
+  assert.deepEqual([lead.action, lead.code, lead.until], ['run', 'deadline', deadline + OS.afterDeadline]);
+  assert.equal(decide({ ...base, enforced, now: deadline - OS.lead + 60000, hour: 22, state: { safe: { key: lead.key, at: 'x' } } }).action, 'hold', 'the deadline safe point runs once');
+  assert.equal(decide({ ...base, enforced: { ...enforced, version: '27.3' }, now: deadline - 60000, hour: 23 }).code, 'waiting', 'a deadline for another version is not ours');
+  const night = { ...base, now: new Date(2026, 10, 20, 3, 0, 0).getTime(), hour: 3, idleMs: 30 * 60000 };
+  assert.equal(decide(night).code, 'night');
+  assert.equal(decide({ ...night, idleMs: 60000 }).action, 'hold', 'somebody is at the Mac');
+  assert.equal(decide({ ...night, idleMs: null }).action, 'hold');
+  assert.equal(decide({ ...night, hour: 5 }).action, 'hold', 'the window ends at 05:00');
+  assert.equal(decide({ ...night, state: { safe: { key: decide(night).key, at: 'x' } } }).action, 'hold', 'once a night');
+  assert.equal(decide({ ...base, imminent: true }).code, 'imminent');
+  assert.equal(decide({ ...base, force: true }).code, 'manual');
+  const off = decide({ ...base, native: { install: false } });
+  assert.equal(off.action, 'native-off');
+  assert.equal(decide({ ...base, native: { install: false }, enforced }).action, 'hold', 'an enforced deadline installs it by itself even with the setting off');
+  assert.match(nativeOffText({ update: UPDATE }), /administrator's password.*Install macOS updates/);
+});
+
+async function world({ hour = 12, idle = 3600000, native = { install: true, download: true, critical: true }, enforced = null, imminent = false } = {}) {
   const home = fs.mkdtempSync(path.join(SCRATCH, 'os-'));
   const root = fs.mkdtempSync(path.join(SCRATCH, 'os-root-'));
   makeHome(home, [{ id: A, title: 'busy a', mode: 'autopilot', running: true, events: MID_TURN }, { id: B, title: 'idle b', events: DONE }, { id: C, title: 'busy c', mode: 'interactive', events: MID_TURN }]);
   const app = await startApp(home, {});
-  const w = { home, root, app, told: [], installs: [], armed: [], opens: 0, kills: [], hk: [], procs: [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }], startedAt: Date.now() - 600000, listing: LISTING, owedAtInstall: null, loaded: new Set(), boot: null };
+  const w = { home, root, app, told: [], armed: [], opens: 0, kills: [], hk: [], procs: [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }], startedAt: Date.now() - 600000, listing: LISTING, owedWhileArmed: null, stateWhileArmed: null, loaded: new Set(), boot: null };
   const d = realOsDeps({ home: root, copilotHome: home, state: path.join(root, 'state'), bin: '/b/housesitter.mjs', node: '/n/node' });
   Object.assign(d, {
     hackamore: ['hackamore'],
@@ -65,90 +110,92 @@ async function world({ canInstall = true, installOk = true, hour = 3, idle = 360
       return { code: 0, json: {} };
     },
     kill: (pid) => { w.kills.push(pid); w.procs = w.procs.filter((p) => p.pid !== pid); return true; },
-    open: async () => { w.opens++; w.startedAt = Date.now(); w.procs = [{ pid: 200, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }]; return { code: 0, stderr: '' }; },
+    open: async () => { w.opens++; return { code: 0, stderr: '' }; },
     tell: async (t) => { w.told.push(t); return { ok: true }; },
     listUpdates: async () => ({ ok: true, text: w.listing }),
+    native: async () => native,
+    enforced: async () => enforced,
+    imminent: async () => imminent,
     idleMs: async () => idle,
     hour: () => hour,
-    canInstall: async () => canInstall,
-    install: async (label) => { w.owedAtInstall = d.owed.get(); w.installs.push(label); return { ok: installOk, text: installOk ? '' : 'sudo: a password is required' }; },
-    expectReboot: (why) => w.armed.push(why),
+    expectReboot: (why) => { w.armed.push(why); w.owedWhileArmed = d.owed.get(); w.stateWhileArmed = d.readState(); },
     bootTime: async () => w.boot,
     loaded: async () => w.loaded,
     wantedJobs: () => ['bot.ouro.housesitter.heartbeat', 'bot.ouro.housesitter.copilot-resume'],
     lastWrite: () => {},
   });
   w.deps = d;
-  w.opts = { app: 'Fake Copilot', resume: true, t: { settle: 200, grace: 0, quit: 400, up: 2000, delivery: 3000, retry: 400, tries: 2 }, os: { prepareWait: 0, installWait: 0 } };
+  w.opts = { app: 'Fake Copilot', resume: true, t: { settle: 200, grace: 0, quit: 400, up: 2000, delivery: 3000, retry: 400, tries: 2 }, os: { manualWait: 100 } };
   w.done = async () => { await new Promise((r) => setTimeout(r, 120)); await app.close(); fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(root, { recursive: true, force: true }); };
   return w;
 }
 
-test('in the quiet hours: sessions are asked to reach a safe point, the app is quit, the Apple Account prompt is armed and the owed resume written, then it installs', { skip }, async () => {
-  const w = await world();
-  const r = await pass(w.opts, w.deps);
-  assert.equal(r.decision.action, 'run');
-  assert.deepEqual(w.app.received.filter((m) => /Heads up/.test(m.prompt)).map((m) => m.id).sort(), [A, C], 'the working sessions are asked to reach a safe point');
-  assert.match(w.app.received.find((m) => /Heads up/.test(m.prompt)).prompt, /restarts for a macOS update \(27\.2\.2\)/);
-  assert.deepEqual(w.installs, ['macOS 27.2.2-26B140']);
-  assert.deepEqual(w.owedAtInstall.sort(), [A, C], 'the sessions owed a resume are written down before the install');
+test('at the enforced deadline: sessions reach a safe point with the app left running, the prompt is armed and the resume owed; when the Mac does not restart it stands down', { skip }, async () => {
+  const w = await world({ enforced: { at: Date.now() + 30, version: '27.2.2', date: '2026-11-21T00:00:00' } });
+  const r = await pass({ ...w.opts, os: { lead: 60000, afterDeadline: 300 } }, w.deps);
+  assert.equal(r.decision.code, 'deadline');
+  const asked = w.app.received.filter((m) => /Heads up/.test(m.prompt));
+  assert.deepEqual(asked.map((m) => m.id).sort(), [A, C], 'the working sessions are asked to reach a safe point');
+  assert.match(asked[0].prompt, /the Mac restarts for a macOS update \(27\.2\.2\) that macOS installs by itself/);
   assert.equal(w.armed.length, 1);
-  assert.match(w.armed[0], /macOS update \(27\.2\.2\) reboot/);
-  assert.ok(w.hk.includes('do menu'), 'the app is quit through its own Quit item');
+  assert.match(w.armed[0], /macOS update \(27\.2\.2\).*reboot/);
+  assert.deepEqual(w.owedWhileArmed.sort(), [A, C], 'the sessions owed a resume are written down before the Mac can restart');
+  assert.deepEqual([w.stateWhileArmed.reboot.label, w.stateWhileArmed.reboot.planned], [UPDATE.label, true], 'the reboot is recorded as planned while holding');
+  assert.deepEqual([w.hk.includes('do menu'), w.opens, w.kills.length], [false, 0, 0], 'the app is never quit');
+  assert.deepEqual(w.app.received.filter((m) => /was called off/.test(m.prompt)).map((m) => m.id).sort(), [A, C], 'nothing happened: the sessions are told to carry on');
+  assert.deepEqual(w.deps.owed.get(), [], 'nothing stays owed');
+  const st = w.deps.readState();
+  assert.equal(st.reboot, null);
+  assert.equal(st.safe.outcome, 'stood-down');
+  assert.deepEqual(w.told, [], 'nobody is bothered');
+  const again = await pass({ ...w.opts, os: { lead: 60000, afterDeadline: 300 } }, w.deps);
+  assert.equal(again.decision.action, 'hold', 'once per deadline');
   await w.done();
 });
 
-test('the Mac does not go down after the install: the app is relaunched and the sessions resumed, nothing is left closed', { skip }, async () => {
-  const w = await world();
+test('the quiet hours with nobody at the Mac, and the install starting, each run the safe point', { skip }, async () => {
+  const night = await world({ hour: 3 });
+  assert.equal((await pass({ ...night.opts, os: { minHold: 100, maxHold: 300 } }, night.deps).catch((e) => e)).decision?.code, 'night');
+  assert.equal(night.armed.length, 1);
+  await night.done();
+  const soon = await world({ imminent: true });
+  assert.equal((await pass({ ...soon.opts, os: { imminentWithin: 200 } }, soon.deps)).decision.code, 'imminent');
+  assert.equal(soon.armed.length, 1);
+  await soon.done();
+});
+
+test('outside every trigger, or with a person at the Mac overnight, nothing is touched', { skip }, async () => {
+  const day = await world({ hour: 14, enforced: { at: Date.now() + 3 * 86400000, version: '27.2.2', date: 'x' } });
+  assert.equal((await pass(day.opts, day.deps)).decision.code, 'before-deadline');
+  assert.deepEqual([day.armed.length, day.app.received.length], [0, 0]);
+  await day.done();
+  const busy = await world({ hour: 3, idle: 60000 });
+  assert.equal((await pass(busy.opts, busy.deps)).decision.action, 'hold');
+  assert.deepEqual([busy.armed.length, busy.app.received.length], [0, 0]);
+  await busy.done();
+});
+
+test('automatic install off and nothing enforced: nothing is touched and the agent is told once which setting a person must turn on', { skip }, async () => {
+  const w = await world({ native: { install: false, download: true } });
   const r = await pass(w.opts, w.deps);
-  assert.equal(w.opens, 1);
-  assert.deepEqual(r.report.resume.map((x) => x.outcome).sort(), ['resumed', 'resumed']);
-  assert.equal(w.deps.readState().reboot, null);
-  assert.deepEqual(w.deps.owed.get(), [], 'nothing is owed once they are resumed');
-  await w.done();
-});
-
-test('an install that will not start tells the agent once, and the app is back with its sessions', { skip }, async () => {
-  const w = await world({ installOk: false });
+  assert.equal(r.decision.action, 'native-off');
+  assert.deepEqual([w.armed.length, w.app.received.length, w.hk.length], [0, 0, 0]);
+  assert.equal(w.told.length, 1);
+  assert.match(w.told[0], /Install macOS updates.*administrator's password/);
   await pass(w.opts, w.deps);
-  assert.equal(w.opens, 1);
-  assert.equal(w.told.length, 1);
-  assert.match(w.told[0], /tried to install macOS 27\.2\.2-26B140 and it did not start \(sudo: a password is required\).*the sessions were resumed/);
-  await w.done();
-});
-
-test('without a password for softwareupdate it installs nothing, touches no session, and says once what is needed', { skip }, async () => {
-  const w = await world({ canInstall: false });
-  const r = await pass(w.opts, w.deps);
-  assert.equal(r.decision.action, 'needs-consent');
-  assert.deepEqual([w.installs.length, w.app.received.length, w.hk.length], [0, 0, 0]);
-  assert.equal(w.told.length, 1);
-  assert.match(w.told[0], /administrator's password/);
-  await pass({ ...w.opts }, w.deps);
   assert.equal(w.told.length, 1, 'told once per update');
   await w.done();
 });
 
-test('outside the quiet hours, or with a person at the Mac, nothing happens', { skip }, async () => {
-  const day = await world({ hour: 14 });
-  assert.equal((await pass(day.opts, day.deps)).decision.code, 'outside-window');
-  assert.deepEqual([day.installs.length, day.app.received.length], [0, 0]);
-  await day.done();
-  const busy = await world({ idle: 60000 });
-  assert.equal((await pass(busy.opts, busy.deps)).decision.code, 'person-active');
-  assert.equal(busy.installs.length, 0);
-  await busy.done();
-});
-
-test('--prepare gets everything ready for a person to restart: safe point, app closed, prompt armed, one message; then it gives up and resumes', { skip }, async () => {
-  const w = await world({ canInstall: false, hour: 14, idle: 0 });
-  const r = await pass({ ...w.opts, prepare: true }, w.deps);
-  assert.equal(w.installs.length, 0, 'it never installs');
+test('--now: the safe point at once, one message to restart the Mac, then it stands down if nobody does', { skip }, async () => {
+  const w = await world({ hour: 14, idle: 0 });
+  const r = await pass({ ...w.opts, force: true }, w.deps);
+  assert.equal(r.decision.code, 'manual');
   assert.equal(w.armed.length, 1);
   assert.equal(w.told.length, 1);
-  assert.match(w.told[0], /^Ready for the restart: every working session is at a safe point and the app is closed\. Restart the Mac now/);
-  assert.equal(w.opens, 1, 'nobody restarted the Mac in time: the app is reopened and the sessions resumed');
-  assert.equal(r.report.resume.length, 2);
+  assert.match(w.told[0], /^Ready for the restart: every working session is at a safe point\. Restart the Mac now/);
+  assert.equal(w.opens, 0);
+  assert.equal(w.app.received.filter((m) => /was called off/.test(m.prompt)).length, 2);
   await w.done();
 });
 

@@ -24,7 +24,6 @@ import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Health from '../src/health-watch.mjs';
 import * as OsUp from '../src/os-update.mjs';
-import * as SudoRule from '../src/sudo-rule.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
@@ -118,18 +117,15 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter restart-copilot --health-watch [--dry-run]   one pass of the six-hour watch after any restart, recovery or reboot, no model
                                            turns: for each resumed session, did it take a turn, is it erroring, is it stuck busy; asks
                                            again once, and tells the agent by name only about what stays broken; --status shows it
-  housesitter restart-copilot --os-updates [--now|--prepare] [--window 2-5] [--dry-run]   one pass for a pending macOS update: wait for the quiet hours and a Mac
-                                           nobody has touched for 20 min, get every working session to a safe point, quit the app, arm
-                                           the Apple Account prompt fill (apple-account --expect-reboot), install and restart, then let launchd and
-                                           the resume watcher bring everything back. Needs sudo to run softwareupdate without a password
-                                           (otherwise it tells the agent once what is needed); --prepare stops before the install, for a
-                                           person who restarts the Mac themselves
-  housesitter restart-copilot --grant-softwareupdate [--mac <mac>] [--dry-run] | --revoke-softwareupdate   the narrowest right for unattended updates: one
-                                           sudoers.d rule, no password, for softwareupdate --list, -l and --install <label> --restart
-                                           --agree-to-license only. Checked with visudo -cf; the administrator password (Keychain
-                                           item housesitter/<mac>-mac-password, or a hidden prompt) goes to sudo on stdin, never in argv
-      [--listing <file>]                   with --os-updates: read a saved softwareupdate -l (rehearse the flow with --now --dry-run)
-  housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute, the OS-update check every 10 min) and a
+  housesitter restart-copilot --os-updates [--now] [--window 2-5] [--dry-run]   one pass for a pending macOS update, which macOS installs itself (no admin rights here):
+                                           reads softwareupdate -l, the automatic-update settings and the enforced install deadline; shortly before macOS
+                                           acts (the deadline less 90 min, the quiet hours with nobody at the Mac, or the install starting) it gets every
+                                           working session to a safe point, arms the Apple Account prompt fill (apple-account --expect-reboot) and holds
+                                           until the reboot, then launchd and the resume watcher bring everything back; if the Mac did not restart it
+                                           stands down. Automatic install off: tells the agent once which setting a person must turn on. --now runs the
+                                           safe point at once and waits 20 min for a person to restart the Mac
+      [--listing <file>]                   with --os-updates: read a saved softwareupdate -l (rehearse with --dry-run)
+  housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute, the OS-update check every 5 min) and a
                                            caffeinate that keeps the Mac awake; --mac also installs that Mac's apple-account agent; --uninstall-recovery removes them
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
@@ -357,17 +353,11 @@ async function restartCopilot() {
     if (json) emit({ action: r.action, counts: r.counts || null }); else if (!flag('--quiet')) say(r.counts ? `health watch: ${Object.entries(r.counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')}` : `health watch: ${r.action}`);
     return 0;
   }
-  if (flag('--grant-softwareupdate') || flag('--revoke-softwareupdate')) {
-    const gd = SudoRule.realGrantDeps({ mac: val('--mac') || 'mini', stage: path.join(stateDir, 'sudo-rule') });
-    const r = flag('--revoke-softwareupdate') ? await SudoRule.revoke({ deps: gd }) : await SudoRule.grant({ deps: gd, dry: flag('--dry-run') });
-    if (json) emit(r); else say(flag('--revoke-softwareupdate') ? (r.ok ? `removed ${r.file}` : `✗ ${r.why}`) : r.dry_run ? `would install ${r.file}:\n${r.text}` : r.ok ? `${r.already ? 'already allowed' : `installed ${r.file}`}; ${r.steps.join('; ')}${r.listing ? `\nsudo -n softwareupdate --list: ${r.listing}` : ''}` : `✗ ${r.why}\n${r.steps.join('; ')}`);
-    return r.ok ? 0 : 1;
-  }
   if (flag('--os-updates')) {
     const od = OsUp.realOsDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url), mac: val('--mac') || 'mini', listing: val('--listing') ? path.resolve(val('--listing')) : null });
     od.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
     const w = (val('--window') || '').match(/^(\d+)-(\d+)$/);
-    const r = await OsUp.pass({ ...opts, force: flag('--now'), prepare: flag('--prepare'), os: w ? { windowStart: Number(w[1]), windowEnd: Number(w[2]) } : {} }, od, (l) => { if (!json) console.log(l); });
+    const r = await OsUp.pass({ ...opts, force: flag('--now'), os: w ? { windowStart: Number(w[1]), windowEnd: Number(w[2]) } : {} }, od, (l) => { if (!json) console.log(l); });
     if (json) emit({ decision: r.decision, update: r.update || null, ok: r.report ? r.report.ok : null }); else if (!flag('--quiet')) say(OsUp.renderPass(r));
     return r.report && !r.report.ok ? 1 : 0;
   }
