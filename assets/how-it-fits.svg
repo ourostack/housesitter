@@ -127,12 +127,12 @@
   <text x="1145" y="128" text-anchor="middle" class="sub">and your phone</text>
   <rect x="1066" y="152" width="158" height="94" rx="16" class="chip"/>
   <text x="1145" y="182" text-anchor="middle" class="chip-t">One message</text>
-  <text x="1145" y="206" text-anchor="middle" class="chip-s">only when it needs you,</text>
-  <text x="1145" y="226" text-anchor="middle" class="chip-s">and when it's fixed</text>
+  <text x="1145" y="206" text-anchor="middle" class="chip-s" style="font-size:13px">only when it needs you,</text>
+  <text x="1145" y="226" text-anchor="middle" class="chip-s" style="font-size:13px">and when it's fixed</text>
   <rect x="1066" y="354" width="158" height="94" rx="16" class="chip-o"/>
   <text x="1145" y="384" text-anchor="middle" class="chip-t">Reach the KVM</text>
-  <text x="1145" y="406" text-anchor="middle" class="chip-s">your tailnet, your LAN,</text>
-  <text x="1145" y="426" text-anchor="middle" class="chip-s">or a GitHub outbox</text>
+  <text x="1145" y="406" text-anchor="middle" class="chip-s" style="font-size:13px">your tailnet, your LAN,</text>
+  <text x="1145" y="426" text-anchor="middle" class="chip-s" style="font-size:13px">or a GitHub outbox</text>
 
   <path d="M978 200 C 1010 200, 1030 200, 1060 200" fill="none" stroke="#8a5cd6" stroke-width="5" stroke-linecap="round" marker-end="url(#ap)"/>
   <path d="M1060 400 C 1030 400, 1010 400, 984 400" fill="none" stroke="#e28a2b" stroke-width="5" stroke-linecap="round" marker-end="url(#ao)"/>
