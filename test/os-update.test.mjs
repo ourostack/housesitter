@@ -42,7 +42,7 @@ test('decide: only in the quiet hours, with nobody at the Mac, and only when it 
   assert.equal(decide({ ...go, canInstall: false }).action, 'needs-consent');
   assert.equal(decide({ ...go, state: { completed: { label: UPDATE.label, at: 'x' } } }).code, 'done');
   assert.equal(decide({ ...go, hour: 14, idleMs: 0, force: true }).action, 'run', '--now skips the wait');
-  assert.match(consentText({ update: UPDATE, bin: '/b/housesitter.mjs', node: '/n/node' }), /administrator's password.*NOPASSWD: \/usr\/sbin\/softwareupdate.*--os-updates --prepare/);
+  assert.match(consentText({ update: UPDATE, bin: '/b/housesitter.mjs', node: '/n/node' }), /administrator's password.*--grant-softwareupdate --mac mini.*three softwareupdate commands only.*--os-updates --prepare/);
 });
 
 async function world({ canInstall = true, installOk = true, hour = 3, idle = 3600000 } = {}) {
