@@ -22,6 +22,7 @@ import os from 'node:os';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 import * as Copilot from '../src/copilot-app.mjs';
 import * as Fleet from '../src/fleet.mjs';
+import * as Apple from '../src/apple-account.mjs';
 
 const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac), { key: mac.kvm?.ssh_key || null });
 const sitterDir = (mac) => mac.kvm?.sitter_home || '/etc/kvmd/user/housesitter';
@@ -46,7 +47,14 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
       [--notify ntfy|<url>] [--email <you@example.com>] [--watched-by <url>] [--location home|away] [--fingerprint <sha256>]
       [--this-mac] [--outbox] [--dry-run] [--fake]
-  housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token>   store a secret (read from stdin, no echo)
+  housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account>   store a secret (read from stdin, no echo);
+                                           apple-account stays on this Mac (never the KVM) and also lets hackamore type it into
+                                           Setup Assistant's iCloud password pane and nowhere else
+  housesitter apple-account <mac> [--now | --watch | --expect-reboot --why "<the 12:00 update reboot>" | --install-agent | --uninstall-agent [--dry-run] | --status]
+                                           the Apple Account password prompt after an update reboot: within 30 min of a boot
+                                           Housesitter coordinated (--expect-reboot marks one before it), or with --now, it is
+                                           typed from the Keychain into that prompt only; a verification code is never typed;
+                                           every use is logged (no value) and the agent is told once
   housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
                                            (desktops are never recorded unless --all-frames)
   housesitter plug <mac> find|adopt [ip]|status   the smart plug on the Mac's cord: set it up safely, read it
@@ -212,6 +220,33 @@ async function watchKvm(mac) {
   for (;;) { await tick(); await new Promise((r) => setTimeout(r, 60000)); }
 }
 
+async function appleAccount() {
+  need(name, 'housesitter apple-account <mac> [--now | --watch | --expect-reboot --why "<reason>" | --install-agent | --uninstall-agent | --status]');
+  const bin = fileURLToPath(import.meta.url);
+  if (flag('--status')) { const s = Apple.readStatus(); if (json) emit(s); else say(`marker: ${s.marker ? `${new Date(s.marker.at).toISOString()} ${s.marker.why}` : 'none'}\nstate: ${JSON.stringify(s.state)}\n${s.audit.map((a) => `${a.at} ${a.event}${a.why ? `: ${a.why}` : ''}`).join('\n') || 'no audit lines yet'}`); return 0; }
+  if (flag('--expect-reboot')) { const r = Apple.expectReboot({ why: val('--why') }); say(`marked: a boot in the next ${Apple.MARKER_MAX_AGE_MS / 3600000} h is one Housesitter coordinated (${r.why}); the prompt after it is filled within ${Apple.WINDOW_MS / 60000} min of that boot`); return 0; }
+  if (flag('--uninstall-agent')) { const r = Apple.uninstallAgent(); say(`removed ${r.plist}`); return 0; }
+  if (flag('--install-agent')) {
+    const r = await Apple.installAgent({ node: Watch.stableNode(process.execPath), bin, mac: name, env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') });
+    if (json) emit(r); else say(r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Apple.LABEL}); it looks at Setup Assistant while it runs. Log: ${r.log}` : `✗ launchctl would not load it: ${r.error}`);
+    return r.ok ? 0 : 1;
+  }
+  const agent = val('--agent') || 'ouroboros';
+  const ouro = val('--ouro') || which('ouro');
+  const tell = async (text) => {
+    if (!ouro) return false;
+    const r = spawnSync(ouro, ['msg', '--to', agent, text], { encoding: 'utf8', timeout: 60000 });
+    return r.status === 0;
+  };
+  const hk = Copilot.realDeps({ hackamore: val('--hackamore') }).hk;
+  const deps = Apple.realDeps({ hk, tell });
+  const out = (m) => console.log(`${new Date().toISOString()} apple-account: ${m}`);
+  if (flag('--watch')) { await Apple.watch({ mac: name }, deps, out); return 0; }
+  const r = await Apple.attempt({ mac: name, explicit: flag('--now') }, deps);
+  if (json) emit(r); else say(`${r.status}${r.why ? `: ${r.why}` : ''}`);
+  return ['filled', 'no-dialog', 'left-alone', 'waiting'].includes(r.status) ? 0 : 1;
+}
+
 async function restartCopilot() {
   const all = (f) => args.flatMap((a, i) => (a === f && args[i + 1] ? [args[i + 1]] : []));
   const sec = (f, d) => (val(f) == null ? d : Number(val(f)) * 1000);
@@ -356,20 +391,22 @@ async function main() {
 
   if (cmd === 'secret') {
     const which = rest[0];
-    need(name && ['mac-password', 'kvm-admin', 'outbox-token', 'ntfy-token'].includes(which), 'housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token>  (reads the value from stdin)');
+    need(name && ['mac-password', 'kvm-admin', 'outbox-token', 'ntfy-token', 'apple-account'].includes(which), 'housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account>  (reads the value from stdin)');
     const refs = defaultRefs(name);
     let m = {};
     try { m = macConfig(name); } catch { /* new */ }
-    const ref = { 'mac-password': m.mac_password || refs.mac, 'kvm-admin': m.kvm?.admin_password || refs.admin, 'outbox-token': m.outbox?.token || refs.outbox, 'ntfy-token': m.notify?.token || refs.ntfy }[which];
+    const ref = { 'mac-password': m.mac_password || refs.mac, 'kvm-admin': m.kvm?.admin_password || refs.admin, 'outbox-token': m.outbox?.token || refs.outbox, 'ntfy-token': m.notify?.token || refs.ntfy, 'apple-account': Apple.appleRef(name) }[which];
     if (process.stdin.isTTY) { process.stderr.write(`${which} for ${name} (input hidden), then Return: `); spawnStty('-echo'); }
     const value = await new Promise((res) => { let b = ''; process.stdin.on('data', (d) => { b += d; if (process.stdin.isTTY && b.includes('\n')) { process.stdin.pause(); res(b); } }); process.stdin.on('end', () => res(b)); });
     if (process.stdin.isTTY) { spawnStty('echo'); process.stderr.write('\n'); }
     secretStore().set(ref, value.replace(/\r?\n$/, ''));
-    updateMac(name, (c) => { if (which === 'mac-password') c.mac_password = ref; if (which === 'kvm-admin') { c.kvm = c.kvm || {}; c.kvm.admin_password = ref; } if (which === 'outbox-token' && c.outbox) c.outbox.token = ref; if (which === 'ntfy-token' && c.notify) c.notify.token = ref; });
+    updateMac(name, (c) => { if (which === 'mac-password') c.mac_password = ref; if (which === 'kvm-admin') { c.kvm = c.kvm || {}; c.kvm.admin_password = ref; } if (which === 'outbox-token' && c.outbox) c.outbox.token = ref; if (which === 'ntfy-token' && c.notify) c.notify.token = ref; if (which === 'apple-account') c.apple_account = ref; });
+    if (which === 'apple-account') { const r = Apple.installRule(name); say(`hackamore may now type it only into Setup Assistant's iCloud password pane (${r.file}${r.changed ? '' : ', already set'})`); }
     say(`stored at ${ref}${which === 'mac-password' || which === 'ntfy-token' ? `; run housesitter adopt ${name} to put it on the sitter` : ''}`);
     return 0;
   }
 
+  if (cmd === 'apple-account') return appleAccount();
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
 

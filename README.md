@@ -180,6 +180,18 @@ The point of housesitter is to type a password with nobody watching, so it is ca
 - **The KVM reaches nothing, and away from home little reaches it.** On your tailnet it is `tag:kvm` with no outbound rules. GL.iNet's cloud binding is turned off and read back as off, or `adopt` stops. At home (`--location home`, the default) only private addresses and the tailnet may reach its SSH, HTTP and HTTPS; that trusts every private address, so use it only on a network you control. Anywhere else (`--location away`) only the tailnet may (`tailscale0`). The rules are read back from the kernel, or `harden` refuses, and the sitter reads them back every 5 minutes and puts them back if they changed. Both modes ran on our Comet on 9 November, probed from the LAN and the tailnet ([the readback and the probes](docs/proof/2026-11-09-ingress/)).
 - **It never reshapes the display.** No EDID writes, no factory reset, no firmware upgrade: refused below every client call, raw ones included, in Node and on the KVM.
 
+### The Apple Account prompt after an update
+
+After a macOS update, the first login runs Setup Assistant, which asks once more for the Apple Account password ("To set up iCloud, enter the password for …"). Housesitter can answer that one prompt, more narrowly than the Mac's own password, because an Apple Account password is worth more:
+
+- **This Mac only, never the KVM.** The prompt comes after login, with the login Keychain open, so the KVM never holds it. Store it once: `housesitter secret <mac> apple-account` (typed, never shown), which is the Keychain item `housesitter` / `<mac>-apple-account`.
+- **Only that pane.** The same command adds a `secret_rules` entry to hackamore's config, and hackamore itself refuses to type the item anywhere else: only into the password field of `com.apple.SetupAssistant`, while it is in front, with no system alert on top, and only when its window says "To set up iCloud … enter the password for". Setup Assistant's other password panes (the Mac's own password) don't say that. Never a browser, another app or another field.
+- **Only after a boot Housesitter coordinated.** Within 30 minutes of a boot that a marker (`housesitter apple-account <mac> --expect-reboot --why "the 12:00 update reboot"`, written before the reboot) came before, or when you run `housesitter apple-account <mac> --now`. At any other time the prompt is left alone and the agent tells you once. `--install-agent` loads the launchd agent that watches for it.
+- **Never past two-factor.** If Apple then asks for a verification code, it stops and the agent tells you once; it never types a code. A prompt that still asks after the password, or says it is wrong, is not retried, and a boot is filled at most once.
+- **Audited.** Every decision is a line in `~/Library/Caches/housesitter/apple-account/audit.jsonl`, with no value, and the agent is told once what was filled ("filled the Apple Account password prompt after the 12:00 update reboot"). `housesitter apple-account <mac> --status` shows them.
+
+Not yet proven on a real prompt: the pane's matching is from the strings Setup Assistant ships and the log of one update; it moves to the verified table after one watched run.
+
 [docs/security.md](docs/security.md) has the threat model, and why the encryption is built from Python's standard library (a KVM may have no AES module, and nothing should be installed on it).
 
 ## Eyes and hands for agents

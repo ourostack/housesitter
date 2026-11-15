@@ -13,7 +13,7 @@
     "./fake": "./src/fake.mjs"
   },
   "files": ["bin", "src", "device", "plugins", "spec", "assets/evening.json", "docs/tailnet-policy.hujson", "README.md", "LICENSE", "llms.txt"],
-  "dependencies": { "@ouro.bot/hackamore": "github:ourostack/hackamore#v0.1.1" },
+  "dependencies": { "@ouro.bot/hackamore": "github:ourostack/hackamore#v0.1.5" },
   "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test test/*.test.mjs && python3 -m unittest discover -s test -p 'test_*.py'",
