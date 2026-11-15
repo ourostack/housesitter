@@ -232,6 +232,17 @@ test('a fake crash: a crash report and no app means relaunch and resume; no repo
   assert.equal(q.opens, 0, 'an app a person quit stays quit');
   assert.deepEqual(q.told, []);
   await q.done();
+  // Sessions working and the app gone: relaunched after five minutes even with no crash report.
+  const r2 = await world({ sessions: sessions() });
+  await r2.beat();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(r2.deps.state, 'heartbeat.json'), 'utf8')).app.busy, 1, 'the beat notes how many sessions are running');
+  r2.procs = [];
+  assert.equal((await r2.beat(60000)).action, 'absent');
+  assert.equal(r2.opens, 0, 'one minute gone is not enough');
+  const late = await r2.beat(280000);
+  assert.equal(late.action, 'crash');
+  assert.equal(r2.opens, 1);
+  await r2.done();
 });
 
 test('a gap in the runs is the Mac stopping: the cause is recorded, and the person hears once, after the sessions resumed', { skip }, async () => {

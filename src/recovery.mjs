@@ -108,6 +108,7 @@ export async function uninstallAgent({ label, home = os.homedir(), launchctl = (
 // The jobs, each a plain program on a timer. --install-recovery loads them all.
 export const AGENTS = {
   heartbeat: { label: 'bot.ouro.housesitter.heartbeat', args: ['restart-copilot', '--heartbeat', '--quiet'], every: 30, logName: 'housesitter-heartbeat.launchd.log' },
+  health: { label: 'bot.ouro.housesitter.health-watch', args: ['restart-copilot', '--health-watch', '--quiet'], every: 60, logName: 'housesitter-health-watch.launchd.log' },
 };
 
 // The Mac must not sleep while agents work on it: a user-level caffeinate held by launchd (no password needed).

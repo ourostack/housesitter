@@ -22,6 +22,7 @@ import os from 'node:os';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
+import * as Health from '../src/health-watch.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
@@ -110,7 +111,10 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            quits the app (SIGTERM, then SIGKILL to exact pids), relaunches it, resumes the working
                                            sessions and tells the agent once. A crash report and no app is relaunched the same way;
                                            a gap of 5+ minutes between its own runs is the Mac stopping, recorded with its cause
-  housesitter restart-copilot --install-recovery [--dry-run]   write and load the launchd agents for the above (every 30 s) and a
+  housesitter restart-copilot --health-watch [--dry-run]   one pass of the six-hour watch after any restart, recovery or reboot, no model
+                                           turns: for each resumed session, did it take a turn, is it erroring, is it stuck busy; asks
+                                           again once, and tells the agent by name only about what stays broken; --status shows it
+  housesitter restart-copilot --install-recovery [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute) and a
                                            caffeinate that keeps the Mac awake; --uninstall-recovery removes them
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
@@ -270,7 +274,8 @@ async function restartCopilot() {
   const stateDir = Copilot.stateDir();
   if (flag('--status')) {
     const s = Copilot.readState(stateDir);
-    if (json) emit(s); else say(Copilot.renderState(s));
+    const rec = Health.readRecovery(stateDir);
+    if (json) emit({ ...s, recovery: rec }); else say(`${Copilot.renderState(s)}\n${Health.renderRecovery(rec)}`);
     return s.state === 'failed' ? 1 : 0;
   }
   if (flag('--install-recovery') || flag('--uninstall-recovery')) {
@@ -281,6 +286,12 @@ async function restartCopilot() {
     if (!flag('--uninstall-recovery')) rs.push(await Rec.installAgent({ ...Rec.KEEP_AWAKE, env: { PATH: '/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') }));
     if (json) emit({ agents: rs }); else for (const r of rs) say(flag('--uninstall-recovery') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${r.label})` : `✗ ${r.label}: launchctl would not load it: ${r.error}`);
     return rs.every((r) => r.ok) ? 0 : 1;
+  }
+  if (flag('--health-watch')) {
+    const hd = Health.realHealthDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir });
+    const r = await Health.pass(opts, hd, (l) => { if (!json) console.log(l); });
+    if (json) emit({ action: r.action, counts: r.counts || null }); else if (!flag('--quiet')) say(r.counts ? `health watch: ${Object.entries(r.counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')}` : `health watch: ${r.action}`);
+    return 0;
   }
   if (flag('--heartbeat')) {
     const hd = Beat.realHeartbeatDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url) });
