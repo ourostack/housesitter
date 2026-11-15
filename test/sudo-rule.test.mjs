@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { INSTALL_PATTERN, RULE_FILE, grant, revoke, ruleText } from '../src/sudo-rule.mjs';
+import { INSTALL_PATTERN, RULE_FILE, grant, realGrantDeps, revoke, ruleText } from '../src/sudo-rule.mjs';
 
 const SCRATCH = path.join(path.dirname(new URL(import.meta.url).pathname), '.scratch');
 fs.mkdirSync(SCRATCH, { recursive: true });
@@ -84,4 +84,14 @@ test('grant without a password asks for one rather than guessing; revoke removes
   assert.equal(r.ok, true);
   assert.deepEqual(e.calls.at(-1).argv.slice(-2), ['/bin/rm', '-f'].concat([RULE_FILE]).slice(-2));
   assert.equal(e.calls.at(-1).input, `${SECRET}\n`);
+});
+
+test('the password is found by the config\'s reference first, then the usual names, and a terminal is only a last resort', async () => {
+  const asked = [];
+  const store = { get: (ref) => { asked.push(ref); return ref === 'keychain:housesitter/mini-mac' ? 'pw' : null; } };
+  const d = realGrantDeps({ mac: 'mini', stage: 'x', store, cfg: { macs: { mini: { mac_password: 'keychain:housesitter/custom' } } }, tty: { isTTY: false } });
+  assert.equal(await d.password(), 'pw');
+  assert.deepEqual(asked, ['keychain:housesitter/custom', 'keychain:housesitter/mini-mac']);
+  const none = realGrantDeps({ mac: 'mini', stage: 'x', store: { get: () => null }, cfg: { macs: {} }, tty: { isTTY: false } });
+  assert.equal(await none.password(), null, 'no terminal, no copy: it does not guess');
 });
