@@ -84,14 +84,16 @@ test('newestReleases: Copilot branch entries only, never a pinned commit or anot
   assert.equal(newestReleases(path.join(ag.home, 'nope')).size, 0, 'no cache is no news');
 });
 
-test('findUpdates: the oldest loaded copy is the from, only watched plugins count, a newer copy is no update', () => {
+test('findUpdates: the oldest loaded copy is the from, a newer copy is no update, and a watch list narrows it', () => {
   const ag = fakeAgency({ 101: { desk: '3.2.154', 'ms-desk': '2.32.0', superpowers: '1.0.0' }, 102: { desk: '3.2.167', 'ms-desk': '2.33.0' } }, [
     { spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' },
     { spec: spec('ms-desk'), name: 'ms-desk', version: '2.32.0' },
     { spec: spec('superpowers'), name: 'superpowers', version: '7.0.0' },
   ]);
-  const u = findUpdates(loadedPlugins(ag.sessionsDir, () => true), newestReleases(ag.cacheDir));
+  const loaded = loadedPlugins(ag.sessionsDir, () => true), newest = newestReleases(ag.cacheDir);
+  const u = findUpdates(loaded, newest, ['desk', 'ms-desk']);
   assert.deepEqual(u.map((x) => [x.name, x.from, x.to, x.sessions]), [['desk', '3.2.154', '3.2.167', 1]]);
+  assert.deepEqual(findUpdates(loaded, newest).map((x) => x.name), ['desk', 'superpowers'], 'by default every loaded plugin counts');
   assert.equal(reasonFor(u), 'a plugin update (desk 3.2.154 → 3.2.167)');
 });
 

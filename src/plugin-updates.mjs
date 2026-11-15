@@ -25,7 +25,6 @@ import path from 'node:path';
 import { appGeneration, family, plan, readState, realDeps, runInProgress, stateDir } from './copilot-app.mjs';
 
 export const PLUGIN_LABEL = 'bot.ouro.housesitter.plugin-update-restart';
-export const WATCHED = ['desk', 'ms-desk', 'cit', 'crew'];
 export const COOLDOWN_MS = 6 * 3600000;
 export const EVERY_SEC = 300;
 export const PERSON_WAIT_SEC = 300;
@@ -98,11 +97,12 @@ export function newestReleases(cacheDir) {
   return out;
 }
 
-// What is stale: for each watched plugin the newest release has a higher version than some loaded copy.
+// What is stale: for each plugin the newest release has a higher version than some loaded copy (every loaded plugin, or only those in `watched`).
 // [{ name, from (the oldest loaded), to, sha, sessions (processes on an older one), loaded: [versions] }].
-export function findUpdates(loaded, newest, watched = WATCHED) {
+export function findUpdates(loaded, newest, watched = null) {
   const out = [];
-  for (const name of watched) {
+  for (const name of [...new Set(loaded.map((l) => l.name))].sort()) {
+    if (watched && !watched.includes(name)) continue;
     const rel = newest.get(name);
     const mine = loaded.filter((l) => l.name === name);
     if (!rel || !mine.length) continue;
@@ -197,7 +197,7 @@ export async function pass(opts, deps, say = () => {}) {
   const procs = g.main ? await deps.ps() : [];
   const mine = new Set(g.main ? family(procs, g.main.pid, g.dir) : []);
   const loaded = g.main ? loadedPlugins(deps.sessionsDir, (pid) => mine.has(pid)) : [];
-  const updates = findUpdates(loaded, newestReleases(deps.cacheDir), opts.watched || WATCHED);
+  const updates = findUpdates(loaded, newestReleases(deps.cacheDir), opts.watched);
   const state = reconcile(deps.readState?.() || {}, deps, now, out, !opts.dry_run);
   // The gate is only read when it could matter.
   const person = g.main && updates.length ? await deps.person() : null;
