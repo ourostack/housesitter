@@ -37,6 +37,8 @@ export const TAIL_BYTES = 4 * 1024 * 1024;
 export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3, concurrency: 4, backoff: [2000, 6000, 15000] };
 export const LABEL = 'bot.ouro.housesitter.restart-copilot';
 export const STALE_MS = 24 * 3600000;
+// A session whose history is bigger than this is never resumed by us: the app loads the whole file into memory on resume.
+export const MAX_HISTORY_BYTES = 500 * 1024 * 1024;
 export const configPath = (home = os.homedir()) => process.env.HOUSESITTER_RESTART_CONFIG || path.join(home, '.config', 'housesitter', 'restart-copilot.json');
 
 const sleepReal = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -305,6 +307,7 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
       if (r.code !== 0) throw new Refusal('action-failed', `the app's database would not open (${r.stderr.trim().slice(0, 160)}): is ${copilotHome} this Mac's Copilot folder?`);
       return r.stdout.trim() ? JSON.parse(r.stdout) : [];
     },
+    historySize: (id) => { try { return fs.statSync(path.join(copilotHome, 'session-state', id, 'events.jsonl')).size; } catch { return 0; } },
     history: (id) => { const f = path.join(copilotHome, 'session-state', id, 'events.jsonl'); try { return { lines: readTail(f), mtime: fs.statSync(f).mtimeMs }; } catch { return { lines: [], mtime: 0 }; } },
     hk: async (argv, { timeoutMs = 60000 } = {}) => {
       const r = await run(cmd[0], [...cmd.slice(1), ...argv], { timeoutMs });
@@ -337,6 +340,7 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     },
     restartState: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'status.json'), 'utf8')); } catch { return null; } },
     // Every pass is recorded; one that resumed sessions is also kept in resume-last.json, which a later "already resumed" pass must not replace (the health watch follows it).
+    heldBack: (list) => { try { fs.mkdirSync(state, { recursive: true }); fs.appendFileSync(path.join(state, 'held-back.log'), list.map((x) => `${JSON.stringify({ at: new Date().toISOString(), ...x })}\n`).join('')); } catch { /* a courtesy */ } },
     recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); if ((o.resumed || []).length) fs.writeFileSync(path.join(state, 'resume-last.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
     appDir: (name) => ['/Applications', '/System/Applications', path.join(os.homedir(), 'Applications')].map((d) => path.join(d, `${name}.app`)).find((p) => fs.existsSync(p)) || null,
   };
@@ -384,6 +388,8 @@ WHERE s.archived_at IS NULL AND w.archived_at IS NULL`;
 export async function snapshot(deps, now = deps.now(), skip = []) {
   const rows = (await deps.sql(ROWS)).filter((r) => (r.loc === 'local' || !r.loc) && !skip.some((p) => r.id.startsWith(p)));
   return rows.map((r) => {
+    const bytes = deps.historySize?.(r.id) || 0;
+    if (bytes > MAX_HISTORY_BYTES) return { id: r.id, title: r.title, mode: r.mode || null, state: 'idle', why: `its history is ${Math.round(bytes / 1048576)} MB, over the ${MAX_HISTORY_BYTES / 1048576} MB resume cap`, running: Boolean(r.running), interrupted: Boolean(r.interrupted), oversize: bytes };
     const h = deps.history(r.id);
     const last = lastTurnAt(h.lines);
     // A session whose last turn is over a day old is never resumed, whatever flag the app still carries for it.
@@ -638,7 +644,11 @@ export async function resumeAfter({ before, opts, startedAt, restartedAt, t, lan
   const skip = skipOf(opts, deps);
   const after = await snapshot(deps, undefined, skip);
   const targets = pickTargets({ before, after, also: (opts.also || []).filter((id) => !skip.some((p) => id.startsWith(p))).map((id) => after.find((s) => s.id.startsWith(id))?.id || id) });
-  const results = await pooled(targets, Math.max(1, t.concurrency || 1), async (tg) => {
+  // A history over the cap is logged, never resumed (not even when named with --also or owed from before).
+  const held = targets.filter((tg) => after.find((s) => s.id === tg.id)?.oversize);
+  for (const tg of held) log(`${short(tg.id)}${tg.title ? ` "${tg.title}"` : ''}: NOT resumed: ${after.find((s) => s.id === tg.id).why}; it needs a hand-off to a fresh session`);
+  if (held.length) deps.heldBack?.(held.map((tg) => ({ id: tg.id, title: tg.title, bytes: after.find((s) => s.id === tg.id).oversize })));
+  const results = await pooled(targets.filter((tg) => !held.includes(tg)), Math.max(1, t.concurrency || 1), async (tg) => {
     const text = resumeText({ at: restartedAt, why: opts.why, lanes: lanes.get(tg.id) || null });
     const rec = { id: tg.id, title: tg.title, why: tg.why };
     if (!tg.known) return { ...rec, outcome: 'gone: the app has no such live session (archived or deleted)' };
