@@ -98,12 +98,13 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
   housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded (Desk, MS Desk, cit, Crew) is older than the
-                                           newest release Agency has fetched, run restart-copilot --resume --detach for it, unless someone is using the
-                                           Mac, a restart ran in the last 6 h (--cooldown-hours) or is running; logs the decision
+                                           newest release Agency has fetched and that release changes a skill, hook, agent or Desk's MCP tool list, run
+                                           restart-copilot --resume --detach for it, unless someone is using the Mac, a restart ran in the last
+                                           6 h (--cooldown-hours) or is running; logs the decision
   housesitter restart-copilot --install-plugin-updates [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.plugin-update-restart)
                                            that runs --plugin-updates every 5 minutes; --uninstall-plugin-updates removes it
       [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
-      [--settle 90] [--settle-max 600] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
+      [--settle 600] [--settle-max 10800] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
   housesitter fleet [--stale-min 15] [--disk-floor-gb 20] [--always-on <mac>,<mac>] [--from <gist.json>]   every Mac side by side from the fleet
                                            gist's health records: how old each is and what is wrong (exit 1 when anything is);
                                            HOUSESITTER_FLEET_GIST and HOUSESITTER_FLEET_USER choose the gist and the gh account

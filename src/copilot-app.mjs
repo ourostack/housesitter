@@ -3,9 +3,11 @@
 //
 //   1. Before: read every session's state (the app's database for mode, its own history for whether the agent loop is
 //      working), then ask each working session to reach a safe point: commit and push or save what is not yet in git or
-//      its notes, and say READY-TO-RESTART. A session is waited for while it makes progress (a step in its history within
-//      --settle seconds) and up to --settle-max seconds in all; it is done when it says so or its turn ends. What is still
-//      working at the quit is recorded as interrupted.
+//      its notes, and answer: READY-TO-RESTART, or DEFER: <n> lanes running, about <m> min. The restart waits until
+//      every session is ready (or its turn ended), asking a deferring session again when its estimate is up, for at most
+//      --settle-max seconds (3 h); a session that has not deferred is cut off after --settle seconds without a step in its
+//      history. What is still working at the quit is recorded as interrupted, and its resume message says which lanes it
+//      had said were running.
 //   2. Quit: through the app's own Quit menu item with hackamore (which refuses while a person is using the Mac), or
 //      SIGTERM to the exact pid with --sigterm. Wait until every process of the app has exited.
 //   3. Relaunch: open -a, then wait until the app answers on its local socket.
@@ -29,7 +31,7 @@ import { which } from './peer-watch.mjs';
 export const DEFAULT_APP = 'GitHub Copilot';
 export const LOOKBACK_MS = 24 * 3600000;
 export const TAIL_BYTES = 4 * 1024 * 1024;
-export const T = { settle: 90000, settleMax: 600000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3 };
+export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3 };
 export const LABEL = 'bot.ouro.housesitter.restart-copilot';
 
 const sleepReal = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -157,29 +159,47 @@ export function pickTargets({ before, after, also = [] }) {
 }
 
 export const READY = 'READY-TO-RESTART';
-export const settleText = ({ by, stallSec, why }) => `Heads up: the GitHub Copilot app restarts${why ? ` for ${why}` : ''}, as soon as every working session is ready and no later than about ${hhmm(by)}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, and start nothing long. When you are there, say so: end your turn with a line that is exactly ${READY}. Take the time you need: the restart waits while you keep making progress, and gives up on a session that goes ${stallSec} seconds without a step. You will be sent a message to resume once the app is back.`;
+export const DEFER = 'DEFER';
+export const settleText = ({ by, stallSec, why }) => `Heads up: the GitHub Copilot app restarts${why ? ` for ${why}` : ''}, as soon as every working session is ready and no later than about ${hhmm(by)}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, and start nothing long. When you are there, say so: end your turn with a line that is exactly ${READY}. If stopping your background lanes (subagents, shell jobs) now would lose work you cannot redo from pushed state, answer instead with a line of its own, ${DEFER}: <n> lanes running, about <m> min, and the restart waits for you and asks again when your estimate is up. A session that has not deferred and goes ${stallSec < 120 ? `${stallSec} seconds` : `${Math.round(stallSec / 60)} minutes`} without a step is not waited for. You will be sent a message to resume once the app is back.`;
+export const recheckText = ({ by, why }) => `Recheck for the restart${why ? ` for ${why}` : ''}: are you at a safe point yet? Answer with a line of its own: ${READY}, or ${DEFER}: <n> lanes running, about <m> min again. The restart goes ahead at about ${hhmm(by)} whatever the answers.`;
 export const cancelText = ({ why }) => `The restart${why ? ` for ${why}` : ''} was called off: the app did not quit and is still running, so nothing was stopped. Carry on with what you were doing; there is nothing to resume.`;
-export const resumeText = ({ at, why }) => `The app was restarted at ${hhmm(at)}${why ? ` for ${why}` : ''}; resume where you left off. Anything that was in flight when it stopped (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish. Your background subagents and shell jobs were stopped; restart any unfinished ones from their pushed state.`;
+const lanesNote = (l) => (l ? ` You had said ${l.lanes ?? 'some'} lane${l.lanes === 1 ? ' was' : 's were'} still running${l.minutes != null ? ` (about ${l.minutes} min from done)` : ''}: the restart went ahead without waiting longer, so those lanes were stopped; restart them from their pushed state.` : '');
+export const resumeText = ({ at, why, lanes = null }) => `The app was restarted at ${hhmm(at)}${why ? ` for ${why}` : ''}; resume where you left off. Anything that was in flight when it stopped (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish. Your background subagents and shell jobs were stopped; restart any unfinished ones from their pushed state.${lanesNote(lanes)}`;
 
-// Did the session say it has reached a safe point, after `since`? A line of its own that is exactly the token.
-export function saidReady(lines, since) {
+// What the session last answered to the ask, after `since`: { kind: 'ready', at } or { kind: 'defer', at, lanes, minutes }, or null.
+// An answer is a line of its own: the ready token, or the defer token, a colon, and "N lanes running" with "about M min".
+export function lastReply(lines, since) {
+  let out = null;
   for (const l of lines) {
     if (!l || !l.includes('assistant.message')) continue;
     const e = parse(l);
-    if (e?.type !== 'assistant.message' || !(Date.parse(e.timestamp || '') > since)) continue;
-    if (String(e.data?.content ?? '').split('\n').some((x) => x.replace(/[\s`*_.]/g, '') === READY)) return true;
+    const at = Date.parse(e?.timestamp || '');
+    if (e?.type !== 'assistant.message' || !(at > since)) continue;
+    for (const raw of String(e.data?.content ?? '').split('\n')) {
+      const line = raw.replace(/[`*_]/g, '').trim();
+      if (line.replace(/[\s.]/g, '') === READY) out = { kind: 'ready', at };
+      const d = line.match(new RegExp(`^${DEFER}\\s*:\\s*(\\d+)\\s+lanes?\\s+running(?:\\s*,?\\s*about\\s+(\\d+)\\s*min)?`, 'i'));
+      if (d) out = { kind: 'defer', at, lanes: Number(d[1]), minutes: d[2] == null ? null : Number(d[2]) };
+    }
   }
-  return false;
+  return out;
 }
 
-// Is this session done settling? null while it is still getting there. It is done when its turn ended (idle), it said
-// ready, it has gone `settle` ms without a step in its history (stalled), or `settleMax` ms have passed since the ask.
-export function settleVerdict({ state, lines, mtime, askedAt, now, settle, settleMax }) {
-  if (state !== 'busy') return 'idle';
-  if (saidReady(lines, askedAt)) return 'ready';
-  if (now - askedAt >= settleMax) return 'capped';
-  if (now - Math.max(askedAt, mtime || 0) >= settle) return 'stalled';
-  return null;
+// When to ask a deferring session again: its own estimate, kept between recheckMin and recheckMax.
+export const recheckAfter = (reply, t) => Math.min(t.recheckMax, Math.max(t.recheckMin, reply.minutes == null ? t.recheckMax / 2 : reply.minutes * 60000));
+
+// Is this session done settling? { outcome, reply }; outcome is null while it is still getting there. Done when it said
+// ready, its turn ended (idle; a session asked again must have taken a turn first), it has gone `settle` ms without a step
+// (stalled; not for a session that deferred, which said it is working), or `settleMax` ms have passed since the first ask.
+// A session that deferred is waited for until its next answer or the ceiling.
+export function settleVerdict({ state, lines, mtime, askedAt, firstAskedAt, now, settle, settleMax, deferred = false }) {
+  const reply = lastReply(lines, askedAt);
+  if (reply?.kind === 'ready') return { outcome: 'ready', reply };
+  if (now - firstAskedAt >= settleMax) return { outcome: 'capped', reply };
+  if (reply?.kind === 'defer') return { outcome: null, reply };
+  if (state !== 'busy') return askedAt > firstAskedAt && !tookTurnSince(lines, askedAt) ? { outcome: null, reply } : { outcome: 'idle', reply };
+  if (!deferred && now - Math.max(askedAt, mtime || 0) >= settle) return { outcome: 'stalled', reply };
+  return { outcome: null, reply };
 }
 
 // The quit menu item in a hackamore `ls` reply, or null.
@@ -397,7 +417,7 @@ export async function plan(opts, deps) {
     relaunch: `open -a "${app}"`,
     resume_enabled: Boolean(opts.resume),
     steps: [
-      `ask ${busy.length} working session(s) to reach a safe point, wait up to ${Math.round((opts.settle ?? T.settle) / 1000)} s`,
+      `ask ${busy.length} working session(s) to reach a safe point (ready, or defer with the lanes they have running); wait until all are ready, up to ${Math.round(((opts.t?.settleMax) ?? T.settleMax) / 60000)} min`,
       quit.method === 'menu' ? `quit with hackamore: do menu "${quit.item}"` : quit.method === 'sigterm' ? `quit with SIGTERM to pid ${quit.pid}` : `cannot quit: ${quit.why}`,
       `wait until all ${main ? family(procs, main.pid, dir).length : 0} process(es) of ${app} have exited`,
       `relaunch: open -a "${app}", wait for its socket`,
@@ -442,29 +462,45 @@ async function restartSteps(opts, deps, log) {
   step('snapshot', { sessions: before.length, busy: before.filter((s) => s.state === 'busy').length, pid: mainBefore.pid });
   const asked = before.filter((s) => s.state === 'busy');
 
-  // 1. Ask the working sessions to reach a safe point, and wait for each to say so, to end its turn, to go quiet, or to run out of time.
+  // 1. Ask the working sessions to reach a safe point. Each answers ready or defer (with its lanes); a deferring session is asked
+  // again when its estimate is up. The wait ends when every session is ready, its turn ended or it went quiet, or at the ceiling.
+  const lanes = new Map();
   if (asked.length) {
-    const askedAt = deps.now();
-    const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by: askedAt + t.settleMax, stallSec: Math.round(t.settle / 1000), why: opts.why }), 30000).then((r) => ({ id: s.id, ...r }))));
-    step('asked to reach a safe point', { asked: asked.length, accepted: sent.filter((r) => r.ok).length, refused: sent.filter((r) => !r.ok).map((r) => `${short(r.id)}: ${r.error || r.reply}`) });
+    const firstAskedAt = deps.now();
+    const by = firstAskedAt + t.settleMax;
+    const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by, stallSec: Math.round(t.settle / 1000), why: opts.why }), 30000).then((r) => ({ id: s.id, ...r }))));
+    step('asked to reach a safe point', { asked: asked.length, accepted: sent.filter((r) => r.ok).length, refused: sent.filter((r) => !r.ok).map((r) => `${short(r.id)}: ${r.error || r.reply}`), ceiling: new Date(by).toISOString() });
     // A session that did not take the message has nothing to answer: it counts from the ask like the rest.
-    const outcome = new Map();
-    for (let waiting = asked.map((s) => s.id); waiting.length;) {
-      await deps.sleep(Math.min(5000, Math.max(250, t.settle / 4)));
+    const st = new Map(asked.map((s) => [s.id, { askedAt: firstAskedAt, outcome: null, deferred: null, next: null }]));
+    let beat = deps.now();
+    for (let open = asked.map((s) => s.id); open.length; open = open.filter((id) => !st.get(id).outcome)) {
+      await deps.sleep(Math.min(5000, Math.max(250, t.recheckMin / 4)));
       const now = deps.now();
       const states = new Map((await snapshot(deps, undefined, opts.skip)).map((x) => [x.id, x.state]));
-      waiting = waiting.filter((id) => {
-        const h = deps.history(id);
-        const v = settleVerdict({ state: states.get(id) || 'idle', lines: h.lines, mtime: h.mtime, askedAt, now, settle: t.settle, settleMax: t.settleMax });
-        if (v) outcome.set(id, v);
-        return !v;
-      });
+      for (const id of open) {
+        const x = st.get(id), h = deps.history(id);
+        const v = settleVerdict({ state: states.get(id) || 'idle', lines: h.lines, mtime: h.mtime, askedAt: x.askedAt, firstAskedAt, now, settle: t.settle, settleMax: t.settleMax, deferred: Boolean(x.deferred) });
+        if (v.reply?.kind === 'defer' && x.deferred?.at !== v.reply.at) { x.deferred = v.reply; x.next = v.reply.at + recheckAfter(v.reply, t); }
+        if (v.outcome) { x.outcome = v.outcome; continue; }
+        if (!x.deferred || now < x.next) continue;
+        x.next = now + recheckAfter(x.deferred, t);
+        const r = await sendTo(deps, id, recheckText({ by, why: opts.why }), 30000);
+        if (r.ok) x.askedAt = now;
+        step('asked a deferring session again', { session: short(id), said: `${x.deferred.lanes} lanes, about ${x.deferred.minutes ?? '?'} min`, accepted: r.ok });
+      }
+      if (now - beat >= t.beat) {
+        beat = now;
+        const rest = open.filter((id) => !st.get(id).outcome);
+        log(`waiting for ${rest.length} session(s): ${rest.filter((id) => st.get(id).deferred).length} deferred, ${rest.filter((id) => !st.get(id).deferred).length} still working; goes ahead by ${new Date(by).toISOString()}`);
+      }
     }
-    const by = (...k) => asked.filter((s) => k.includes(outcome.get(s.id))).map((s) => s.id);
-    report.settled = by('idle', 'ready');
-    report.said_ready = by('ready');
-    report.interrupted_at_quit = by('stalled', 'capped');
-    step('settle ended', { settled: report.settled.length, said_ready: report.said_ready.length, went_quiet: by('stalled').map(short), out_of_time: by('capped').map(short) });
+    const of = (...k) => asked.filter((s) => k.includes(st.get(s.id).outcome)).map((s) => s.id);
+    report.settled = of('idle', 'ready');
+    report.said_ready = of('ready');
+    report.interrupted_at_quit = of('stalled', 'capped');
+    for (const s of asked) if (st.get(s.id).deferred && st.get(s.id).outcome !== 'ready') lanes.set(s.id, { lanes: st.get(s.id).deferred.lanes, minutes: st.get(s.id).deferred.minutes });
+    report.deferred_at_quit = [...lanes].map(([id, l]) => ({ id, ...l }));
+    step('settle ended', { settled: report.settled.length, said_ready: report.said_ready.length, went_quiet: of('stalled').map(short), out_of_time: of('capped').map(short), still_deferring: report.deferred_at_quit.map((d) => `${short(d.id)}: ${d.lanes} lanes`) });
   }
 
   // 2. Quit, then wait for every process of the app.
@@ -530,19 +566,19 @@ async function restartSteps(opts, deps, log) {
   if (!opts.resume) { report.ok = true; return report; }
 
   // 4. Resume and verify.
-  const res = await resumeAfter({ before, opts, startedAt, restartedAt: deps.now(), t }, deps, log);
+  const res = await resumeAfter({ before, opts, startedAt, restartedAt: deps.now(), t, lanes }, deps, log);
   report.resume = res;
   report.ok = res.every((r) => r.outcome === 'resumed' || r.outcome === 'already continued');
   step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !['resumed', 'already continued'].includes(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
   return report;
 }
 
-export async function resumeAfter({ before, opts, startedAt, restartedAt, t }, deps, log = () => {}) {
+export async function resumeAfter({ before, opts, startedAt, restartedAt, t, lanes = new Map() }, deps, log = () => {}) {
   await deps.sleep(t.grace);
   const after = await snapshot(deps, undefined, opts.skip);
   const targets = pickTargets({ before, after, also: (opts.also || []).filter((id) => !(opts.skip || []).some((p) => id.startsWith(p))).map((id) => after.find((s) => s.id.startsWith(id))?.id || id) });
-  const text = resumeText({ at: restartedAt, why: opts.why });
   return Promise.all(targets.map(async (tg) => {
+    const text = resumeText({ at: restartedAt, why: opts.why, lanes: lanes.get(tg.id) || null });
     const rec = { id: tg.id, title: tg.title, why: tg.why };
     if (!tg.known) return { ...rec, outcome: 'gone: the app has no such live session (archived or deleted)' };
     if (continuedSince(deps.history(tg.id).lines, startedAt)) {

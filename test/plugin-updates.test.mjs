@@ -5,15 +5,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { cmpVersion, decide, findUpdates, installPluginAgent, loadedPlugins, newestReleases, pass, pluginPlist, PLUGIN_LABEL, reasonFor } from '../src/plugin-updates.mjs';
+import { changedFixed, cmpVersion, decide, findUpdates, installPluginAgent, loadedPlugins, newestReleases, pass, pluginPlist, PLUGIN_LABEL, reasonFor } from '../src/plugin-updates.mjs';
 
 const BUNDLE = '/Applications/Fake Copilot.app';
 const SHA = 'a'.repeat(40);
 
-function plugin(dir, name, version, { claude = false } = {}) {
+function plugin(dir, name, version, { claude = false, files = {} } = {}) {
   const d = claude ? path.join(dir, '.claude-plugin') : dir;
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, 'plugin.json'), JSON.stringify({ name, version }));
+  for (const [rel, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); fs.writeFileSync(path.join(dir, rel), text); }
 }
 
 // sessions: { <pid>: { desk: '3.2.154', ... } }; cache: [{ spec, name, version, fetched_at }]
@@ -21,12 +22,12 @@ function fakeAgency(sessions, cache) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-plugins-'));
   const sessionsDir = path.join(home, 'sessions'), cacheDir = path.join(home, 'cache');
   for (const [pid, plugins] of Object.entries(sessions)) {
-    Object.entries(plugins).forEach(([name, v], i) => plugin(path.join(sessionsDir, `agency-plugin-X${pid}.p${pid}`, `root-${i}`, name), name, v, { claude: name === 'crew' }));
+    Object.entries(plugins).forEach(([name, v], i) => plugin(path.join(sessionsDir, `agency-plugin-X${pid}.p${pid}`, `root-${i}`, name), name, v, { claude: name === 'crew', files: { 'skills/s/SKILL.md': 'old text' } }));
   }
   const entries = {};
   cache.forEach((c, i) => {
     const dir = `entry-${i}`;
-    plugin(path.join(cacheDir, 'entries', dir), c.name, c.version);
+    plugin(path.join(cacheDir, 'entries', dir), c.name, c.version, { files: c.files ?? { 'skills/s/SKILL.md': 'new text' } });
     entries[c.spec] = { spec: c.spec, dir_name: dir, fetched_at: c.fetched_at ?? 1000 + i, resolved_sha: SHA };
   });
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -91,9 +92,9 @@ test('findUpdates: the oldest loaded copy is the from, a newer copy is no update
     { spec: spec('superpowers'), name: 'superpowers', version: '7.0.0' },
   ]);
   const loaded = loadedPlugins(ag.sessionsDir, () => true), newest = newestReleases(ag.cacheDir);
-  const u = findUpdates(loaded, newest, ['desk', 'ms-desk']);
+  const u = findUpdates(loaded, newest, { watched: ['desk', 'ms-desk'] }).updates;
   assert.deepEqual(u.map((x) => [x.name, x.from, x.to, x.sessions]), [['desk', '3.2.154', '3.2.167', 1]]);
-  assert.deepEqual(findUpdates(loaded, newest).map((x) => x.name), ['desk', 'superpowers'], 'by default every loaded plugin counts');
+  assert.deepEqual(findUpdates(loaded, newest).updates.map((x) => x.name), ['desk', 'superpowers'], 'by default every loaded plugin counts');
   assert.equal(reasonFor(u), 'a plugin update (desk 3.2.154 → 3.2.167)');
 });
 
@@ -120,7 +121,7 @@ test('pass: working sessions do not hold it, and the restart runs with the reaso
   assert.equal(r.restarted, true);
   assert.deepEqual(m.started, ['a plugin update (desk 3.2.154 → 3.2.167)']);
   assert.equal(r.loaded_processes, 2, 'the terminal CLI (pid 900) is not the app and is not counted');
-  assert.match(m.logs[0], /^2026-11-15T16:00:00Z plugin-updates: restart started: a plugin update \(desk 3\.2\.154 → 3\.2\.167\)$/);
+  assert.match(m.logs[0], /^2026-11-15T16:00:00Z plugin-updates: restart started: a plugin update \(desk 3\.2\.154 → 3\.2\.167\); changed: desk: skills\/s\/SKILL\.md$/);
   assert.equal(m.state.restarted_at, '2026-11-15T16:00:00.000Z');
   assert.deepEqual(m.state.pending, { desk: '3.2.167' });
 });
@@ -183,4 +184,33 @@ test('the launchd agent runs one quiet pass every five minutes and is written wh
   assert.deepEqual(calls.map((c) => c.split(' ')[0]), ['bootout', 'bootstrap']);
   assert.equal((await installPluginAgent({ node: 'n', bin: 'b', env: {}, home: path.join(home, 'x'), dry: true })).dry_run, true);
   assert.equal(fs.existsSync(path.join(home, 'x')), false, 'a dry run writes nothing');
+});
+
+test('changedFixed: a skill, hook, agent or Desk tool schema that differs counts; docs, the version and Desk runtime code do not', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-fixed-'));
+  const make = (name, version, files) => { const d = path.join(dir, `${name}-${version}`); plugin(d, name, version, { files }); return d; };
+  const base = { 'skills/a/SKILL.md': 'same', 'hooks/h.cjs': 'same', 'agents/x.md': 'same', 'mcp/src/tools.js': 'v1', 'mcp/src/tool-schemas.js': 'v1', 'README.md': 'v1', 'artifacts/pack.bin': 'v1' };
+  const oldDesk = make('desk', '1.0.0', base);
+  assert.deepEqual(changedFixed(oldDesk, make('desk', '1.0.1', { ...base, 'mcp/src/tools.js': 'v2', 'README.md': 'v2', 'artifacts/pack.bin': 'v2', 'docs/x.md': 'new' }), 'desk'), [], 'a runtime-only Desk release is not a reason to restart');
+  assert.deepEqual(changedFixed(oldDesk, make('desk', '1.0.2', { ...base, 'skills/a/SKILL.md': 'edited' }), 'desk'), ['skills/a/SKILL.md']);
+  assert.deepEqual(changedFixed(oldDesk, make('desk', '1.0.3', { ...base, 'hooks/new.cjs': 'x' }), 'desk'), ['hooks/new.cjs'], 'a new hook counts');
+  assert.deepEqual(changedFixed(oldDesk, make('desk', '1.0.4', { ...base, 'mcp/src/tool-schemas.js': 'v2' }), 'desk'), ['mcp/src/tool-schemas.js'], "a change to Desk's MCP tool schemas counts");
+  const noAgent = { ...base }; delete noAgent['agents/x.md'];
+  assert.deepEqual(changedFixed(oldDesk, make('desk', '1.0.5', noAgent), 'desk'), ['agents/x.md'], 'a removed agent counts');
+  const other = { 'skills/a.md': 'x', 'hooks/h.cjs': 'x', 'tools/t.js': 'x', 'mcp/src/tool-schemas.js': 'x', 'README.md': 'x' };
+  const o1 = make('cit', '0.1.0', other);
+  assert.deepEqual(changedFixed(o1, make('cit', '0.1.1', { ...other, 'tools/t.js': 'changed', 'README.md': 'changed', 'mcp/src/tool-schemas.js': 'changed' }), 'cit'), [], 'a version bump, docs, a CLI and a file only Desk treats as fixed are nothing for another plugin');
+  assert.deepEqual(changedFixed(o1, make('cit', '0.1.2', { ...other, 'hooks/h.cjs': 'changed' }), 'cit'), ['hooks/h.cjs'], 'any hook change counts for another plugin');
+});
+
+test('a newer release that changes nothing fixed per process is runtime-only: no update, no restart, no look at the gate', async () => {
+  const ag = fakeAgency({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167', files: { 'skills/s/SKILL.md': 'old text', 'mcp/src/new.js': 'runtime' } }]);
+  let gate = 0;
+  const m = mac(ag);
+  m.deps.person = async () => { gate++; return { open: true, why: 'open' }; };
+  const r = await pass({ app: 'Fake Copilot' }, m.deps);
+  assert.equal(r.decision.code, 'runtime-only');
+  assert.deepEqual([m.started, gate], [[], 0]);
+  assert.deepEqual(r.runtime_only.map((u) => [u.name, u.from, u.to]), [['desk', '3.2.154', '3.2.167']]);
+  assert.match(m.logs[0], /hold \(runtime-only\): a plugin update \(desk 3\.2\.154 → 3\.2\.167\): the newer release changes nothing a process fixes at its start/);
 });
