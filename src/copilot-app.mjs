@@ -268,7 +268,7 @@ ${envs}
 // ---------- the Mac ----------
 
 const run = (file, argv, { timeoutMs = 30000 } = {}) => new Promise((res) => {
-  execFile(file, argv, { timeout: timeoutMs, maxBuffer: 64 << 20 }, (err, stdout, stderr) => res({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout || ''), stderr: String(stderr || '') }));
+  execFile(file, argv, { timeout: timeoutMs, maxBuffer: 64 << 20 }, (err, stdout, stderr) => res({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), stdout: String(stdout || ''), stderr: String(stderr || '') }));
 });
 
 function readTail(f, bytes = TAIL_BYTES) {
@@ -306,10 +306,10 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
       return r.stdout.trim() ? JSON.parse(r.stdout) : [];
     },
     history: (id) => { const f = path.join(copilotHome, 'session-state', id, 'events.jsonl'); try { return { lines: readTail(f), mtime: fs.statSync(f).mtimeMs }; } catch { return { lines: [], mtime: 0 }; } },
-    hk: async (argv) => {
-      const r = await run(cmd[0], [...cmd.slice(1), ...argv], { timeoutMs: 60000 });
+    hk: async (argv, { timeoutMs = 60000 } = {}) => {
+      const r = await run(cmd[0], [...cmd.slice(1), ...argv], { timeoutMs });
       let json = null; try { json = JSON.parse(r.stdout); } catch { /* not JSON */ }
-      return { code: r.code, json, text: (r.stderr || r.stdout).trim().slice(0, 300) };
+      return { code: r.code, json, timedOut: r.timedOut, text: (r.stderr || r.stdout).trim().slice(0, 300) };
     },
     kill: (pid, sig) => { try { process.kill(pid, sig); return true; } catch { return false; } },
     open: async (appName, { background }) => run('/usr/bin/open', [...(background ? ['-g'] : []), '-a', appName]),
@@ -328,6 +328,12 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
       if (fs.existsSync(f)) return false;
       try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(f, new Date().toISOString()); for (const old of fs.readdirSync(state)) if (/^login-\d+$/.test(old) && old !== `login-${id}`) fs.rmSync(path.join(state, old), { force: true }); } catch { return false; }
       return true;
+    },
+    // Sessions owed a resume that a job could not finish (it died, the Mac restarted): the resume watcher sends them.
+    owed: {
+      get: () => { try { const o = JSON.parse(fs.readFileSync(path.join(state, 'owed-resume.json'), 'utf8')); return Date.now() - Date.parse(o.at) < 6 * 3600000 ? o.ids || [] : []; } catch { return []; } },
+      set: (ids, why) => { fs.mkdirSync(state, { recursive: true }); if (ids.length) fs.writeFileSync(path.join(state, 'owed-resume.json'), JSON.stringify({ ids, why, at: new Date().toISOString() })); },
+      clear: () => { try { fs.rmSync(path.join(state, 'owed-resume.json'), { force: true }); } catch { /* none */ } },
     },
     restartState: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'status.json'), 'utf8')); } catch { return null; } },
     recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
@@ -353,7 +359,7 @@ export function exchange(copilotHome, messages, { done = () => false, waitMs = 1
   });
 }
 
-const appReady = async (deps) => (await deps.exchange([], { done: (j) => j.type === 'server_hello', keep: (j) => j.type === 'server_hello', waitMs: 3000 })).some((j) => j.type === 'server_hello');
+export const appReady = async (deps) => (await deps.exchange([], { done: (j) => j.type === 'server_hello', keep: (j) => j.type === 'server_hello', waitMs: 3000 })).some((j) => j.type === 'server_hello');
 
 async function sendTo(deps, id, prompt, waitMs) {
   const request_id = randomUUID();
@@ -716,6 +722,8 @@ export async function resumeOnly(opts, deps, log = () => {}) {
   if (!opts.dry_run && restartRunning(deps, deps.now())) return { ok: true, skipped: 'a restart is running', key: g.key, resume: [], retry: true };
   const startedAt = g.startedAt || deps.now();
   const skip = skipOf(opts, deps);
+  const owed = (deps.owed?.get?.() || []).filter((id) => !skip.some((p) => id.startsWith(p)));
+  opts = { ...opts, also: [...new Set([...(opts.also || []), ...owed])] };
   const sessions = await snapshot(deps, undefined, skip);
   // Working now because something started a turn after the app came up: not left over from the stop.
   const before = sessions.map((s) => (s.state === 'busy' && tookTurnSince(deps.history(s.id).lines, startedAt) ? { ...s, state: 'idle', why: 'took a turn since the app started' } : s));
@@ -724,6 +732,7 @@ export async function resumeOnly(opts, deps, log = () => {}) {
   deps.generation?.set(g.key, 'resume-only');
   const res = await resumeAfter({ before, opts: { ...opts, also: opts.also || [] }, startedAt, restartedAt: startedAt, t }, deps, log);
   const not = res.filter((r) => !['resumed', 'already continued'].includes(r.outcome));
+  if (!not.length) deps.owed?.clear?.();
   log(not.length ? `some sessions did not resume ${JSON.stringify(not.map((r) => `${short(r.id)}: ${r.outcome}`))}` : `resumed ${res.length} session(s)`);
   return { ok: not.length === 0, key: g.key, resume: res };
 }

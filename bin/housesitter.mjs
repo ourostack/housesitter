@@ -21,6 +21,8 @@ import * as O from '../src/outbox.mjs';
 import os from 'node:os';
 import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
 import * as Copilot from '../src/copilot-app.mjs';
+import * as Beat from '../src/heartbeat.mjs';
+import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
 
@@ -103,6 +105,13 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter restart-copilot --resume-only [--watch [--open-at-login]] [--dry-run]   resume what an app stop left unfinished
                                            (a crash, an update, a login), restarting nothing; --watch does it for every new app
                                            process; --open-at-login also opens a closed app once per login
+  housesitter restart-copilot --heartbeat [--dry-run]   one probe of the app with no model turns: its socket and its window (the main
+                                           thread, through an accessibility read). Failing for 2 minutes is a freeze: it takes a sample,
+                                           quits the app (SIGTERM, then SIGKILL to exact pids), relaunches it, resumes the working
+                                           sessions and tells the agent once. A crash report and no app is relaunched the same way;
+                                           a gap of 5+ minutes between its own runs is the Mac stopping, recorded with its cause
+  housesitter restart-copilot --install-recovery [--dry-run]   write and load the launchd agents for the above (every 30 s) and a
+                                           caffeinate that keeps the Mac awake; --uninstall-recovery removes them
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
   housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded is older than the
@@ -263,6 +272,21 @@ async function restartCopilot() {
     const s = Copilot.readState(stateDir);
     if (json) emit(s); else say(Copilot.renderState(s));
     return s.state === 'failed' ? 1 : 0;
+  }
+  if (flag('--install-recovery') || flag('--uninstall-recovery')) {
+    const env = { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() };
+    const node = Watch.stableNode(process.execPath), bin = fileURLToPath(import.meta.url);
+    const rs = [];
+    for (const a of Object.values(Rec.AGENTS)) rs.push(flag('--uninstall-recovery') ? await Rec.uninstallAgent({ label: a.label }) : await Rec.installAgent({ label: a.label, program: [node, bin, ...a.args], env, every: a.every, logName: a.logName, dry: flag('--dry-run') }));
+    if (!flag('--uninstall-recovery')) rs.push(await Rec.installAgent({ ...Rec.KEEP_AWAKE, env: { PATH: '/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') }));
+    if (json) emit({ agents: rs }); else for (const r of rs) say(flag('--uninstall-recovery') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${r.label})` : `✗ ${r.label}: launchctl would not load it: ${r.error}`);
+    return rs.every((r) => r.ok) ? 0 : 1;
+  }
+  if (flag('--heartbeat')) {
+    const hd = Beat.realHeartbeatDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url) });
+    const r = await Beat.pass(opts, hd, (l) => { if (!json) console.log(l); });
+    if (json) emit({ action: r.action, socket: r.socket, window: r.window, failures: r.failures, evidence: r.evidence || null }); else if (!flag('--quiet')) say(Beat.renderPass(r));
+    return ['capped'].includes(r.action) || r.ok === false ? 1 : 0;
   }
   if (flag('--install-plugin-updates') || flag('--uninstall-plugin-updates')) {
     const r = flag('--uninstall-plugin-updates')

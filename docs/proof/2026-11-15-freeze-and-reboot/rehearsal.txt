@@ -1,0 +1,24 @@
+20:33:25  stand-in running: pid 8313
+20:33:25  beat 1: ok (socket ok, window ok)
+20:33:25  hung it: kill -STOP 8313
+20:33:29    probe failed (socket-timeout, window-timeout); failing since 2026-11-15T20:33:28Z, 1 run
+20:33:29  beat 2: watching (socket-timeout, window-timeout)
+20:33:34    probe failed (socket-timeout, window-timeout); failing since 2026-11-15T20:33:28Z, 2 runs
+20:33:34  beat 3: watching (socket-timeout, window-timeout)
+20:33:38    probe failed (socket-timeout, window-timeout); failing since 2026-11-15T20:33:28Z, 3 runs
+20:33:42    the app froze (its socket took a connection but never said hello and its window stopped answering (the main thread did not respond to an accessibility read)): recovering {"pid":8313,"evidence":"~/code/housesitter-worktrees/freeze-recovery/.rehearsal-KGyuLY/evidence/2026-11-15T20-33-42Z-freeze"}
+20:33:49    evidence captured {"files":6,"samples":1}
+20:33:54    the app did not quit on SIGTERM; SIGKILL to exactly these pids {"pids":[8313]}
+20:33:54    app exited {"processes":1}
+20:33:55    relaunched {"pid":14726,"from":8313}
+20:33:57    socket answering
+20:33:57    aaaaaaaa: send 1: session_message_sent
+20:33:57    cccccccc: send 1: session_message_sent
+20:34:00    every session resumed {"not":[]}
+20:34:00  TOLD THE AGENT: The Copilot app froze at 12:33: its socket took a connection but never said hello and its window stopped answering (the main thread did not respond to an accessibility read); I restarted it and 2 of 2 sessions resumed. Evidence: ~/code/housesitter-worktrees/freeze-recovery/.rehearsal-KGyuLY/evidence/2026-11-15T20-33-42Z-freeze
+20:34:00  beat 4: freeze (socket-timeout, window-timeout)
+20:34:00  recovered: ok=true; new pid 14726 (was 8313); old process alive: false
+20:34:00  evidence: ~/code/housesitter-worktrees/freeze-recovery/.rehearsal-KGyuLY/evidence/2026-11-15T20-33-42Z-freeze: power.txt, ps.txt, sample-main.txt, swap.txt, uptime.txt, vm_stat.txt
+20:34:00  main thread of the hung process, from its sample: start > node::Start(int, char**) > node::NodeMainInstance::Run() > node::NodeMainInstance::Run(node::ExitCode*, node::Environment*) > node::SpinEventLoopInternal(node::Environment*) > uv_run > uv__io_poll > kevent
+20:34:00  resumed: aaaaaaaa resumed; cccccccc resumed
+20:34:00  REHEARSAL PASSED
