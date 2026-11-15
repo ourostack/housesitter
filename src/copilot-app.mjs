@@ -192,7 +192,7 @@ export function pickTargets({ before, after, also = [] }) {
 
 export const READY = 'READY-TO-RESTART';
 export const DEFER = 'DEFER';
-export const settleText = ({ by, stallSec, why }) => `Heads up: the GitHub Copilot app restarts${why ? ` for ${why}` : ''}, as soon as every working session is ready and no later than about ${hhmm(by)}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, and start nothing long. When you are there, say so: end your turn with a line that is exactly ${READY}. If stopping your background lanes (subagents, shell jobs) now would lose work you cannot redo from pushed state, answer instead with a line of its own, ${DEFER}: <n> lanes running, about <m> min, and the restart waits for you and asks again when your estimate is up. A session that has not deferred and goes ${stallSec < 120 ? `${stallSec} seconds` : `${Math.round(stallSec / 60)} minutes`} without a step is not waited for. You will be sent a message to resume once the app is back.`;
+export const settleText = ({ by, stallSec, why, what = 'the GitHub Copilot app restarts' }) => `Heads up: ${what}${why ? ` for ${why}` : ''}, as soon as every working session is ready and no later than about ${hhmm(by)}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, and start nothing long. When you are there, say so: end your turn with a line that is exactly ${READY}. If stopping your background lanes (subagents, shell jobs) now would lose work you cannot redo from pushed state, answer instead with a line of its own, ${DEFER}: <n> lanes running, about <m> min, and the restart waits for you and asks again when your estimate is up. A session that has not deferred and goes ${stallSec < 120 ? `${stallSec} seconds` : `${Math.round(stallSec / 60)} minutes`} without a step is not waited for. You will be sent a message to resume once the app is back.`;
 export const recheckText = ({ by, why }) => `Recheck for the restart${why ? ` for ${why}` : ''}: are you at a safe point yet? Answer with a line of its own: ${READY}, or ${DEFER}: <n> lanes running, about <m> min again. The restart goes ahead at about ${hhmm(by)} whatever the answers.`;
 export const cancelText = ({ why }) => `The restart${why ? ` for ${why}` : ''} was called off: the app did not quit and is still running, so nothing was stopped. Carry on with what you were doing; there is nothing to resume.`;
 const lanesNote = (l) => (l ? ` You had said ${l.lanes ?? 'some'} lane${l.lanes === 1 ? ' was' : 's were'} still running${l.minutes != null ? ` (about ${l.minutes} min from done)` : ''}: the restart went ahead without waiting longer, so those lanes were stopped; restart them from their pushed state.` : '');
@@ -498,11 +498,12 @@ async function restartSteps(opts, deps, log) {
 
   const p = await plan(opts, deps);
   const dir = p.bundle;
-  if (!p.running) return fail('before', `${app} is not running: nothing to restart: open it first`);
-  if (p.quit.method === 'unavailable') return fail('before', p.quit.why);
-  const procs0 = await deps.ps();
-  const mainBefore = findMain(procs0, dir, await deps.appExe?.(dir));
-  const before = opts.stand_in ? [] : await snapshot(deps, undefined, skipOf(opts, deps));
+  // safe_point: stop after the sessions are at a safe point and hand them to the caller, with the app left running.
+  if (!p.running && !opts.safe_point) return fail('before', `${app} is not running: nothing to restart: open it first`);
+  if (p.running && p.quit.method === 'unavailable' && !opts.safe_point) return fail('before', p.quit.why);
+  const procs0 = p.running ? await deps.ps() : [];
+  const mainBefore = findMain(procs0, dir, await deps.appExe?.(dir)) || { pid: null };
+  const before = opts.stand_in || !p.running ? [] : await snapshot(deps, undefined, skipOf(opts, deps));
   report.before = before.map(({ id, title, mode, state, why, interrupted }) => ({ id, title, mode, state, why, interrupted }));
   step('snapshot', { sessions: before.length, busy: before.filter((s) => s.state === 'busy').length, pid: mainBefore.pid });
   const asked = before.filter((s) => s.state === 'busy');
@@ -513,7 +514,7 @@ async function restartSteps(opts, deps, log) {
   if (asked.length) {
     const firstAskedAt = deps.now();
     const by = firstAskedAt + t.settleMax;
-    const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by, stallSec: Math.round(t.settle / 1000), why: opts.why }), 30000).then((r) => ({ id: s.id, ...r }))));
+    const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by, stallSec: Math.round(t.settle / 1000), why: opts.why, what: opts.what }), 30000).then((r) => ({ id: s.id, ...r }))));
     step('asked to reach a safe point', { asked: asked.length, accepted: sent.filter((r) => r.ok).length, refused: sent.filter((r) => !r.ok).map((r) => `${short(r.id)}: ${r.error || r.reply}`), ceiling: new Date(by).toISOString() });
     // A session that did not take the message has nothing to answer: it counts from the ask like the rest.
     const st = new Map(asked.map((s) => [s.id, { askedAt: firstAskedAt, outcome: null, deferred: null, next: null }]));
@@ -546,6 +547,14 @@ async function restartSteps(opts, deps, log) {
     for (const s of asked) if (st.get(s.id).deferred && st.get(s.id).outcome !== 'ready') lanes.set(s.id, { lanes: st.get(s.id).deferred.lanes, minutes: st.get(s.id).deferred.minutes });
     report.deferred_at_quit = [...lanes].map(([id, l]) => ({ id, ...l }));
     step('settle ended', { settled: report.settled.length, said_ready: report.said_ready.length, went_quiet: of('stalled').map(short), out_of_time: of('capped').map(short), still_deferring: report.deferred_at_quit.map((d) => `${short(d.id)}: ${d.lanes} lanes`) });
+  }
+
+  if (opts.safe_point) {
+    const a = await opts.safe_point({ before, asked, lanes, report });
+    step(a?.what || 'sessions are at a safe point; the app is left running');
+    report.ok = true;
+    report.safe_point = true;
+    return report;
   }
 
   // 2. Quit, then wait for every process of the app.
