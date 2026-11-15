@@ -291,6 +291,33 @@ On 15 November the app's window froze twice, it crashed once, and a macOS update
 
 `--install-recovery` writes and loads the agents (the heartbeat, the health watch, the OS-update check and the keep-awake; `--mac <mac>` also installs that Mac's `apple-account` agent); `--uninstall-recovery` removes them; `--heartbeat --dry-run` prints what it sees and changes nothing. `node scripts/rehearse-freeze.mjs` rehearses the whole recovery live against a stand-in process that it hangs with `kill -STOP`: the probe times out, a real sample is taken, SIGTERM is ignored (a stopped process cannot handle it), SIGKILL goes to the exact pid, and the stand-in's sessions are resumed ([the transcript](docs/proof/2026-11-15-freeze-and-reboot/rehearsal.txt)).
 
+## Reach this Mac's sessions from another computer
+
+`housesitter steer` answers one question with plain checks and no model turns: can another computer see and drive this Mac's agent sessions? It reads Agency Hub's daemon (connected, tracking every session, never shutting itself down), that launchd owns the same process (so a crash or a reboot brings it back), that Hub's service lists this Mac online with its sessions, that each live app session has a record Hub can read, and whether the app starts new sessions with Remote control on.
+
+```sh
+housesitter steer                       # the checks, with a verdict
+housesitter steer --list                # the live sessions as Hub's service reads them
+housesitter steer --peer "<Mac name>"   # can this Mac read another Mac's device in Hub? (the laptop's view of the mini)
+housesitter steer --repair --install    # load bot.ouro.housesitter.steer: every 2 minutes, repair, tell the agent once if it does not hold
+```
+
+`--repair` does one thing, the supported pair of commands: `agency hub stop`, then `agency hub autostart enable --track-all`, on the second consecutive bad sighting (a restart in flight looks bad for a moment). `restart-copilot` runs the same check, repairing at once, right after it relaunches the app. `--install-recovery` loads this job with the others.
+
+What each route gives another computer, as tested on the Mac mini on 15 November: **Hub** shows every app session (status, title, what it is waiting for) and reads its history, but cannot inject input into an app session (`queue.pendingItems` answers `not_routed` for all of them). **The app's Remote control** steers the sessions that have it on, and only those: a session on an enterprise account or without a GitHub repository answers "Failed to set up remote session". So steering any session goes through the Mac's own bus daemon or the app's local socket; neither opens a port.
+
+### When a Mac that was away comes back
+
+`housesitter laptop-arrival` runs on the always-on Mac and brings a Mac that has been away (a laptop at the office, offline for days) up to date by itself, with no model turns. Once a minute it asks Hub's service whether the laptop's device is online, and only then asks the laptop's bus daemon for a shell. A new arrival (gone 10 minutes or more, or rebooted) runs these steps; each looks first and acts only when something is off, so running the list twice changes nothing:
+
+1. **housesitter:** a current checkout of this tool on the laptop, which does the restart and the checks there.
+2. **app:** the Copilot app is at least as new as this Mac's and runs at least the configured Desk (`min_desk`) with no newer plugin waiting. If not, `restart-copilot --resume --detach` there, with the READY/DEFER handling for its sessions, by signal when the screen is locked. It waits while someone is using the laptop. The app updates itself; if it is still behind 45 minutes later, `brew upgrade --cask --greedy` runs once and the app restarts again. At most two restarts per arrival.
+3. **retire:** the jobs this Mac has taken over (the config's `retire` list) are unloaded and their plists moved to `~/Library/LaunchAgents.retired/`, never deleted. A job with `requires_local_job` waits until that job runs here.
+4. **verify:** on the laptop, `steer --repair --peer <this Mac>`: its Hub daemon is connected, tracks every session and is under launchd, and it can read this Mac's device and session count in Hub's service.
+5. **report:** the agent is told once. 6. **macd** (if `macd_update`): last, the laptop's bus daemon is updated and must answer afterwards.
+
+A step that cannot finish says why; the agent hears once, after 20 minutes. The route is a command in `~/.config/housesitter/laptop-arrival.json` (`"route": ["/path/to/mac"]`, called as `<route> sh <peer> --timeout <s> '<cmd>'` and `<route> gate <peer> check`); a route that answers through a model-backed relay is refused. `laptop-arrival --dry-run` prints what it would do (offline: the plan; online: each step's verdict) and changes nothing, `--status` shows the state, `--install` loads `bot.ouro.housesitter.laptop-arrival`.
+
 ## Hardware
 
 **What to buy** (prices approximate, November 2026):
