@@ -757,13 +757,20 @@ export async function resumeOnly(opts, deps, log = () => {}) {
   if (!opts.dry_run && restartRunning(deps, deps.now())) return { ok: true, skipped: 'a restart is running', key: g.key, resume: [], retry: true };
   const startedAt = g.startedAt || deps.now();
   const skip = skipOf(opts, deps);
-  const owed = (deps.owed?.get?.() || []).filter((id) => !skip.some((p) => id.startsWith(p)));
-  opts = { ...opts, also: [...new Set([...(opts.also || []), ...owed])] };
   const sessions = await snapshot(deps, undefined, skip);
+  // An owed session that is gone (archived) or has taken a turn since this app process started is not owed anything.
+  const owed = (deps.owed?.get?.() || []).filter((id) => !skip.some((p) => id.startsWith(p)) && sessions.some((s) => s.id === id) && !tookTurnSince(deps.history(id).lines, startedAt));
+  opts = { ...opts, also: [...new Set([...(opts.also || []), ...owed])] };
   // Working now because something started a turn after the app came up: not left over from the stop.
   const before = sessions.map((s) => (s.state === 'busy' && tookTurnSince(deps.history(s.id).lines, startedAt) ? { ...s, state: 'idle', why: 'took a turn since the app started' } : s));
   log(`app process ${g.key}: ${before.filter((s) => s.state === 'busy').length} of ${sessions.length} session(s) were working when the app stopped`);
-  if (opts.dry_run) return { ok: true, dry_run: true, key: g.key, resume: pickTargets({ before, after: [], also: (opts.also || []).filter((id) => !skip.some((p) => id.startsWith(p))) }).map(({ id, title, why }) => ({ id, title, why })) };
+  if (opts.dry_run) {
+    const picked = pickTargets({ before, after: sessions, also: (opts.also || []).filter((id) => !skip.some((p) => id.startsWith(p))).map((id) => sessions.find((s) => s.id.startsWith(id))?.id || id) });
+    const heldOf = (tg) => sessions.find((s) => s.id === tg.id)?.oversize;
+    const held = picked.filter((tg) => tg.known && heldOf(tg));
+    for (const tg of held) log(`${short(tg.id)}${tg.title ? ` "${tg.title}"` : ''}: would NOT resume: history over the cap`);
+    return { ok: true, dry_run: true, key: g.key, resume: picked.filter((tg) => tg.known && !heldOf(tg)).map(({ id, title, why }) => ({ id, title, why })), held: held.map(({ id, title }) => ({ id, title, bytes: heldOf({ id }) })), gone: picked.filter((tg) => !tg.known).map(({ id }) => id) };
+  }
   deps.generation?.set(g.key, 'resume-only');
   const res = await resumeAfter({ before, opts: { ...opts, also: opts.also || [] }, startedAt, restartedAt: startedAt, t }, deps, log);
   const not = res.filter((r) => !['resumed', 'already continued'].includes(r.outcome));
