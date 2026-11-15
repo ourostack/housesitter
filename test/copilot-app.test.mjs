@@ -492,3 +492,24 @@ test('installKeeper writes the launch agent for the resume watcher and loads it'
   assert.equal((await installKeeper({ node: '/n/node', bin: '/b', home, dry: true })).dry_run, true);
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+test('resumeOnly dry run reports what the real run would do: oversized sessions held, unknown ones gone, stale owed entries dropped', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  w.startedAt = Date.now() - 300000;
+  const ghost = 'eeeeeeee-0000-4000-8000-000000000005';
+  w.deps.generation = { get: () => null, set: () => {} };
+  w.deps.restartState = () => null;
+  w.deps.historySize = (id) => (id === A ? 600 * 1024 * 1024 : 10);
+  w.deps.owed = { get: () => [A, B, D, ghost], set: () => {}, clear: () => {} };
+  const realHistory = w.deps.history;
+  w.deps.history = (id) => (id === D ? { lines: [JSON.stringify({ type: 'assistant.turn_start', data: {}, timestamp: new Date().toISOString() })], mtime: Date.now() } : realHistory(id));
+  const t = { ...w.opts, t: { ...w.opts.t, grace: 0 } };
+  const dry = await resumeOnly({ ...t, dry_run: true }, w.deps);
+  assert.deepEqual(dry.held.map((h) => h.id), [A], 'an over-cap history is held');
+  assert.deepEqual(dry.resume.map((x) => x.id).sort(), [B, C].sort(), 'owed B and working C; D took a turn since, the ghost is gone');
+  assert.deepEqual(dry.gone, []);
+  const real = await resumeOnly(t, w.deps);
+  assert.deepEqual(real.resume.map((x) => x.id).sort(), dry.resume.map((x) => x.id).sort(), 'the real run does exactly what the dry run said');
+  assert.ok(!w.app.received.some((m) => m.id === A || m.id === D || m.id === ghost));
+  await w.done();
+});
