@@ -1,5 +1,6 @@
 // housesitter restart-copilot --heartbeat: freeze, crash and stall detection against a pretend Mac and a pretend app whose
 // socket takes the connection and never says hello, as the real app's did when its window froze.
+import { judgeProgress } from '../src/progress.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -27,16 +28,17 @@ const SAMPLE = `Call graph:
 `;
 
 test('judge: a freeze is two minutes of failures on at least three runs in a row; a clean run or a long gap starts over', () => {
+  const OLD = { freeze: 120000, minBeats: 3, beatGap: 100000 };
   let bad = null, frozen = false;
   const at = (s) => Date.parse('2026-11-15T12:00:00Z') + s * 1000;
-  for (const s of [0, 30, 60, 90]) ({ bad, frozen } = judge(bad, ['window-timeout'], at(s)));
+  for (const s of [0, 30, 60, 90]) ({ bad, frozen } = judge(bad, ['window-timeout'], at(s), OLD));
   assert.equal(frozen, false, '90 s is not yet two minutes');
   assert.equal(bad.count, 4);
-  ({ bad, frozen } = judge(bad, ['window-timeout', 'socket-timeout'], at(120)));
+  ({ bad, frozen } = judge(bad, ['window-timeout', 'socket-timeout'], at(120), OLD));
   assert.equal(frozen, true);
   assert.deepEqual(bad.failures, ['window-timeout', 'socket-timeout']);
-  assert.equal(judge(bad, [], at(150)).bad, null, 'one clean run ends the streak');
-  const restarted = judge(bad, ['window-timeout'], at(120 + 300)).bad;
+  assert.equal(judge(bad, [], at(150), OLD).bad, null, 'one clean run ends the streak');
+  const restarted = judge(bad, ['window-timeout'], at(120 + 300), OLD).bad;
   assert.equal(restarted.count, 1, 'runs five minutes apart are not one streak');
   assert.equal(judge(null, ['window-timeout'], at(0), { freeze: 60000, minBeats: 3, beatGap: 100000 }).frozen, false, 'one run is never a freeze');
 });
@@ -108,7 +110,7 @@ async function world({ sessions, hung = false, window = 'ok', stubborn = true } 
       return { code: 0, json: { state: {} } };
     },
     kill: (pid, sig) => { w.kills.push([pid, sig]); if (sig === 'SIGKILL' || !stubborn) w.procs = w.procs.filter((p) => p.pid !== pid); return true; },
-    open: async () => { w.opens++; w.startedAt = Date.now(); w.window = 'ok'; app.setHung(false); w.procs = [{ pid: 200, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }]; return { code: 0, stderr: '' }; },
+    open: async () => { w.opens++; w.startedAt = Date.now(); w.window = 'ok'; w.stalled = false; app.setHung(false); w.procs = [{ pid: 200, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }]; return { code: 0, stderr: '' }; },
     related: async () => [],
     capture: async (dir) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'sample-main.txt'), SAMPLE); return ['sample-main.txt']; },
     summarizeSample: (dir) => heaviestPath(fs.readFileSync(path.join(dir, 'sample-main.txt'), 'utf8')),
@@ -118,6 +120,9 @@ async function world({ sessions, hung = false, window = 'ok', stubborn = true } 
     gapFacts: async () => w.facts,
     resumed: () => w.resumed,
     keepAwake: async () => { w.keptAwake = true; },
+    // Three sessions the app says are working: writing now, or (stalled) nothing for 30 minutes.
+    sessionProgress: async () => [1, 2, 3].map((i) => ({ id: `s${i}`, running: true, lastEventAt: Date.now() - (w.stalled ? 30 * 60000 : 5000) })),
+    memorySnapshot: async (dir) => { fs.mkdirSync(dir, { recursive: true }); w.snapshots = (w.snapshots || 0) + 1; },
   });
   w.deps = d;
   w.opts = { app: 'Fake Copilot', t: { socketMs: 150, confirmSocketMs: 300, windowMs: 1000, confirmWindowMs: 2000, term: 200, kill: 200, up: 2000, grace: 0, delivery: 3000, retry: 400, tries: 2, settle: 200 } };
@@ -152,10 +157,10 @@ test('a healthy app: both probes answer and nothing happens', { skip }, async ()
 });
 
 test('a fake hung app: frozen for two minutes, it is evidence, SIGTERM, SIGKILL by exact pid, relaunch, resume, and one message', { skip }, async () => {
-  const w = await world({ sessions: sessions(), hung: true, window: 'timeout' });
-  const r1 = await w.beat(), r2 = await w.beat(), r3 = await w.beat();
-  assert.deepEqual([r1.action, r2.action, r3.action], ['watching', 'watching', 'watching'], 'under two minutes is only watched');
-  assert.deepEqual(r1.failures.sort(), ['socket-timeout', 'window-timeout']);
+  const w = await world({ sessions: sessions(), hung: true, window: 'timeout' }); w.stalled = true;
+  const r1 = await w.beat();
+  assert.equal(r1.action, 'watching', 'one run of silence is only watched');
+  assert.deepEqual(r1.failures, ['no-progress']);
   assert.deepEqual(w.kills, []);
   const r4 = await w.beat(50000);
   assert.equal(r4.action, 'freeze', JSON.stringify(r4.lines));
@@ -166,7 +171,7 @@ test('a fake hung app: frozen for two minutes, it is evidence, SIGTERM, SIGKILL 
   assert.deepEqual(r4.resume.map((x) => [x.id, x.outcome]).sort(), [[A, 'resumed'], [C, 'resumed']], 'the working sessions are resumed, the idle one is left alone');
   assert.match(w.app.received.find((m) => m.id === A).prompt, /^The app was restarted at \d\d:\d\d for a frozen window; resume where you left off/);
   assert.equal(w.told.length, 1, 'the person is told once');
-  assert.match(w.told[0], /^The Copilot app froze at \d\d:\d\d: its socket took a connection but never said hello and its window stopped answering.*; I restarted it and 2 of 2 sessions resumed\. Evidence: .*-freeze$/);
+  assert.match(w.told[0], /^The Copilot app froze at \d\d:\d\d: the sessions it says are working all stopped writing events.*; I restarted it and 2 of 2 sessions resumed\. Evidence: .*-freeze$/);
   assert.ok(fs.existsSync(path.join(r4.evidence, 'sample-main.txt')), 'a sample was taken before the kill');
   assert.deepEqual(r4.main_thread.slice(-1), ['mach_msg2_trap']);
   const inc = readIncidents(w.deps.state);
@@ -181,32 +186,52 @@ test('a fake hung app: frozen for two minutes, it is evidence, SIGTERM, SIGKILL 
   await w.done();
 });
 
-test('a slow minute is not a freeze: the longer probe answers, so nothing is killed', { skip }, async () => {
-  const w = await world({ sessions: sessions(), window: 'slow' });
-  const acts = [];
-  for (const j of [40000, 40000, 40000, 50000]) acts.push((await w.beat(j)).action);
-  assert.deepEqual(acts, ['watching', 'watching', 'watching', 'slow']);
+test('a slow socket and window are not a freeze: the sessions are still writing, so nothing is killed', { skip }, async () => {
+  const w = await world({ sessions: sessions(), hung: true, window: 'timeout' });
+  for (let i = 0; i < 6; i++) assert.equal((await w.beat(40000)).action, 'ok');
   assert.deepEqual(w.kills, []);
   assert.deepEqual(w.told, []);
   await w.done();
 });
 
+test('a quiet stretch shorter than ten minutes, or fewer than three working sessions, is not a freeze', () => {
+  const now = 1e12, mk = (n, ago) => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, running: true, lastEventAt: now - ago }));
+  assert.equal(judgeProgress(mk(5, 9 * 60000), now).stalled, false);
+  assert.equal(judgeProgress(mk(5, 11 * 60000), now).stalled, true);
+  assert.equal(judgeProgress(mk(2, 30 * 60000), now).stalled, false);
+  assert.equal(judgeProgress(mk(5, 3 * 3600000), now).stalled, false, 'sessions stuck "working" for hours were never working');
+  assert.equal(judgeProgress([...mk(5, 30 * 60000), { id: 'x', running: false, lastEventAt: now - 1000 }], now).stalled, false, 'any session writing means it is alive');
+});
+
+test('replay of 2026-11-15 (every session event, 21:00-23:05 UTC): the 22:27, 22:40 and 22:51 restarts would not have fired; the stop at the reboot would', () => {
+  const sec = JSON.parse(fs.readFileSync(new URL('./fixtures/event-seconds-2026-11-15.json', import.meta.url), 'utf8')).map((x) => x * 1000);
+  const fires = [];
+  for (let now = Date.parse('2026-11-15T21:10:00Z'); now <= Date.parse('2026-11-15T23:20:00Z'); now += 30000) {
+    const seen = sec.filter((t) => t <= now);
+    const sessions = [1, 2, 3, 4].map((i) => ({ id: `s${i}`, running: true, lastEventAt: seen.at(-1) }));
+    if (judgeProgress(sessions, now).stalled) fires.push(new Date(now).toISOString().slice(11, 16));
+  }
+  assert.ok(!fires.some((f) => f < '23:00'), `fired while sessions were writing: ${fires}`);
+  assert.ok(fires.some((f) => f >= '23:15'), 'a real stop of every session does fire');
+});
+
 test('a second freeze in an hour is recovered again and the message names the pattern; a fourth is held and told once', { skip }, async () => {
-  const w = await world({ sessions: sessions(), hung: true, window: 'timeout' });
-  recordIncident(w.deps.state, { kind: 'freeze', at: new Date(Date.now() - 20 * 60000).toISOString(), evidence: '/e/earlier', ok: true, failures: ['socket-timeout', 'window-timeout'], main_thread: ['mach_msg2_trap'] });
-  for (const j of [40000, 40000, 40000]) await w.beat(j);
+  const w = await world({ sessions: sessions(), hung: true, window: 'timeout' }); w.stalled = true;
+  recordIncident(w.deps.state, { kind: 'freeze', at: new Date(Date.now() - 20 * 60000).toISOString(), evidence: '/e/earlier', ok: true, failures: ['no-progress'], main_thread: ['mach_msg2_trap'] });
+  await w.beat(40000);
   const r = await w.beat(50000);
   assert.equal(r.action, 'freeze');
   assert.match(w.told[0], /freeze 2 in an hour.*Pattern: every time it was the same.*the main thread's sample ended in mach_msg2_trap each time.*earlier: \/e\/earlier/);
   // Two more recoveries in the hour fill the cap; the next freeze is held, and the person hears once.
   recordIncident(w.deps.state, { kind: 'freeze', at: new Date().toISOString(), evidence: '/e/third', ok: true });
-  w.app.setHung(true); w.window = 'timeout'; w.startedAt += 1;
+  w.app.setHung(true); w.window = 'timeout'; w.stalled = true; w.startedAt += 1;
   w.procs = [{ pid: 300, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }];
-  for (const j of [40000, 40000, 40000]) await w.beat(j);
+  await w.beat(40000);
   const held = await w.beat(50000);
   assert.equal(held.action, 'capped');
   assert.equal(w.told.length, 2);
-  assert.match(w.told[1], /3 times in the last hour.*holding off a fourth restart/);
+  assert.match(w.told[1], /froze 2 times in 15 minutes.*backing off and took a memory snapshot/);
+  assert.equal(w.snapshots, 1, 'a memory snapshot was taken once');
   await w.beat(40000);
   assert.equal(w.told.length, 2, 'held, and told only once');
   await w.done();

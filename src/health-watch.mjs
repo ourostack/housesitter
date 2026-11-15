@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_APP, T, realDeps, resumeText, sendTo, skipOf, snapshot, stateDir, tookTurnSince } from './copilot-app.mjs';
+import { DEFAULT_APP, MAX_HISTORY_BYTES, T, realDeps, resumeText, sendTo, skipOf, snapshot, stateDir, tookTurnSince } from './copilot-app.mjs';
 import { hhmm, iso, readJson, realTell, short, writeJson } from './recovery.mjs';
 
 export const HW = {
@@ -95,6 +95,7 @@ export async function pass(opts, deps, say = () => {}) {
   const acts = [];
   for (const [id, s] of Object.entries(r.sessions)) {
     if (skip.some((p) => id.startsWith(p)) || s.status === 'gone') continue;
+    if ((deps.historySize?.(id) || 0) > MAX_HISTORY_BYTES) { if (s.status !== 'oversize') out(`${short(id)} ${s.title || ''}: its history is over the ${MAX_HISTORY_BYTES / 1048576} MB resume cap; not resending`); s.status = 'oversize'; continue; }
     const h = deps.history(id);
     const sn = snap.get(id);
     const dx = diagnose({ since: r.since, now, lines: h.lines, mtime: h.mtime, row: rows.get(id), working: sn?.state === 'busy', t });

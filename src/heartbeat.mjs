@@ -16,17 +16,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { appGeneration, appReady, family, findMain, resumeAfter, runInProgress, skipOf, snapshot, stateDir, T, realDeps, DEFAULT_APP } from './copilot-app.mjs';
+import { judgeProgress } from './progress.mjs';
 import { hhmm, iso, incidentsDir, readJson, recentIncidents, recordIncident, realTell, run, short, writeJson } from './recovery.mjs';
 
 export const HB = {
-  freeze: 120000, // failing this long before it counts as a freeze
-  minBeats: 3, // and on at least this many runs
+  freeze: 0, // the silence itself (see progress.mjs) is the wait
+  minBeats: 2, // and on at least this many runs
   beatGap: 100000, // runs further apart than this do not make one streak
   stall: 300000, // a gap this long between runs is the Mac stopping
   absent: 300000, // an app gone this long with sessions working is relaunched even with no crash report
   socketMs: 5000, windowMs: 15000, confirmSocketMs: 15000, confirmWindowMs: 30000,
   term: 15000, kill: 10000, // waits after SIGTERM and after SIGKILL
   hour: 3600000, cap: 3, // recoveries an hour before it stops and tells the person
+  stormMs: 15 * 60000, stormCap: 2, // storm brake: this many freeze restarts in this long, and it snapshots memory and backs off
   settleAfterBoot: 10 * 60000, // how long after a stall it waits for the resume before it tells
 };
 
@@ -40,7 +42,8 @@ export function judge(bad, failures, now, t = HB) {
   return { bad: next, frozen: now - Date.parse(next.since) >= t.freeze && next.count >= t.minBeats };
 }
 
-const FAILURE_TEXT = { 'window-timeout': 'its window stopped answering (the main thread did not respond to an accessibility read)', 'socket-timeout': 'its socket took a connection but never said hello', 'socket-down': 'its socket was not serving' };
+const FAILURE_TEXT = { 'window-timeout': 'its window stopped answering (the main thread did not respond to an accessibility read)', 'no-progress': 'the sessions it says are working all stopped writing events',
+  'socket-timeout': 'its socket took a connection but never said hello', 'socket-down': 'its socket was not serving' };
 export const failureText = (fs_) => fs_.map((f) => FAILURE_TEXT[f] || f).join(' and ');
 
 // The heaviest path of a `sample` report's first thread: follow the first child at each deeper line to the leaf.
@@ -127,6 +130,15 @@ export function realHeartbeatDeps({ home = os.homedir(), copilotHome, hackamore,
     lastWrite: (o) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'last.json'), JSON.stringify(o, null, 2)); },
     tell,
     // The socket: ok when it says hello, down when nothing is serving, timeout when it takes the connection and says nothing.
+    // Every session the app lists, with whether it says it is running and when its history last changed (a stat, never a read).
+    sessionProgress: async () => {
+      const rows = await d.sql('SELECT id, is_running AS running FROM sessions WHERE archived_at IS NULL');
+      return rows.map((r) => { let m = 0; try { m = fs.statSync(path.join(d.copilotHome, 'session-state', r.id, 'events.jsonl')).mtimeMs; } catch { /* none */ } return { id: r.id, running: Number(r.running) === 1, lastEventAt: m }; });
+    },
+    memorySnapshot: async (dir) => {
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [n, f, a] of [['ps.txt', '/bin/ps', ['-axm', '-o', 'pid,ppid,rss,command']], ['vm_stat.txt', '/usr/bin/vm_stat', []], ['swap.txt', '/usr/sbin/sysctl', ['vm.swapusage']]]) fs.writeFileSync(path.join(dir, n), (await run(f, a)).stdout);
+    },
     probeSocket: async (ms) => {
       const t0 = Date.now();
       const got = await d.exchange([], { done: (j) => j.type === 'server_hello', keep: (j) => j.type === 'server_hello' || j.type === 'socket_error', waitMs: ms });
@@ -258,12 +270,10 @@ export async function pass(opts, deps, say = () => {}) {
   // A different app process than the last run saw: whatever the streak was, it was about the old one.
   const sameApp = st.app?.key === g.key;
   const failures = [];
-  const socket = await deps.probeSocket(t.socketMs);
-  if (socket === 'timeout') failures.push('socket-timeout');
-  if (socket === 'down' && now - (g.startedAt || now) > 180000) failures.push('socket-down');
-  const win = await deps.probeWindow(app, t.windowMs);
-  if (win.state === 'timeout') failures.push('window-timeout');
-  res.socket = socket; res.window = win.state; res.failures = failures;
+  // Only the sessions' own progress counts; the socket and window are looked at for the record, never judged.
+  const prog = judgeProgress(await deps.sessionProgress(), now, t.progress);
+  if (prog.stalled) failures.push('no-progress');
+  res.progress = prog; res.failures = failures;
 
   const j = judge(sameApp ? st.bad : null, failures, now, t);
   const busy = sameApp ? st.app?.busy : undefined;
@@ -276,14 +286,29 @@ export async function pass(opts, deps, say = () => {}) {
   out(`probe failed (${failures.join(', ')}); failing since ${j.bad.since}, ${plural(j.bad.count, 'run')}`);
   if (!j.frozen) { save({ bad: j.bad, app: appState }); res.action = 'watching'; return res; }
 
-  // Frozen. Ask once more with longer timeouts so a slow minute is not a freeze.
-  const sock2 = await deps.probeSocket(t.confirmSocketMs);
-  const win2 = await deps.probeWindow(app, t.confirmWindowMs);
-  const again = [...(sock2 === 'timeout' ? ['socket-timeout'] : []), ...(sock2 === 'down' ? ['socket-down'] : []), ...(win2.state === 'timeout' ? ['window-timeout'] : [])];
-  if (!again.length) { out('the app answered the longer probe: a slow minute, not a freeze'); save({ bad: null, app: appState }); res.action = 'slow'; return res; }
+  // Frozen. Look again: any session writing anything now means it is not.
+  const again2 = judgeProgress(await deps.sessionProgress(), deps.now(), t.progress);
+  if (!again2.stalled) { out('a session wrote an event meanwhile: not a freeze'); save({ bad: null, app: appState }); res.action = 'slow'; return res; }
+  const again = ['no-progress'];
   res.action = 'freeze';
   if (opts.dry_run) { out(`would recover: ${failureText(again)}`); return res; }
+  const storm = recentIncidents(deps.state, ['freeze'], t.stormMs, now);
+  if (storm.length >= t.stormCap && (!st.storm_snapped || now - Date.parse(st.storm_snapped) > t.hour)) {
+    const dir = path.join(deps.evidenceRoot, `${iso(now).replace(/[:.]/g, '-')}-storm`);
+    await deps.memorySnapshot?.(dir).catch(() => {});
+    st.storm_snapped = iso(now);
+  }
   const recent = recentIncidents(deps.state, ['freeze', 'crash'], t.hour, now);
+  if (storm.length >= t.stormCap) {
+    res.action = 'capped';
+    if (!st.capped_told || now - Date.parse(st.capped_told) > t.hour) {
+      await deps.tell(`The Copilot app froze ${storm.length} times in 15 minutes (${storm.map((r) => hhmm(Date.parse(r.at))).join(', ')}) and I restarted it each time; more restarts would reload every session's history and make memory worse, so I am backing off and took a memory snapshot.`);
+      st.capped_told = iso(now);
+    }
+    out(`frozen again but ${storm.length} freeze restarts in 15 minutes: backing off`);
+    save({ bad: j.bad, app: appState, capped_told: st.capped_told, storm_snapped: st.storm_snapped });
+    return res;
+  }
   if (recent.length >= t.cap) {
     res.action = 'capped';
     if (!st.capped_told || now - Date.parse(st.capped_told) > t.hour) {
