@@ -49,6 +49,10 @@ This is why a launchd job cannot be the only watch: it cannot run while the Mac 
 recovery is on the other side. After the reboot launchd starts everything again, the keeper opens the app and
 resumes the sessions, and the new watch records the gap and its cause.
 
+## What the person said happened
+
+The person at the Mac gave the order of events afterwards: the app froze, they restarted it by hand, it froze again, and they ran the pending macOS update. That matches the logs: the crash at 11:36 is on the way out of the first freeze (or the force-quit of it), and the update, not a hang, rebooted the Mac. Their words for what was missing: housesitter should have handled all of it, with a heartbeat that spends no tokens.
+
 ## What was missing
 
 - A probe of the app's **main thread**, not only its socket. Added: `restart-copilot --heartbeat`.
@@ -57,5 +61,14 @@ resumes the sessions, and the new watch records the gap and its cause.
   `restart-copilot --health-watch`.
 - **OS updates on our terms**: a quiet time, sessions at a safe point, and everything resumed after the reboot.
   Added: `restart-copilot --os-updates`.
+
+## What changed, and the proof
+
+- Heartbeat, freeze and crash recovery, the stopped-Mac record: [housesitter#80](https://github.com/ourostack/housesitter/pull/80) (6f34e79).
+- The six-hour health watch and its status: [housesitter#81](https://github.com/ourostack/housesitter/pull/81) (912df09).
+- A macOS update on our terms (quiet hours, a safe point for every session, the Apple Account prompt armed, then the install): [housesitter#82](https://github.com/ourostack/housesitter/pull/82) (8fd6eb1).
+- A live rehearsal with a stand-in process hung by `kill -STOP`: [rehearsal.txt](rehearsal.txt) (`node scripts/rehearse-freeze.mjs`). The probe times out, a real `sample` is taken, SIGTERM is ignored, SIGKILL goes to the exact pid, the stand-in is started again and its working sessions are resumed through its socket, and the agent is told once.
+- The health watch's first status, for the sessions of the restart at 12:05: [health-watch-first-status.txt](health-watch-first-status.txt).
+- Fakes in the tests: a fake hung app (a socket that takes the connection and never says hello), a fake crash, a slow minute, a repeat freeze, the cap, a gap in the runs, and the OS-update paths.
 
 [Design](../../../README.md#what-it-does-when-the-app-freezes-crashes-or-the-mac-restarts)
