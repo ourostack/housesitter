@@ -1,22 +1,9 @@
 # AGENTS.md
 
-## Pull requests merge fast
-
-Follow ourostack's shared rule, [every PR merges fast](https://github.com/ourostack/.github/blob/main/agents/prs-merge-within-30-minutes.md). Finish, review and validate on your branch first, then publish with `gh ouro-pr`, which turns auto-merge on so green means merged. 30 minutes is the outer alarm, not the goal: merge and run CI as fast as possible.
-
-## What this repo is
-
-housesitter: an always-on sitter that runs on an IP-KVM next to a Mac (`device/sitter.py`, Python 3 standard library only), and a zero-dependency Node CLI and library for the people and agents who use it (`bin/`, `src/`).
-
-- **One set of rules, two languages.** `src/watchdog.mjs` and `device/sitter.py` must decide alike. Change both, and add a scenario to `spec/watchdog-cases.json`; both test suites run every scenario. `test/parity.test.mjs` keeps the screen classifier, key names and pointer maths in step.
-- **One dependency, and never on the KVM.** The Node CLI depends only on [`@ouro.bot/hackamore`](https://github.com/ourostack/hackamore) (the Reins engine and its schema check), pinned to a tag; it still runs from `npx github:`. Only `ls` and `do` load it, so a clone that has not run `npm install` runs every other command; `test/cli.test.mjs` holds that. The sitter on the KVM has none: a firmware update must not be able to break it.
-- **Reusable parts live in hackamore.** What drives any app (the accessibility tree, Reins' schema check, the gate rules for a person at the screen) belongs in hackamore, which uses housesitter's `open(mac)` as its pixel hands. housesitter keeps the KVM, the sitter, the watchdog and the hands; don't grow a second copy of the engine here.
-- **Secrets by reference only.** Config holds `keychain:`, `env:` or `file:` references. A secret goes in a request body or on stdin, never argv, a log, status or a gist. Tests assert it.
-- **Honest status.** The README's "What's verified" table says what has run on real hardware and what only on fakes. Move a row only with evidence (a `housesitter proof` recording, a log). Never show fake footage as real.
-- **Tests:** `npm test` (Node and Python, about 5 s). CI runs Node 20 and 22 and Python 3.9, 3.12 and 3.13.
-- **Brand:** the README header and social preview come from ourostack/.github `brand/`; see its AGENTS.md before changing either.
-
-## Git
-
-- Commit email: `16390116+arimendelow@users.noreply.github.com`.
-- No AI attribution in commits, pull requests or files.
+- **Pull requests:** follow ourostack's [every PR merges fast](https://github.com/ourostack/.github/blob/main/agents/prs-merge-within-30-minutes.md) and publish with `gh ouro-pr`.
+- **What it is:** the [README](README.md).
+- **One set of rules, two languages.** `src/watchdog.mjs` and `device/sitter.py` must decide alike. Change both, and add a scenario to `spec/watchdog-cases.json`; both test suites run every scenario.
+- **One dependency, and never on the KVM.** The Node CLI depends only on [`@ouro.bot/hackamore`](https://github.com/ourostack/hackamore), pinned to a tag, and only `ls` and `do` load it. The sitter on the KVM has none: a firmware update must not be able to break it.
+- **Reusable parts live in hackamore.** What drives any app belongs there; housesitter keeps the KVM, the sitter, the watchdog and the hands. Don't grow a second copy of the engine here.
+- **Honest status.** Move a row of the README's "What's verified" table only with evidence (a `housesitter proof` recording, a log). Never show fake footage as real.
+- **Commit email:** `16390116+arimendelow@users.noreply.github.com`.
