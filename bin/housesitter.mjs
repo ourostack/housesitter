@@ -23,6 +23,7 @@ import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.
 import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Health from '../src/health-watch.mjs';
+import * as OsUp from '../src/os-update.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
@@ -114,8 +115,14 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
   housesitter restart-copilot --health-watch [--dry-run]   one pass of the six-hour watch after any restart, recovery or reboot, no model
                                            turns: for each resumed session, did it take a turn, is it erroring, is it stuck busy; asks
                                            again once, and tells the agent by name only about what stays broken; --status shows it
-  housesitter restart-copilot --install-recovery [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute) and a
-                                           caffeinate that keeps the Mac awake; --uninstall-recovery removes them
+  housesitter restart-copilot --os-updates [--now|--prepare] [--window 2-5] [--dry-run]   one pass for a pending macOS update: wait for the quiet hours and a Mac
+                                           nobody has touched for 20 min, get every working session to a safe point, quit the app, arm
+                                           the Apple Account prompt fill (apple-account --expect-reboot), install and restart, then let launchd and
+                                           the resume watcher bring everything back. Needs sudo to run softwareupdate without a password
+                                           (otherwise it tells the agent once what is needed); --prepare stops before the install, for a
+                                           person who restarts the Mac themselves
+  housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute, the OS-update check every 10 min) and a
+                                           caffeinate that keeps the Mac awake; --mac also installs that Mac's apple-account agent; --uninstall-recovery removes them
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
   housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded is older than the
@@ -137,7 +144,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours'];
+const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--mac', '--window'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -283,6 +290,8 @@ async function restartCopilot() {
     const node = Watch.stableNode(process.execPath), bin = fileURLToPath(import.meta.url);
     const rs = [];
     for (const a of Object.values(Rec.AGENTS)) rs.push(flag('--uninstall-recovery') ? await Rec.uninstallAgent({ label: a.label }) : await Rec.installAgent({ label: a.label, program: [node, bin, ...a.args], env, every: a.every, logName: a.logName, dry: flag('--dry-run') }));
+    // The Apple Account prompt after a coordinated reboot is filled by its own agent; it is part of the same setup.
+    if (!flag('--uninstall-recovery') && val('--mac')) { const r = await Apple.installAgent({ node, bin, mac: val('--mac'), env, dry: flag('--dry-run') }); rs.push({ ...r, ok: r.ok, label: Apple.LABEL }); }
     if (!flag('--uninstall-recovery')) rs.push(await Rec.installAgent({ ...Rec.KEEP_AWAKE, env: { PATH: '/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') }));
     if (json) emit({ agents: rs }); else for (const r of rs) say(flag('--uninstall-recovery') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${r.label})` : `✗ ${r.label}: launchctl would not load it: ${r.error}`);
     return rs.every((r) => r.ok) ? 0 : 1;
@@ -292,6 +301,14 @@ async function restartCopilot() {
     const r = await Health.pass(opts, hd, (l) => { if (!json) console.log(l); });
     if (json) emit({ action: r.action, counts: r.counts || null }); else if (!flag('--quiet')) say(r.counts ? `health watch: ${Object.entries(r.counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')}` : `health watch: ${r.action}`);
     return 0;
+  }
+  if (flag('--os-updates')) {
+    const od = OsUp.realOsDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url), mac: val('--mac') || 'mini' });
+    od.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
+    const w = (val('--window') || '').match(/^(\d+)-(\d+)$/);
+    const r = await OsUp.pass({ ...opts, force: flag('--now'), prepare: flag('--prepare'), os: w ? { windowStart: Number(w[1]), windowEnd: Number(w[2]) } : {} }, od, (l) => { if (!json) console.log(l); });
+    if (json) emit({ decision: r.decision, update: r.update || null, ok: r.report ? r.report.ok : null }); else if (!flag('--quiet')) say(OsUp.renderPass(r));
+    return r.report && !r.report.ok ? 1 : 0;
   }
   if (flag('--heartbeat')) {
     const hd = Beat.realHeartbeatDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url) });

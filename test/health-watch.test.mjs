@@ -49,6 +49,9 @@ test('importRoster: the newest record this watch has not followed, never an empt
   assert.equal(importRoster(w.state, r), null, 'already followed');
   put('resume-only.json', { at: '2026-11-15T20:19:00Z', key: '1856:1794773144000', skipped: 'already resumed', resumed: [] });
   assert.equal(importRoster(w.state, r), null, 'an empty record starts nothing');
+  put('resume-last.json', { at: '2026-11-15T20:09:28Z', key: '1856:1794773144000', resumed: [{ id: A, outcome: 'resumed' }] });
+  assert.equal(importRoster(w.state, null).sessions[0].id, A, 'the last pass that resumed something is followed, not the later one that skipped');
+  fs.rmSync(path.join(w.state, 'resume-last.json'));
   put('last.json', { started_at: '2026-11-15T20:30:00Z', restarted_at: '2026-11-15T20:32:00Z', kind: 'freeze', resume: [{ id: C, outcome: 'resumed' }] });
   const n = importRoster(w.state, r);
   assert.equal(n.why, 'a frozen window');
