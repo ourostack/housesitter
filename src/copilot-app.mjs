@@ -3,7 +3,9 @@
 //
 //   1. Before: read every session's state (the app's database for mode, its own history for whether the agent loop is
 //      working), then ask each working session to reach a safe point: commit and push or save what is not yet in git or
-//      its notes, and stop. Wait up to --settle seconds; what is still working at the quit is recorded as interrupted.
+//      its notes, and say READY-TO-RESTART. A session is waited for while it makes progress (a step in its history within
+//      --settle seconds) and up to --settle-max seconds in all; it is done when it says so or its turn ends. What is still
+//      working at the quit is recorded as interrupted.
 //   2. Quit: through the app's own Quit menu item with hackamore (which refuses while a person is using the Mac), or
 //      SIGTERM to the exact pid with --sigterm. Wait until every process of the app has exited.
 //   3. Relaunch: open -a, then wait until the app answers on its local socket.
@@ -27,7 +29,7 @@ import { which } from './peer-watch.mjs';
 export const DEFAULT_APP = 'GitHub Copilot';
 export const LOOKBACK_MS = 24 * 3600000;
 export const TAIL_BYTES = 4 * 1024 * 1024;
-export const T = { settle: 90000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3 };
+export const T = { settle: 90000, settleMax: 600000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3 };
 export const LABEL = 'bot.ouro.housesitter.restart-copilot';
 
 const sleepReal = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -154,8 +156,31 @@ export function pickTargets({ before, after, also = [] }) {
   return out.map((t) => ({ ...t, known: now.has(t.id), title: (now.get(t.id) || was.get(t.id))?.title || null }));
 }
 
-export const settleText = ({ at, inSec, why }) => `Heads up: the GitHub Copilot app restarts at about ${hhmm(at)} (in about ${Math.round(inSec)} seconds)${why ? ` for ${why}` : ''}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, start nothing long, then stop. You will be sent a message to resume once the app is back.`;
+export const READY = 'READY-TO-RESTART';
+export const settleText = ({ by, stallSec, why }) => `Heads up: the GitHub Copilot app restarts${why ? ` for ${why}` : ''}, as soon as every working session is ready and no later than about ${hhmm(by)}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, and start nothing long. When you are there, say so: end your turn with a line that is exactly ${READY}. Take the time you need: the restart waits while you keep making progress, and gives up on a session that goes ${stallSec} seconds without a step. You will be sent a message to resume once the app is back.`;
+export const cancelText = ({ why }) => `The restart${why ? ` for ${why}` : ''} was called off: the app did not quit and is still running, so nothing was stopped. Carry on with what you were doing; there is nothing to resume.`;
 export const resumeText = ({ at, why }) => `The app was restarted at ${hhmm(at)}${why ? ` for ${why}` : ''}; resume where you left off. Anything that was in flight when it stopped (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish. Your background subagents and shell jobs were stopped; restart any unfinished ones from their pushed state.`;
+
+// Did the session say it has reached a safe point, after `since`? A line of its own that is exactly the token.
+export function saidReady(lines, since) {
+  for (const l of lines) {
+    if (!l || !l.includes('assistant.message')) continue;
+    const e = parse(l);
+    if (e?.type !== 'assistant.message' || !(Date.parse(e.timestamp || '') > since)) continue;
+    if (String(e.data?.content ?? '').split('\n').some((x) => x.replace(/[\s`*_.]/g, '') === READY)) return true;
+  }
+  return false;
+}
+
+// Is this session done settling? null while it is still getting there. It is done when its turn ended (idle), it said
+// ready, it has gone `settle` ms without a step in its history (stalled), or `settleMax` ms have passed since the ask.
+export function settleVerdict({ state, lines, mtime, askedAt, now, settle, settleMax }) {
+  if (state !== 'busy') return 'idle';
+  if (saidReady(lines, askedAt)) return 'ready';
+  if (now - askedAt >= settleMax) return 'capped';
+  if (now - Math.max(askedAt, mtime || 0) >= settle) return 'stalled';
+  return null;
+}
 
 // The quit menu item in a hackamore `ls` reply, or null.
 export function quitItem(ls) {
@@ -417,27 +442,41 @@ async function restartSteps(opts, deps, log) {
   step('snapshot', { sessions: before.length, busy: before.filter((s) => s.state === 'busy').length, pid: mainBefore.pid });
   const asked = before.filter((s) => s.state === 'busy');
 
-  // 1. Ask the working sessions to reach a safe point.
+  // 1. Ask the working sessions to reach a safe point, and wait for each to say so, to end its turn, to go quiet, or to run out of time.
   if (asked.length) {
-    const quitAt = deps.now() + t.settle;
-    const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ at: quitAt, inSec: t.settle / 1000, why: opts.why }), 30000).then((r) => ({ id: s.id, ...r }))));
+    const askedAt = deps.now();
+    const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by: askedAt + t.settleMax, stallSec: Math.round(t.settle / 1000), why: opts.why }), 30000).then((r) => ({ id: s.id, ...r }))));
     step('asked to reach a safe point', { asked: asked.length, accepted: sent.filter((r) => r.ok).length, refused: sent.filter((r) => !r.ok).map((r) => `${short(r.id)}: ${r.error || r.reply}`) });
-    let left = asked.map((s) => s.id);
-    for (const end = deps.now() + t.settle; left.length && deps.now() < end;) {
-      await deps.sleep(Math.min(5000, Math.max(0, end - deps.now())));
-      const now = await snapshot(deps, undefined, opts.skip);
-      left = left.filter((id) => now.find((s) => s.id === id)?.state === 'busy');
+    // A session that did not take the message has nothing to answer: it counts from the ask like the rest.
+    const outcome = new Map();
+    for (let waiting = asked.map((s) => s.id); waiting.length;) {
+      await deps.sleep(Math.min(5000, Math.max(250, t.settle / 4)));
+      const now = deps.now();
+      const states = new Map((await snapshot(deps, undefined, opts.skip)).map((x) => [x.id, x.state]));
+      waiting = waiting.filter((id) => {
+        const h = deps.history(id);
+        const v = settleVerdict({ state: states.get(id) || 'idle', lines: h.lines, mtime: h.mtime, askedAt, now, settle: t.settle, settleMax: t.settleMax });
+        if (v) outcome.set(id, v);
+        return !v;
+      });
     }
-    report.settled = asked.filter((s) => !left.includes(s.id)).map((s) => s.id);
-    report.interrupted_at_quit = left;
-    step('settle ended', { settled: report.settled.length, still_working: left.map(short) });
+    const by = (...k) => asked.filter((s) => k.includes(outcome.get(s.id))).map((s) => s.id);
+    report.settled = by('idle', 'ready');
+    report.said_ready = by('ready');
+    report.interrupted_at_quit = by('stalled', 'capped');
+    step('settle ended', { settled: report.settled.length, said_ready: report.said_ready.length, went_quiet: by('stalled').map(short), out_of_time: by('capped').map(short) });
   }
 
   // 2. Quit, then wait for every process of the app.
   const familyPids = family(await deps.ps(), mainBefore.pid, dir);
   let q;
   if (opts.sigterm) { deps.kill(mainBefore.pid, 'SIGTERM'); q = { ok: true, method: 'sigterm', pid: mainBefore.pid }; } else q = await hackamoreQuit(deps, app, { personWaitMs: t.person, log });
-  if (!q.ok) return fail('quit', q.why);
+  if (!q.ok) {
+    // The app is untouched: tell the sessions that were asked to stop that nothing happened.
+    const cancel = await Promise.all(asked.map((x) => sendTo(deps, x.id, cancelText({ why: opts.why }), 30000)));
+    step('restart called off: told the sessions to carry on', { told: cancel.filter((r) => r.ok).length, of: asked.length });
+    return fail('quit', q.why);
+  }
   step('quit sent', { method: q.method, ...(q.item ? { item: q.item } : {}) });
   const alive = async () => { const ps = await deps.ps(); const set = new Set(familyPids); return ps.filter((x) => set.has(x.pid) || x.command.includes(`${dir}/Contents/`)).map((x) => x.pid); };
   let left = await alive();

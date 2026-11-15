@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, runInProgress, watch, resumeText, settleText } from '../src/copilot-app.mjs';
+import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, restart, resumeOnly, runInProgress, saidReady, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -23,6 +23,22 @@ test('loopState: working mid-turn, between tool turns and on a running subagent;
   assert.equal(run('user.message', 'assistant.turn_start', ['abort', { reason: 'user_initiated' }]).working, false);
   assert.equal(run('user.message', 'assistant.turn_start', ['abort', { reason: 'subagent_cancelled' }]).working, true, 'only a person\'s stop counts');
   assert.equal(run().working, false);
+});
+
+test('saidReady and settleVerdict: ready, idle, stalled and out of time are told apart; progress extends the wait', () => {
+  const t0 = 1_000_000;
+  const msg = (text, at) => ev('assistant.message', { content: text }, at);
+  assert.equal(saidReady([msg('Pushed.\nREADY-TO-RESTART', t0 + 5)], t0), true);
+  assert.equal(saidReady([msg('`READY-TO-RESTART`.', t0 + 5)], t0), true, 'markdown around the line does not matter');
+  assert.equal(saidReady([msg('I will say READY-TO-RESTART when done', t0 + 5)], t0), false, 'only a line of its own counts');
+  assert.equal(saidReady([msg('READY-TO-RESTART', t0 - 5)], t0), false, 'a message from before the ask does not count');
+  const v = (o) => settleVerdict({ state: 'busy', lines: [], mtime: t0, askedAt: t0, now: t0, settle: 90000, settleMax: 600000, ...o });
+  assert.equal(v({ state: 'idle' }), 'idle');
+  assert.equal(v({ lines: [msg('READY-TO-RESTART', t0 + 1)] }), 'ready');
+  assert.equal(v({ now: t0 + 89000 }), null, 'still inside the quiet window');
+  assert.equal(v({ now: t0 + 91000 }), 'stalled');
+  assert.equal(v({ now: t0 + 300000, mtime: t0 + 250000 }), null, 'a step 50 s ago: it is making progress, so it keeps its time');
+  assert.equal(v({ now: t0 + 600000, mtime: t0 + 599000 }), 'capped', 'progress buys time, but not past the cap');
 });
 
 test('pickTargets: what was working, what the restart interrupted, and what was named; an old crash flag is left alone', () => {
@@ -53,7 +69,10 @@ test('quitItem finds the Quit entry in a hackamore ls reply', () => {
 test('messages say when, why and what to do', () => {
   const at = new Date(2026, 10, 14, 13, 5).getTime();
   assert.match(resumeText({ at, why: 'a Desk runtime upgrade' }), /^The app was restarted at 13:05 for a Desk runtime upgrade; resume where you left off\./);
-  assert.match(settleText({ at, inSec: 90, why: null }), /restarts at about 13:05 \(in about 90 seconds\)\. Reach a safe point/);
+  const m = settleText({ by: at, stallSec: 90, why: 'a plugin update (desk 3.2.154 → 3.2.167)' });
+  assert.match(m, /restarts for a plugin update \(desk 3\.2\.154 → 3\.2\.167\), as soon as every working session is ready and no later than about 13:05\. Reach a safe point/);
+  assert.match(m, /end your turn with a line that is exactly READY-TO-RESTART\./);
+  assert.match(m, /goes 90 seconds without a step/);
 });
 
 // A pretend Mac around a pretend app.
@@ -105,6 +124,47 @@ test('restart: asks working sessions to settle, quits, relaunches, resumes the w
   assert.equal(w.opens, 1);
   assert.deepEqual(w.kills, [], 'a menu quit needs no signal');
   assert.deepEqual(r.interrupted_at_quit.sort(), [A, C], 'they were still working when the quit came: recorded as interrupted');
+});
+
+test('restart: a session that is making progress gets time past the quiet window, and one that says ready is not waited for', { skip }, async () => {
+  const w2 = await world({ sessions: sessions(), appOpts: { react: (id, prompt, append) => {
+    if (!/Heads up/.test(prompt)) return;
+    if (id === A) append('assistant.message', { content: 'Pushed.\nREADY-TO-RESTART', toolRequests: [] });
+    // C keeps stepping for longer than the quiet window, then ends its turn.
+    if (id === C) { for (let i = 1; i <= 4; i++) setTimeout(() => append('tool.execution_complete', {}), i * 120); setTimeout(() => { append('assistant.message', { toolRequests: [] }); append('assistant.turn_end'); }, 600); }
+  } } });
+  w2.opts.t = { ...w2.opts.t, settle: 300, settleMax: 5000 };
+  const t0 = Date.now();
+  const r = await restart(w2.opts, w2.deps);
+  await w2.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed || r.resume));
+  assert.deepEqual(r.said_ready, [A]);
+  assert.deepEqual(r.settled.sort(), [A, C]);
+  assert.deepEqual(r.interrupted_at_quit, [], 'nothing was cut off');
+  assert.ok(Date.now() - t0 >= 600, 'it waited for C, which was still stepping after the quiet window had passed once');
+  assert.match(w2.app.received.find((m) => /Heads up/.test(m.prompt)).prompt, /exactly READY-TO-RESTART/);
+});
+
+test('restart: a session that goes quiet is cut off after the quiet window, not after the whole cap', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  w.opts.t = { ...w.opts.t, settle: 200, settleMax: 60000 };
+  const t0 = Date.now();
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.ok(Date.now() - t0 < 5000);
+  assert.deepEqual(r.interrupted_at_quit.sort(), [A, C]);
+});
+
+test('restart: when the quit is refused the app is untouched, and the sessions that were asked to stop are told to carry on', { skip }, async () => {
+  const w = await world({ sessions: sessions(), person: 1000 });
+  w.opts.t.person = 100;
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.equal(r.failed.stage, 'quit');
+  const told = w.app.received.filter((m) => /was called off/.test(m.prompt)).map((m) => m.id).sort();
+  assert.deepEqual(told, [A, C]);
+  assert.match(w.app.received.find((m) => /was called off/.test(m.prompt)).prompt, /nothing was stopped\. Carry on/);
+  assert.equal(w.opens, 0);
 });
 
 test('restart: a session something already continued is not messaged twice, and one the app drops is reported', { skip }, async () => {
