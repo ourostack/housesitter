@@ -1,4 +1,4 @@
-// housesitter restart-copilot --plugin-updates: a fake sessions folder, a fake Agency cache and a pretend Mac decide
+// housesitter restart-copilot --plugin-updates: a fake sessions folder, a fake plugin cache and a pretend Mac decide
 // when the app restarts for a plugin update. Nothing here needs the real app.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ function plugin(dir, name, version, { claude = false, files = {} } = {}) {
 }
 
 // sessions: { <pid>: { desk: '3.2.154', ... } }; cache: [{ spec, name, version, fetched_at }]
-function fakeAgency(sessions, cache) {
+function fakePluginCache(sessions, cache) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-plugins-'));
   const sessionsDir = path.join(home, 'sessions'), cacheDir = path.join(home, 'cache');
   for (const [pid, plugins] of Object.entries(sessions)) {
@@ -67,13 +67,13 @@ test('cmpVersion: numeric parts, not text; a pre-release sorts first', () => {
 });
 
 test('loadedPlugins reads both manifest places and only processes the app owns', () => {
-  const ag = fakeAgency({ 101: { desk: '3.2.154', crew: '0.2.23' }, 900: { desk: '1.0.0' } }, []);
+  const ag = fakePluginCache({ 101: { desk: '3.2.154', crew: '0.2.23' }, 900: { desk: '1.0.0' } }, []);
   const got = loadedPlugins(ag.sessionsDir, (pid) => pid !== 900);
   assert.deepEqual(got.map((l) => `${l.name} ${l.version} ${l.pid}`).sort(), ['crew 0.2.23 101', 'desk 3.2.154 101']);
 });
 
 test('newestReleases: Copilot branch entries only, never a pinned commit or another harness, newest fetch wins', () => {
-  const ag = fakeAgency({}, [
+  const ag = fakePluginCache({}, [
     { spec: spec('desk', 'release'), name: 'desk', version: '3.2.167', fetched_at: 2000 },
     { spec: spec('desk', 'b'.repeat(40)), name: 'desk', version: '3.2.82', fetched_at: 3000 },
     { spec: spec('desk', 'main').replace('copilot:', 'claude:'), name: 'desk', version: '9.9.9', fetched_at: 4000 },
@@ -86,7 +86,7 @@ test('newestReleases: Copilot branch entries only, never a pinned commit or anot
 });
 
 test('findUpdates: the oldest loaded copy is the from, a newer copy is no update, and a watch list narrows it', () => {
-  const ag = fakeAgency({ 101: { desk: '3.2.154', 'ms-desk': '2.32.0', superpowers: '1.0.0' }, 102: { desk: '3.2.167', 'ms-desk': '2.33.0' } }, [
+  const ag = fakePluginCache({ 101: { desk: '3.2.154', 'ms-desk': '2.32.0', superpowers: '1.0.0' }, 102: { desk: '3.2.167', 'ms-desk': '2.33.0' } }, [
     { spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' },
     { spec: spec('ms-desk'), name: 'ms-desk', version: '2.32.0' },
     { spec: spec('superpowers'), name: 'superpowers', version: '7.0.0' },
@@ -114,7 +114,7 @@ test('decide: restarts for an update with nobody at the Mac, and holds for each 
 });
 
 test('pass: working sessions do not hold it, and the restart runs with the reason', async () => {
-  const ag = fakeAgency({ 101: { desk: '3.2.154' }, 102: { desk: '3.2.167' }, 900: { desk: '1.0.0' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
+  const ag = fakePluginCache({ 101: { desk: '3.2.154' }, 102: { desk: '3.2.167' }, 900: { desk: '1.0.0' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
   const m = mac(ag);
   const said = [];
   const r = await pass({ app: 'Fake Copilot' }, m.deps, (l) => said.push(l));
@@ -127,7 +127,7 @@ test('pass: working sessions do not hold it, and the restart runs with the reaso
 });
 
 test('pass: holds and logs while a person is using the Mac, for six hours after a restart, and when nothing is behind', async () => {
-  const ag = fakeAgency({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
+  const ag = fakePluginCache({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
   const a = mac(ag, { person: { open: false, why: 'someone used this Mac 1 s ago (need 90 s idle)' } });
   await pass({ app: 'Fake Copilot' }, a.deps);
   assert.deepEqual(a.started, []);
@@ -136,7 +136,7 @@ test('pass: holds and logs while a person is using the Mac, for six hours after 
   await pass({ app: 'Fake Copilot' }, b.deps);
   assert.deepEqual(b.started, []);
   assert.match(b.logs[0], /hold \(cooldown\).*last restart was 240 min ago; at most one in 6 h/);
-  const current = fakeAgency({ 101: { desk: '3.2.167' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
+  const current = fakePluginCache({ 101: { desk: '3.2.167' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
   const c = mac(current);
   await pass({ app: 'Fake Copilot' }, c.deps);
   assert.deepEqual(c.started, []);
@@ -147,7 +147,7 @@ test('pass: holds and logs while a person is using the Mac, for six hours after 
 });
 
 test('pass: a restart that finished stops further restarts for that release; one that failed may be tried after the cooldown', async () => {
-  const ag = fakeAgency({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
+  const ag = fakePluginCache({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
   const started = '2026-11-14T00:00:00.000Z';
   const done = mac(ag, { state: { restarted_at: started, pending: { desk: '3.2.167' } }, lastRun: { state: 'done', started } });
   await pass({ app: 'Fake Copilot' }, done.deps);
@@ -160,7 +160,7 @@ test('pass: a restart that finished stops further restarts for that release; one
 });
 
 test('pass --dry-run: says what it would do, how many working sessions it would ask, and changes and logs nothing', async () => {
-  const ag = fakeAgency({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
+  const ag = fakePluginCache({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167' }]);
   const m = mac(ag, { state: { restarted_at: '2026-11-14T00:00:00Z', pending: { desk: '3.2.167' } }, lastRun: { state: 'failed', started: '2026-11-14T00:00:00.000Z' } });
   const before = JSON.stringify(m.state);
   const r = await pass({ app: 'Fake Copilot', dry_run: true }, m.deps);
@@ -204,7 +204,7 @@ test('changedFixed: a skill, hook, agent or Desk tool schema that differs counts
 });
 
 test('a newer release that changes nothing fixed per process is runtime-only: no update, no restart, no look at the gate', async () => {
-  const ag = fakeAgency({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167', files: { 'skills/s/SKILL.md': 'old text', 'mcp/src/new.js': 'runtime' } }]);
+  const ag = fakePluginCache({ 101: { desk: '3.2.154' } }, [{ spec: spec('desk', 'release'), name: 'desk', version: '3.2.167', files: { 'skills/s/SKILL.md': 'old text', 'mcp/src/new.js': 'runtime' } }]);
   let gate = 0;
   const m = mac(ag);
   m.deps.person = async () => { gate++; return { open: true, why: 'open' }; };

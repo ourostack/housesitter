@@ -140,7 +140,7 @@ kvmd's `/streamer/snapshot` answered HTTP 500 on the Comet, so `sitter_screensho
 
 At 07:32 Housesitter took one `sitter_screenshot` and read it:
 
-> The mini is unlocked at the desktop, Edge is in front, and the menu-bar clock reads Mon Nov 9 11:32 PM. Edge has the Microsoft Autopilot "Automations" page open with 6 habit cards … On the right, about 10 macOS notifications are stacked up …
+> The mini is unlocked at the desktop, Edge is in front, and the menu-bar clock reads Mon Nov 9 11:32 PM. Edge has an "Automations" page open with 6 habit cards … On the right, about 10 macOS notifications are stacked up …
 
 Image turns need 0.1.0-alpha.1020 or later, which passes MCP images to the model. Until the prompt budget counts a picture as a picture, keep screenshots at 1280 wide. Its base64 is otherwise counted as text, and a full 2560×1440 frame pushed a turn over budget and into an HTTP 400.
 

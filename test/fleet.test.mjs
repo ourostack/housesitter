@@ -24,7 +24,7 @@ test('a healthy record has no problems, and every kind of trouble is named', () 
     usb: { missing: [{ name: 'Webcam', why: ['not on USB'] }, { name: 'Mic', why: [] }] }, net: { default_if: null }, alerts: [{ owner: 'SecurityAgent' }],
   });
   const text = problems(sick, { alwaysOn: ['mini'] }).join('\n');
-  for (const part of ['kernel panic (panic-1.ips)', 'Agency Hub not connected', 'drain issues: not loaded', 'drain prs: 2 detectors', 'disk 12 GB free, below 20 GB', 'no caffeinate assertion', 'CPU speed limit 60%', 'az is signed out', 'gh is signed out', '2 USB devices missing: Webcam (not on USB); Mic', 'no network route', '1 system alert waiting']) assert.match(text, new RegExp(part.replace(/[()]/g, '\\$&')), part);
+  for (const part of ['kernel panic (panic-1.ips)', 'agent hub not connected', 'drain issues: not loaded', 'drain prs: 2 detectors', 'disk 12 GB free, below 20 GB', 'no caffeinate assertion', 'CPU speed limit 60%', 'az is signed out', 'gh is signed out', '2 USB devices missing: Webcam (not on USB); Mic', 'no network route', '1 system alert waiting']) assert.match(text, new RegExp(part.replace(/[()]/g, '\\$&')), part);
   assert.equal(problems(sick, { diskFloorGb: 10 }).some((p) => p.startsWith('disk')), false, 'the floor is a setting');
   assert.equal(problems(sick).some((p) => p.includes('caffeinate')), false, 'only a Mac named as always-on must stay awake');
 });
@@ -46,7 +46,7 @@ test('the text view says healthy, lists accounts and issues, and says when the g
   const rows = fleetRows(beatsFromGist(gist({ 'mini.json': rec('mini', '2026-11-14T19:50:00Z', { app_accounts: ['a@github.com'], screen: { locked: false, idle_sec: 9 } }), 'laptop.json': rec('laptop', '2026-11-14T19:50:00Z', { hub: { connected: false } }) })), { now: NOW });
   const lines = renderFleet(rows);
   assert.match(lines[0], /^● laptop\s+record 10 min ago/);
-  assert.equal(lines[1], '    ⚠ Agency Hub not connected');
+  assert.equal(lines[1], '    ⚠ agent hub not connected');
   assert.match(lines[2], /^○ mini\s+record 10 min ago · up 10 h · disk 300 GB free · screen unlocked, idle 9 s/);
   assert.deepEqual(lines.slice(3), ['    app accounts: a@github.com', '    healthy']);
   assert.match(renderFleet([])[0], /No health records/);
