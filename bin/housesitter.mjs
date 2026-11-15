@@ -24,6 +24,7 @@ import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Health from '../src/health-watch.mjs';
 import * as OsUp from '../src/os-update.mjs';
+import * as SudoRule from '../src/sudo-rule.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
@@ -121,6 +122,11 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            the resume watcher bring everything back. Needs sudo to run softwareupdate without a password
                                            (otherwise it tells the agent once what is needed); --prepare stops before the install, for a
                                            person who restarts the Mac themselves
+  housesitter restart-copilot --grant-softwareupdate [--mac <mac>] [--dry-run] | --revoke-softwareupdate   the narrowest right for unattended updates: one
+                                           sudoers.d rule, no password, for softwareupdate --list, -l and --install <label> --restart
+                                           --agree-to-license only. Checked with visudo -cf; the administrator password (Keychain
+                                           item housesitter/<mac>-mac-password, or a hidden prompt) goes to sudo on stdin, never in argv
+      [--listing <file>]                   with --os-updates: read a saved softwareupdate -l (rehearse the flow with --now --dry-run)
   housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute, the OS-update check every 10 min) and a
                                            caffeinate that keeps the Mac awake; --mac also installs that Mac's apple-account agent; --uninstall-recovery removes them
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
@@ -144,7 +150,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--mac', '--window'];
+const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--mac', '--window', '--listing'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -302,8 +308,14 @@ async function restartCopilot() {
     if (json) emit({ action: r.action, counts: r.counts || null }); else if (!flag('--quiet')) say(r.counts ? `health watch: ${Object.entries(r.counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')}` : `health watch: ${r.action}`);
     return 0;
   }
+  if (flag('--grant-softwareupdate') || flag('--revoke-softwareupdate')) {
+    const gd = SudoRule.realGrantDeps({ mac: val('--mac') || 'mini', stage: path.join(stateDir, 'sudo-rule') });
+    const r = flag('--revoke-softwareupdate') ? await SudoRule.revoke({ deps: gd }) : await SudoRule.grant({ deps: gd, dry: flag('--dry-run') });
+    if (json) emit(r); else say(flag('--revoke-softwareupdate') ? (r.ok ? `removed ${r.file}` : `✗ ${r.why}`) : r.dry_run ? `would install ${r.file}:\n${r.text}` : r.ok ? `${r.already ? 'already allowed' : `installed ${r.file}`}; ${r.steps.join('; ')}${r.listing ? `\nsudo -n softwareupdate --list: ${r.listing}` : ''}` : `✗ ${r.why}\n${r.steps.join('; ')}`);
+    return r.ok ? 0 : 1;
+  }
   if (flag('--os-updates')) {
-    const od = OsUp.realOsDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url), mac: val('--mac') || 'mini' });
+    const od = OsUp.realOsDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url), mac: val('--mac') || 'mini', listing: val('--listing') ? path.resolve(val('--listing')) : null });
     od.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
     const w = (val('--window') || '').match(/^(\d+)-(\d+)$/);
     const r = await OsUp.pass({ ...opts, force: flag('--now'), prepare: flag('--prepare'), os: w ? { windowStart: Number(w[1]), windowEnd: Number(w[2]) } : {} }, od, (l) => { if (!json) console.log(l); });

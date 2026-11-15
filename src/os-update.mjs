@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { KEEPER_LABEL, plan, realDeps, restart, stateDir } from './copilot-app.mjs';
 import * as Apple from './apple-account.mjs';
+import { INSTALL_PATTERN } from './sudo-rule.mjs';
 import { AGENTS, agentPath, hhmm, iso, readJson, realTell, run, writeJson } from './recovery.mjs';
 
 export const OS = {
@@ -56,11 +57,13 @@ export function decide({ update, state, now, hour, idleMs, canInstall, force = f
   return { action: 'run', code: 'update', why: update.label };
 }
 
-export const consentText = ({ update, bin, node }) => `macOS ${update.version || update.title} is waiting to install, and I will not install it without an administrator's password, which I do not have. Two ways forward, either is fine: (1) allow just this once for good, and I will do every later update in the 02:00 to 05:00 quiet window, with every session at a safe point first and resumed after the restart: run \`echo "$USER ALL=(root) NOPASSWD: /usr/sbin/softwareupdate" | sudo tee /etc/sudoers.d/housesitter-softwareupdate\`; or (2) run \`${node} ${bin} restart-copilot --os-updates --prepare\` when you want it: I get the sessions to a safe point, quit the app and arm the Apple Account prompt, then you restart the Mac yourself and everything comes back and resumes.`;
+export const consentText = ({ update, bin, node, mac = 'mini' }) => `macOS ${update.version || update.title} is waiting to install, and sudo would ask for an administrator's password to run softwareupdate, which I do not hold. Either is fine: (1) run \`${node} ${bin} restart-copilot --grant-softwareupdate --mac ${mac}\` once: it writes one sudoers rule for three softwareupdate commands only (list, and install with --restart), asks for the password at a hidden prompt (or reads it from the Keychain item housesitter/${mac}-mac-password if you store one), and I will do every later update in the 02:00 to 05:00 quiet window, with every session at a safe point first and resumed after the restart; or (2) run \`${node} ${bin} restart-copilot --os-updates --prepare\` when you want it: I get the sessions to a safe point, quit the app and arm the Apple Account prompt, then you restart the Mac yourself and everything comes back and resumes.`;
 
 // ---------- the Mac ----------
 
-export function realOsDeps({ home = os.homedir(), copilotHome, hackamore, state = stateDir(home), bin, node = process.execPath, mac = 'mini' } = {}) {
+// listing: a saved `softwareupdate -l` to read instead of asking (a rehearsal of the whole flow with --dry-run).
+export function realOsDeps({ home = os.homedir(), copilotHome, hackamore, state = stateDir(home), bin, node = process.execPath, mac = 'mini', listing = null } = {}) {
+  const opts_listing = listing;
   const base = realDeps({ copilotHome, hackamore, state });
   const file = path.join(state, 'os-update.json');
   const d = {
@@ -71,9 +74,11 @@ export function realOsDeps({ home = os.homedir(), copilotHome, hackamore, state 
     tell: realTell({ state, home }),
     status: (o) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'status.json'), JSON.stringify(o)); },
     lastWrite: (o) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'last.json'), JSON.stringify(o, null, 2)); },
-    listUpdates: async () => { const r = await run('/usr/sbin/softwareupdate', ['-l'], { timeoutMs: 180000 }); return { ok: r.code === 0, text: r.stdout + r.stderr }; },
+    listUpdates: async () => {
+      if (opts_listing) { try { return { ok: true, text: fs.readFileSync(opts_listing, 'utf8') }; } catch (e) { return { ok: false, text: String(e.message) }; } } const r = await run('/usr/sbin/softwareupdate', ['-l'], { timeoutMs: 180000 }); return { ok: r.code === 0, text: r.stdout + r.stderr }; },
     idleMs: async () => { const m = (await run('/usr/sbin/ioreg', ['-c', 'IOHIDSystem', '-d', '4'], { timeoutMs: 10000 })).stdout.match(/"HIDIdleTime" = (\d+)/); return m ? Math.round(Number(m[1]) / 1e6) : null; },
-    canInstall: async () => (await run('/usr/bin/sudo', ['-n', '-l', '/usr/sbin/softwareupdate'], { timeoutMs: 10000 })).code === 0,
+    // Can sudo run exactly the install command without a password? (the rule --grant-softwareupdate writes)
+    canInstall: async () => (await run('/usr/bin/sudo', ['-n', '-l', ...INSTALL_PATTERN], { timeoutMs: 10000 })).code === 0,
     install: async (label) => { const r = await run('/usr/bin/sudo', ['-n', '/usr/sbin/softwareupdate', '--install', label, '--restart', '--agree-to-license'], { timeoutMs: 45 * 60000 }); return { ok: r.code === 0, text: (r.stdout + r.stderr).trim().slice(-400) }; },
     expectReboot: (why) => Apple.expectReboot({ why, home }),
     bootTime: async () => { const m = (await run('/usr/sbin/sysctl', ['-n', 'kern.boottime'])).stdout.match(/sec = (\d+)/); return m ? Number(m[1]) * 1000 : null; },
@@ -121,7 +126,7 @@ export async function pass(opts, deps, say = () => {}) {
   const d = decide({ update, state: st, now, hour: deps.hour ? deps.hour() : new Date(now).getHours(), idleMs: update ? await deps.idleMs() : null, canInstall, force: Boolean(opts.force || opts.prepare), t });
   const res = { decision: d, update };
   if (d.action === 'needs-consent') {
-    if (st.consent_told !== update.label && !opts.dry_run) { await deps.tell(consentText({ update, bin: deps.bin, node: deps.node })); save({ consent_told: update.label }); out('told once what is needed'); }
+    if (st.consent_told !== update.label && !opts.dry_run) { await deps.tell(consentText({ update, bin: deps.bin, node: deps.node, mac: deps.mac })); save({ consent_told: update.label }); out('told once what is needed'); }
     out(`hold (${d.code}): ${d.why}`);
     return res;
   }
