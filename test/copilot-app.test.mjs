@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, recheckAfter, recheckText, restart, resumeOnly, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
+import { configPath, family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, lastTurnAt, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -98,7 +98,8 @@ async function world({ sessions, appOpts = {}, quit = 'menu', person = 0, stubbo
   makeHome(home, sessions);
   const app = await startApp(home, appOpts);
   const w = { home, app, procs: [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }, { pid: 101, ppid: 100, command: 'runtime --server' }], hk: [], kills: [], opens: 0, personLeft: person };
-  const real = realDeps({ copilotHome: home });
+  // Everything the deps write (resumed.json, resume-only.json) and read (the skip list) lives in this folder, never in the real ones.
+  const real = realDeps({ copilotHome: home, state: path.join(home, 'state'), config: path.join(home, 'restart-copilot.json') });
   w.deps = {
     ...real,
     hackamore: ['hackamore'],
@@ -116,6 +117,7 @@ async function world({ sessions, appOpts = {}, quit = 'menu', person = 0, stubbo
     kill: (pid, sig) => { w.kills.push([pid, sig]); w.procs = w.procs.filter((p) => p.pid !== pid); return true; },
     open: async () => { w.opens++; w.startedAt = Date.now(); w.procs = [{ pid: 200, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }]; return { code: 0, stderr: '' }; },
   };
+  w.state = path.join(home, 'state');
   w.opts = { app: 'Fake Copilot', resume: true, why: 'a Desk runtime upgrade', t: { settle: 200, grace: 0, quit: 400, up: 2000, delivery: 3000, retry: 400, tries: 2 } };
   w.done = () => app.close();
   return w;
@@ -410,6 +412,68 @@ test('watch: opens a closed app once per login, then resumes the sessions of eac
   await watch(opts, w.deps, () => {}, { every: 1, stop: () => laps++ >= 45 });
   assert.equal(w.opens, 1, 'the second start in the same login opens nothing');
   await w.done();
+});
+
+test('lastTurnAt and readSkipConfig: the last loop event, and a skip list that a bad file cannot break', () => {
+  assert.equal(lastTurnAt([ev('user.message', {}, 1000), ev('assistant.turn_start', {}, 2000), ev('session.resume', {}, 9000)]), 2000, 'only the agent loop counts, not a resume marker');
+  assert.equal(lastTurnAt([]), null);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-skip-'));
+  const f = path.join(dir, 'restart-copilot.json'), warns = [];
+  assert.deepEqual(readSkipConfig(f, (m) => warns.push(m)), [], 'no file, no skips, no complaint');
+  fs.writeFileSync(f, JSON.stringify({ skip: ['6f222445-5e74-4655-a24c-e9a24305edff', 'short'] }));
+  assert.deepEqual(readSkipConfig(f, (m) => warns.push(m)), ['6f222445-5e74-4655-a24c-e9a24305edff']);
+  assert.equal(warns.length, 1, 'an entry under 8 characters is named and ignored');
+  fs.writeFileSync(f, '{ not json');
+  assert.deepEqual(readSkipConfig(f, (m) => warns.push(m)), []);
+  assert.match(warns.at(-1), /is not valid JSON/);
+  assert.match(configPath('/h'), /\/h\/\.config\/housesitter\/restart-copilot\.json$/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the skip list file is shared by the crash resume and the planned restart, and a session idle for over 24 h is never resumed', { skip }, async () => {
+  const OLD = 'eeeeeeee-0000-4000-8000-000000000005';
+  const w = await world({ sessions: [...sessions(), { id: OLD, title: 'old crash, flagged running', running: true, interrupted: true, ageMs: 30 * 3600000, events: MID_TURN }] });
+  w.startedAt = Date.now() - 300000;
+  const t = { ...w.opts, t: { ...w.opts.t, grace: 0 } };
+  assert.deepEqual((await resumeOnly({ ...t, dry_run: true }, w.deps)).resume.map((x) => x.id), [A, C], 'the 30 h old session is not resumed although the app still marks it running');
+  assert.deepEqual((await plan(t, w.deps)).resume.map((x) => x.id), [A, C]);
+  fs.writeFileSync(path.join(w.home, 'restart-copilot.json'), JSON.stringify({ skip: [A.slice(0, 8)] }));
+  assert.deepEqual((await resumeOnly({ ...t, dry_run: true, also: [A] }, w.deps)).resume.map((x) => x.id), [C], 'the file is read at each pass, and --also cannot bring a skipped session back');
+  assert.deepEqual((await plan(t, w.deps)).resume.map((x) => x.id), [C], 'the planned restart reads the same file');
+  const r = await resumeOnly({ ...t, skip: [C.slice(0, 8)] }, w.deps);
+  assert.deepEqual(r.resume, [], 'the file and --skip add up');
+  assert.deepEqual(w.app.received, []);
+  assert.ok(fs.existsSync(path.join(w.state, 'resumed.json')), 'the pretend Mac keeps its state in its own folder');
+  await w.done();
+});
+
+test('resume: sends go out concurrently up to a small limit, a failed send is retried after a pause, and a session that still fails is named with its reason', { skip }, async () => {
+  const ids = Array.from({ length: 6 }, (_, i) => `1000000${i}-0000-4000-8000-00000000000${i}`);
+  const [FLAKY, DEAD] = [ids[1], ids[2]];
+  const w = await world({ sessions: ids.map((id, i) => ({ id, title: `s${i}`, mode: 'autopilot', events: MID_TURN })) });
+  let live = 0, peak = 0;
+  const failures = new Map([[FLAKY, 1], [DEAD, 99]]);
+  const sleeps = [];
+  const exchange = w.deps.exchange;
+  w.deps.sleep = async (ms) => { sleeps.push(ms); await new Promise((r) => setTimeout(r, 1)); };
+  w.deps.exchange = async (messages, o) => {
+    const id = messages[0]?.session_id;
+    if (id && /restarted at/.test(messages[0].prompt) && failures.get(id) > 0) { failures.set(id, failures.get(id) - 1); return [{ type: 'socket_error' }]; }
+    if (!/restarted at/.test(messages[0]?.prompt || '')) return exchange(messages, o);
+    live++; peak = Math.max(peak, live);
+    await new Promise((r) => setTimeout(r, 40));
+    try { return await exchange(messages, o); } finally { live--; }
+  };
+  const log = [];
+  const t = { ...w.opts.t, grace: 0, concurrency: 3, tries: 3, backoff: [111, 222] };
+  const res = await restart({ ...w.opts, t }, w.deps, (m) => log.push(m));
+  await w.done();
+  assert.ok(peak > 1 && peak <= 3, `peak in flight ${peak}`);
+  assert.equal(res.resume.find((x) => x.id === FLAKY).tries, 2);
+  assert.ok(sleeps.includes(111) && sleeps.includes(222), `backoff between tries: ${sleeps}`);
+  assert.match(res.resume.find((x) => x.id === DEAD).outcome, /^NOT RESUMED after 3 tries \(socket_error: the app's socket refused or dropped the connection\)/);
+  assert.equal(res.ok, false);
+  assert.ok(log.some((l) => /^NOT RESUMED: 1 of 6 session\(s\): 10000002 "s2": NOT RESUMED after 3 tries \(socket_error/.test(l)), log.join('\n'));
 });
 
 test('installKeeper writes the launch agent for the resume watcher and loads it', async () => {
