@@ -25,6 +25,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm install --omit=dev --no-audit --no-fund
+      # Every tracked source file, not only what the tests import: a syntax error in an unimported module must fail CI too.
+      - run: git ls-files -z '*.mjs' '*.js' | xargs -0 -n1 node --check
       - run: node --test test/*.test.mjs
       - run: node bin/housesitter.mjs demo
   sitter:
