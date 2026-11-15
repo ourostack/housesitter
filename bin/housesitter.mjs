@@ -13,6 +13,7 @@ import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
 import { connect, summarise } from '../src/kvmd.mjs';
 import * as Peer from '../src/peer.mjs';
+import * as Plugins from '../src/plugin-updates.mjs';
 import { peerWatch, which } from '../src/peer-watch.mjs';
 import * as Plug from '../src/plug.mjs';
 import * as Watch from '../src/watch.mjs';
@@ -96,8 +97,13 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
                                            process; --open-at-login also opens a closed app once per login
   housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                            that runs --resume-only --watch --open-at-login at login and keeps it running
+  housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded (Desk, MS Desk, cit, Crew) is older than the
+                                           newest release Agency has fetched, run restart-copilot --resume --detach for it, unless someone is using the
+                                           Mac, a restart ran in the last 6 h (--cooldown-hours) or is running; logs the decision
+  housesitter restart-copilot --install-plugin-updates [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.plugin-update-restart)
+                                           that runs --plugin-updates every 5 minutes; --uninstall-plugin-updates removes it
       [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
-      [--settle 90] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
+      [--settle 90] [--settle-max 600] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
   housesitter fleet [--stale-min 15] [--disk-floor-gb 20] [--always-on <mac>,<mac>] [--from <gist.json>]   every Mac side by side from the fleet
                                            gist's health records: how old each is and what is wrong (exit 1 when anything is);
                                            HOUSESITTER_FLEET_GIST and HOUSESITTER_FLEET_USER choose the gist and the gh account
@@ -109,7 +115,7 @@ const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you'r
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--grace', '--person-wait', '--copilot-home'];
+const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -212,15 +218,28 @@ async function restartCopilot() {
   const opts = {
     app, why: val('--why'), also: all('--also'), skip: all('--skip'), resume: flag('--resume'), sigterm: flag('--sigterm'), dry_run: flag('--dry-run'), open_at_login: flag('--open-at-login'),
     stand_in: app !== Copilot.DEFAULT_APP && !val('--copilot-home'),
-    t: { settle: sec('--settle', Copilot.T.settle), grace: sec('--grace', Copilot.T.grace), person: sec('--person-wait', Copilot.T.person) },
+    t: { settle: sec('--settle', Copilot.T.settle), settleMax: sec('--settle-max', Copilot.T.settleMax), grace: sec('--grace', Copilot.T.grace), person: sec('--person-wait', Copilot.T.person) },
   };
   if (opts.skip.some((id) => id.length < 8)) throw new Refusal('input-invalid', '--skip takes a session id or its first 8 characters or more');
-  if ([opts.t.settle, opts.t.grace, opts.t.person].some((n) => !Number.isFinite(n) || n < 0)) throw new Refusal('input-invalid', '--settle, --grace and --person-wait take a number of seconds');
+  if ([opts.t.settle, opts.t.settleMax, opts.t.grace, opts.t.person].some((n) => !Number.isFinite(n) || n < 0)) throw new Refusal('input-invalid', '--settle, --settle-max, --grace and --person-wait take a number of seconds');
   const stateDir = Copilot.stateDir();
   if (flag('--status')) {
     const s = Copilot.readState(stateDir);
     if (json) emit(s); else say(Copilot.renderState(s));
     return s.state === 'failed' ? 1 : 0;
+  }
+  if (flag('--install-plugin-updates') || flag('--uninstall-plugin-updates')) {
+    const r = flag('--uninstall-plugin-updates')
+      ? await Plugins.uninstallPluginAgent({})
+      : await Plugins.installPluginAgent({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') });
+    if (json) emit(r); else say(flag('--uninstall-plugin-updates') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Plugins.PLUGIN_LABEL}); every ${Plugins.EVERY_SEC / 60} min it restarts the app, with its sessions saved and resumed, when a plugin it loaded has a newer release. Decisions: ${path.join(stateDir, 'plugin-updates.log')}` : `✗ launchctl would not load it: ${r.error}`);
+    return r.ok ? 0 : 1;
+  }
+  if (flag('--plugin-updates')) {
+    const pd = Plugins.realPluginDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url) });
+    const r = await Plugins.pass({ ...opts, cooldown_ms: val('--cooldown-hours') == null ? undefined : Number(val('--cooldown-hours')) * 3600000 }, pd, flag('--quiet') || json || opts.dry_run ? () => {} : (l) => console.log(l));
+    if (json) emit(r); else if (opts.dry_run) say(Plugins.renderPass(r));
+    return r.decision.action === 'restart' && !r.restarted && !opts.dry_run ? 1 : 0;
   }
   if (flag('--install-keeper')) {
     const d = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir });

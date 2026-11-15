@@ -56,7 +56,8 @@ function* frames(buf) {
 }
 
 // drop: session ids that get the message accepted but never take a turn; refuse: ids the app answers with an error.
-export function startApp(home, { drop = [], refuse = [], token = 'tok' } = {}) {
+// react: (id, prompt, append) => void, to play a session's side of a conversation (append writes one history event).
+export function startApp(home, { drop = [], refuse = [], token = 'tok', react = null } = {}) {
   const received = [];
   const server = http.createServer();
   const open = new Set();
@@ -75,6 +76,7 @@ export function startApp(home, { drop = [], refuse = [], token = 'tok' } = {}) {
         if (refuse.includes(m.session_id)) { socket.write(frame(JSON.stringify({ type: 'error', request_id: m.request_id, message: `session ${m.session_id} is archived` }))); continue; }
         const f = path.join(home, 'session-state', m.session_id, 'events.jsonl');
         fs.appendFileSync(f, `${ev('user.message', { content: m.prompt })}\n`);
+        if (react) react(m.session_id, m.prompt, (type, data) => fs.appendFileSync(f, `${ev(type, data)}\n`));
         if (!drop.includes(m.session_id)) setTimeout(() => fs.appendFileSync(f, `${ev('assistant.turn_start')}\n`), 30);
         socket.write(frame(JSON.stringify({ type: 'session_message_sent', request_id: m.request_id, session_id: m.session_id })));
       }
