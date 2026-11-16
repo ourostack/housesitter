@@ -237,7 +237,7 @@ async function restartCopilot() {
     const s = Copilot.readState(stateDir);
     const rec = Health.readRecovery(stateDir);
     if (json) emit({ ...s, recovery: rec }); else say(`${Copilot.renderState(s)}\n${Health.renderRecovery(rec)}`);
-    return s.state === 'failed' ? 1 : 0;
+    return 0; // read-only: the exit code says the status was read; a failed restart is in the text and in --json (state, failed)
   }
   if (flag('--install-recovery') || flag('--uninstall-recovery')) {
     const env = { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() };

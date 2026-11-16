@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { appGeneration, appReady, family, findMain, resumeAfter, runInProgress, skipOf, snapshot, stateDir, T, realDeps, DEFAULT_APP } from './copilot-app.mjs';
+import { appGeneration, appReady, family, findMain, isDone, resumeAfter, runInProgress, skipOf, snapshot, stateDir, T, realDeps, DEFAULT_APP } from './copilot-app.mjs';
 import { judgeProgress } from './progress.mjs';
 import { hhmm, iso, incidentsDir, readJson, recentIncidents, recordIncident, realTell, run, short, writeJson } from './recovery.mjs';
 
@@ -77,8 +77,9 @@ export function crashSummary(text) {
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const sessionsText = (res) => {
   const ok = res.filter((r) => ['resumed', 'already continued'].includes(r.outcome)).length;
-  const bad = res.filter((r) => !['resumed', 'already continued'].includes(r.outcome));
-  return { ok, total: res.length, bad, text: `${ok} of ${res.length} session${res.length === 1 ? '' : 's'} resumed${bad.length ? ` (not: ${bad.map((r) => `${short(r.id)}${r.title ? ` ${r.title}` : ''}: ${r.outcome}`).join('; ')})` : ''}` };
+  const bad = res.filter((r) => !isDone(r.outcome));
+  const gone = res.filter((r) => /^gone/.test(r.outcome || ''));
+  return { ok, total: res.length, bad, text: `${ok} of ${res.length} session${res.length === 1 ? '' : 's'} resumed${bad.length ? ` (not: ${bad.map((r) => `${short(r.id)}${r.title ? ` ${r.title}` : ''}: ${r.outcome}`).join('; ')})` : ''}${gone.length ? ` (archived, not resumed: ${gone.map((r) => short(r.id)).join(', ')})` : ''}` };
 };
 
 // What the person is told, once, after the recovery. `prior` are the earlier freezes in the last hour, oldest first.
@@ -447,15 +448,15 @@ export async function recover({ kind, failures = [], crash = null, since, g, app
 
   const res = await resumeAfter({ before, opts: { ...opts, why: label(kind), also: [...(opts.also || []), ...(deps.owed?.get() || [])] }, startedAt, restartedAt: deps.now(), t: { ...T, ...(opts.t || {}) }, lanes: new Map() }, deps, (m) => out(m));
   report.resume = res;
-  report.ok = res.every((r) => ['resumed', 'already continued'].includes(r.outcome));
-  step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !['resumed', 'already continued'].includes(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
+  report.ok = res.every((r) => isDone(r.outcome));
+  step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !isDone(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
   deps.owed?.clear();
-  deps.status?.({ started: report.started_at, updated: iso(deps.now()), state: report.ok ? 'done' : 'failed', step: 'finished', ...(report.ok ? {} : { not_resumed: res.filter((r) => !['resumed', 'already continued'].includes(r.outcome)).map((r) => r.id) }) });
+  deps.status?.({ started: report.started_at, updated: iso(deps.now()), state: report.ok ? 'done' : 'failed', step: 'finished', ...(report.ok ? {} : { not_resumed: res.filter((r) => !isDone(r.outcome)).map((r) => r.id) }) });
   deps.lastWrite?.(report);
 
   const prior = recentIncidents(deps.state, ['freeze'], t.hour, started).filter((r) => r.ok);
   const pattern = prior.length && kind === 'freeze' ? patternText([...prior.map((p) => p.main_thread), report.main_thread], [...prior.map((p) => p.failures), failures]) : null;
-  recordIncident(deps.state, { kind, at: iso(started), evidence, ok: true, failures, main_thread: report.main_thread || null, crash: report.crash || null, resumed: res.length, not_resumed: res.filter((r) => !['resumed', 'already continued'].includes(r.outcome)).map((r) => r.id) });
+  recordIncident(deps.state, { kind, at: iso(started), evidence, ok: true, failures, main_thread: report.main_thread || null, crash: report.crash || null, resumed: res.length, not_resumed: res.filter((r) => !isDone(r.outcome)).map((r) => r.id) });
   const crashWhy = crash?.summary ? `${crash.summary.signal || ''} in ${crash.summary.frames.slice(0, 2).join(' ← ')}`.trim() : null;
   await deps.tell(recoveryMessage({ kind, at: started, res, evidence, failures, prior, pattern, why: crashWhy }));
   return { ...report, evidence };
