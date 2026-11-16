@@ -43,11 +43,22 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -W error::SyntaxWarning -m unittest discover -s test -p 'test_*.py' -v
-  ci:
-    name: ci
-    if: always()
-    needs: [node, sitter]
+  actions:
+    # The generator runs TypeScript as it is, which needs Node 22.18 or later.
+    name: actions
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - run: test "${{ needs.node.result }}" = success && test "${{ needs.sitter.result }}" = success
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node tools/ouro-actions/ouro-actions.mts check actions/housesitter.actions.mts actions/generated
+  ci:
+    name: ci
+    if: always()
+    needs: [node, sitter, actions]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: test "${{ needs.node.result }}" = success && test "${{ needs.sitter.result }}" = success && test "${{ needs.actions.result }}" = success
