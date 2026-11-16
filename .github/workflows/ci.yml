@@ -31,7 +31,8 @@ jobs:
       - run: node bin/housesitter.mjs demo
   sitter:
     name: sitter on python ${{ matrix.python }}
-    runs-on: ubuntu-latest
+    # ubuntu-latest moved to 26.04 on 2026-11-16, which has no Python 3.9 build; 24.04 still does.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
       matrix:
