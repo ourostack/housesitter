@@ -10,9 +10,10 @@
 //   4. linked git worktrees (the app's own, and the ones agents keep under ~/code): a worktree goes only if no unarchived
 //      app session has it, no running process has a file open under it, nothing in it changed in 24 hours, and it is not
 //      something launchd runs from. A name never qualifies one. Unsaved work is saved to a bundle first.
-//   5. full clones agents left under ~/code or in a session's files/ that hold nothing Git does not: clean, no stash, no
+//   5. agents' scratch under /private/tmp: an entry I own that nothing has changed or opened for 24 hours
+//   6. full clones agents left under ~/code or in a session's files/ that hold nothing Git does not: clean, no stash, no
 //      second worktree, every branch on a remote, nothing open, untouched for 3 days (a clone is one `git clone` away)
-//   6. the history of a session the app no longer lists, compressed, never deleted
+//   7. the history of a session the app no longer lists, compressed, never deleted
 // Each hour it records free space in a ledger; each day it measures where the bytes are and says which sources grew,
 // so the cause gets fixed and not only the symptom. A pass that finds nothing safe rests an hour before it scans again.
 
@@ -78,7 +79,7 @@ export async function pass(opts, deps, say = () => {}) {
   if (!opts.force && !opts.dry_run && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
 
   await deps.load?.();
-  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, sessions: 0, histories: 0, rescued: [] };
+  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, sessions: 0, histories: 0, rescued: [] };
   const done = () => deps.usage().free >= t.floor + t.margin;
 
   for (const c of deps.caches()) {
@@ -131,6 +132,14 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.worktrees.push(dir); out(`removed worktree ${dir}: ${gib(n)}`);
   }
 
+  for (const dir of deps.scratch?.() || []) {
+    if (done()) break;
+    if (deps.protectedBy?.(dir) || deps.open(dir) || !(now - deps.changedAt(dir) >= t.quiet)) continue;
+    const n = deps.size(dir);
+    if (!opts.dry_run) deps.remove(dir);
+    reclaimed.scratch += n; out(`removed scratch ${dir}: ${gib(n)}`);
+  }
+
   for (const dir of deps.clones?.() || []) {
     if (done()) break;
     const why = deps.protectedBy?.(dir) ? 'launchd or Housesitter runs from it' : used.has(dir) ? 'an unarchived app session uses it' : deps.open(dir) ? 'a running process has it open' : !(now - deps.changedAt(dir) >= t.cloneQuiet) ? 'something in it changed in the last 3 days' : deps.clone(dir).unique ? 'it holds work that is not on a remote' : null;
@@ -149,14 +158,14 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   const after = deps.usage();
-  const total = reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const total = reclaimed.scratch + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
   const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
   const tail = `${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in /private/tmp ${gib(reclaimed.scratch)}, compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
@@ -195,6 +204,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       for (const f of fs.readdirSync(dir)) {
         if (!f.endsWith('.plist')) continue;
         for (const m of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/<string>(\/[^<]+)<\/string>/g)) {
+          const tmp = m[1].match(/^(\/(?:private\/)?tmp\/[^/]+)/);
+          if (tmp) protectedPaths.push(tmp[1], tmp[1].replace(/^\/tmp/, '/private/tmp'));
           const dd = home && m[1].startsWith(`${home}/`) ? m[1] : null;
           // The repository root a plist's path sits in.
           let cur = dd; while (cur && cur !== home && !fs.existsSync(path.join(cur, '.git'))) cur = path.dirname(cur);
@@ -228,6 +239,12 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
           else for (const b of fs.readdirSync(da)) { const db = path.join(da, b); try { if (fs.statSync(db).isDirectory() && linkedHere(db)) out.push(db); } catch { /* gone */ } }
         }
       } catch { /* none */ }
+      return out;
+    },
+    // Top-level entries of /private/tmp that belong to this user (agents' scratch; the system's own are not ours).
+    scratch: () => {
+      const me = process.getuid?.(), root = '/private/tmp', out = [];
+      try { for (const n of fs.readdirSync(root)) { const p = path.join(root, n); const st = fs.lstatSync(p); if (st.uid === me && !st.isSymbolicLink()) out.push(p); } } catch { /* none */ }
       return out;
     },
     // Full clones (a .git folder) under ~/code and in sessions' files/: only those with nothing Git does not hold.

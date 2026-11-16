@@ -31,6 +31,7 @@ function fake(over = {}) {
     deadSessions: () => over.dead || [],
     quietFor: (dir) => (over.dead || []).find((x) => x.dir === dir).quietFor ?? Infinity,
     clonesIn: (dirs) => over.clones?.[dirs[0]] || [],
+    scratch: () => over.scratchList || [],
     clones: () => over.clonesList || [],
     clone: (x) => ({ unique: Boolean(over.uniq?.includes(x)) }),
     idleSessions: () => new Set(over.idle || []),
@@ -196,4 +197,12 @@ test('a full clone goes only when it holds nothing Git does not and has been qui
   const r = await pass({}, f.d);
   assert.deepEqual(f.log.cache, ['/c/clean']);
   assert.equal(r.reclaimed.clones.length, 1);
+});
+
+test('scratch in /private/tmp goes only when quiet for a day, not open and not something launchd runs from', async () => {
+  const scratchList = ['/private/tmp/old', '/private/tmp/new', '/private/tmp/open', '/private/tmp/agent'];
+  const f = fake({ scratchList, cloneAge: { '/private/tmp/new': 3600000 }, openFiles: ['/private/tmp/open'], protect: ['/private/tmp/agent'] });
+  const r = await pass({}, f.d);
+  assert.deepEqual(f.log.cache, ['/private/tmp/old']);
+  assert.equal(r.reclaimed.scratch, 2 * GIB);
 });
