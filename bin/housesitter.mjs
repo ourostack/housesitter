@@ -23,6 +23,7 @@ import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.
 import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Health from '../src/health-watch.mjs';
+import * as Disk from '../src/disk-prune.mjs';
 import * as OsUp from '../src/os-update.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
@@ -254,6 +255,11 @@ async function restartCopilot() {
     const hd = Health.realHealthDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir });
     const r = await Health.pass(opts, hd, (l) => { if (!json) console.log(l); });
     if (json) emit({ action: r.action, counts: r.counts || null }); else if (!flag('--quiet')) say(r.counts ? `health watch: ${Object.entries(r.counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ')}` : `health watch: ${r.action}`);
+    return 0;
+  }
+  if (flag('--disk-prune')) {
+    const r = await Disk.pass({ ...opts, force: flag('--now') }, Disk.realDiskDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir }), (l) => { if (!json && !flag('--quiet')) console.log(l); });
+    if (json) emit(r); else if (!flag('--quiet')) say(`disk prune: ${r.action}${r.after != null ? ` (${r.before}% -> ${r.after}%)` : ` (${r.pct}% used)`}`);
     return 0;
   }
   if (flag('--os-updates')) {

@@ -14,7 +14,7 @@ const cmd = (def) => defineCommand(def);
 // Every flag the commands read. A flag a command does not read is still unknown to the kit: flags are checked across
 // the tool, not per command, until a command declares its own.
 const VALUE_FLAGS = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--window', '--listing', '--peer', '--config', '--grid', '--address'];
-const SWITCH_FLAGS = ['--again', '--all-frames', '--api-open', '--attended', '--attended-test', '--base64', '--detach', '--double', '--end', '--expect-reboot', '--fake', '--fast', '--filevault', '--health-watch', '--heartbeat', '--hold', '--i-see-the-field', '--install', '--install-agent', '--install-keeper', '--install-plugin-updates', '--install-recovery', '--list', '--no-sessions', '--now', '--once', '--open-at-login', '--os-updates', '--outbox', '--peek', '--plain', '--plugin-updates', '--private', '--quiet', '--repair', '--resume', '--resume-only', '--right', '--sigterm', '--status', '--test', '--this-mac', '--trial', '--uninstall', '--uninstall-agent', '--uninstall-plugin-updates', '--uninstall-recovery', '--version', '--watch', '--yes'];
+const SWITCH_FLAGS = ['--again', '--all-frames', '--api-open', '--attended', '--attended-test', '--base64', '--detach', '--disk-prune', '--double', '--end', '--expect-reboot', '--fake', '--fast', '--filevault', '--health-watch', '--heartbeat', '--hold', '--i-see-the-field', '--install', '--install-agent', '--install-keeper', '--install-plugin-updates', '--install-recovery', '--list', '--no-sessions', '--now', '--once', '--open-at-login', '--os-updates', '--outbox', '--peek', '--plain', '--plugin-updates', '--private', '--quiet', '--repair', '--resume', '--resume-only', '--right', '--sigterm', '--status', '--test', '--this-mac', '--trial', '--uninstall', '--uninstall-agent', '--uninstall-plugin-updates', '--uninstall-recovery', '--version', '--watch', '--yes'];
 
 const FLAGS = Object.fromEntries([
   ...VALUE_FLAGS.map((f) => [f.slice(2), { type: 'string', description: 'a value the Mac commands read; see docs/usage.md' }]),
@@ -29,7 +29,7 @@ const OWN_DRY_RUN = new Set(['adopt', 'restart-copilot', 'laptop-arrival']);
 // on a timer runs as the person set it up, so these run without one. Each list is the flags a command's installed job
 // passes (AGENTS in src/recovery.mjs, the crash-resume, Apple Account, laptop-arrival and peer-watch installers).
 const SCHEDULED = {
-  'restart-copilot': ['heartbeat', 'health-watch', 'plugin-updates', 'os-updates', 'resume-only'],
+  'restart-copilot': ['heartbeat', 'health-watch', 'disk-prune', 'plugin-updates', 'os-updates', 'resume-only'],
   'apple-account': ['watch'],
   'laptop-arrival': ['quiet'],
   'peer watch': ['every', 'once'],
