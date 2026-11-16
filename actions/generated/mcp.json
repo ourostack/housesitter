@@ -1,0 +1,65 @@
+{
+  "generator": "ouro-actions 0.16.0",
+  "set": "housesitter",
+  "tools": [
+    {
+      "name": "status",
+      "title": "Status",
+      "description": "Read the Mac's KVM and sitter state: whether the KVM is reached, what the video and keyboard show, and the sitter's state. Changes nothing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "report": {
+            "type": "string",
+            "description": "The status as one JSON object: name, kvm, sitter and sitter_via."
+          }
+        },
+        "required": [
+          "report"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "look",
+      "title": "Look",
+      "description": "Take one look at the Mac's screen through its KVM and report what the sitter sees. Changes nothing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "look": {
+            "type": "string",
+            "description": "The look as one JSON object: the screen's state and the sitter's reading."
+          }
+        },
+        "required": [
+          "look"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "refusals": {}
+}

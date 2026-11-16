@@ -1,0 +1,22 @@
+{
+  "generator": "ouro-actions 0.16.0",
+  "set": "housesitter",
+  "tool": "housesitter",
+  "commands": [
+    {
+      "name": "status",
+      "summary": "Read the Mac's KVM and sitter state: whether the KVM is reached, what the video and keyboard show, and the sitter's state. Changes nothing.",
+      "effect": "private",
+      "readOnly": true,
+      "output": "{ report }"
+    },
+    {
+      "name": "look",
+      "summary": "Take one look at the Mac's screen through its KVM and report what the sitter sees. Changes nothing.",
+      "effect": "private",
+      "readOnly": true,
+      "output": "{ look }"
+    }
+  ],
+  "personOnly": {}
+}
