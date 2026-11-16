@@ -35,6 +35,10 @@ export const DEFAULT_APP = 'GitHub Copilot';
 export const LOOKBACK_MS = 24 * 3600000;
 export const TAIL_BYTES = 4 * 1024 * 1024;
 export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3, concurrency: 4, backoff: [2000, 6000, 15000] };
+// A session the app no longer has (archived or deleted on purpose) is not a failed resume.
+export const isGone = (o) => /^gone/.test(o || '');
+export const isDone = (o) => o === 'resumed' || o === 'already continued' || isGone(o);
+
 export const LABEL = 'bot.ouro.housesitter.restart-copilot';
 export const STALE_MS = 24 * 3600000;
 // A session whose history is bigger than this is never resumed by us: the app loads the whole file into memory on resume.
@@ -492,8 +496,9 @@ export async function restart(opts, deps, log = () => {}) {
       if (m) deps.generation?.set(`${m.pid}:${(await deps.startedAt(m.pid)) || ''}`, 'restart-copilot');
     } catch { /* the marker only stops a second resumer */ }
   }
-  const not = r.not_resumed || (r.resume || []).filter((x) => !['resumed', 'already continued'].includes(x.outcome)).map((x) => x.id);
-  write({ state: r.ok ? 'done' : 'failed', step: r.failed ? `failed at ${r.failed.stage}` : 'finished', ...(r.failed ? { failed: r.failed } : {}), ...(not.length ? { not_resumed: not } : {}) });
+  const not = r.not_resumed || (r.resume || []).filter((x) => !isDone(x.outcome)).map((x) => x.id);
+  const archived = (r.resume || []).filter((x) => isGone(x.outcome)).map((x) => x.id);
+  write({ state: r.ok ? 'done' : 'failed', step: r.failed ? `failed at ${r.failed.stage}` : 'finished', ...(r.failed ? { failed: r.failed } : {}), ...(not.length ? { not_resumed: not } : {}), ...(archived.length ? { archived } : {}) });
   return r;
 }
 
@@ -645,8 +650,8 @@ async function restartSteps(opts, deps, log) {
   const res = await resumeAfter({ before, opts, startedAt, restartedAt: deps.now(), t, lanes }, deps, log);
   report.resume = res;
   deps.owed?.clear?.();
-  report.ok = res.every((r) => r.outcome === 'resumed' || r.outcome === 'already continued');
-  step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !['resumed', 'already continued'].includes(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
+  report.ok = res.every((r) => isDone(r.outcome));
+  step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !isDone(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
   return report;
 }
 
@@ -689,7 +694,7 @@ export async function resumeAfter({ before, opts, startedAt, restartedAt, t, lan
     }
     return { ...rec, outcome: `NOT RESUMED after ${t.tries} tries (${rec.last || 'no reply'})` };
   });
-  const failed = results.filter((r) => !/^(resumed|already continued)/.test(r.outcome));
+  const failed = results.filter((r) => !/^(resumed|already continued|gone)/.test(r.outcome));
   if (failed.length) log(`NOT RESUMED: ${failed.length} of ${results.length} session(s): ${failed.map((r) => `${short(r.id)}${r.title ? ` "${r.title}"` : ''}: ${r.outcome}`).join('; ')}`);
   return results;
 }
@@ -775,7 +780,7 @@ export async function resumeOnly(opts, deps, log = () => {}) {
   }
   deps.generation?.set(g.key, 'resume-only');
   const res = await resumeAfter({ before, opts: { ...opts, also: opts.also || [] }, startedAt, restartedAt: startedAt, t }, deps, log);
-  const not = res.filter((r) => !['resumed', 'already continued'].includes(r.outcome));
+  const not = res.filter((r) => !isDone(r.outcome));
   if (!not.length) deps.owed?.clear?.();
   log(not.length ? `some sessions did not resume ${JSON.stringify(not.map((r) => `${short(r.id)}: ${r.outcome}`))}` : `resumed ${res.length} session(s)`);
   return { ok: not.length === 0, key: g.key, resume: res };
@@ -822,7 +827,7 @@ export function readState(dir = stateDir(), now = Date.now()) {
   const age = Math.max(0, Math.round((now - Date.parse(st.updated || st.started)) / 1000));
   // last.json is the report of the run that wrote status.json only once that run has finished.
   const result = st.state !== 'running' && last && Math.abs(Date.parse(last.started_at) - Date.parse(st.started)) < 10000 ? last : null;
-  return { ...base, state: st.state, step: st.step, started: st.started, updated: st.updated, age_s: age, stale: st.state === 'running' && age > 600, ...(st.failed ? { failed: st.failed } : {}), ...(st.not_resumed ? { not_resumed: st.not_resumed } : {}), result };
+  return { ...base, state: st.state, step: st.step, started: st.started, updated: st.updated, age_s: age, stale: st.state === 'running' && age > 600, ...(st.failed ? { failed: st.failed } : {}), ...(st.not_resumed ? { not_resumed: st.not_resumed } : {}), ...(st.archived ? { archived: st.archived } : {}), result };
 }
 
 // A restart job that is running now (its last step under ten minutes ago): starting another would end it mid-way.
@@ -837,6 +842,7 @@ export function renderState(s) {
   if (s.stale) L.push(`  no step for ${Math.round(s.age_s / 60)} min: the job may have died; read the log below`);
   if (s.failed) L.push(`  failed at ${s.failed.stage}: ${s.failed.why}`);
   if (s.not_resumed?.length) L.push(`  not resumed: ${s.not_resumed.map((id) => id.slice(0, 8)).join(', ')}`);
+  if (s.archived?.length) L.push(`  archived, not resumed: ${s.archived.map((id) => id.slice(0, 8)).join(', ')}`);
   const r = s.result;
   if (r) {
     L.push(`  steps: ${r.steps.map((x) => x.step.split(' {')[0]).join(' → ')}`);
@@ -848,7 +854,7 @@ export function renderState(s) {
   return L.join('\n');
 }
 
-const renderResumer = (r) => `resume watcher: last app process ${r.key} at ${r.at}: ${r.skipped ? r.skipped : r.ok ? `resumed ${r.resumed.length}` : `NOT everything resumed (${(r.resumed || []).filter((x) => !/^(resumed|already continued)/.test(x.outcome)).map((x) => `${short(x.id)}: ${x.outcome}`).join('; ') || r.failed?.why})`}`;
+const renderResumer = (r) => `resume watcher: last app process ${r.key} at ${r.at}: ${r.skipped ? r.skipped : r.ok ? `resumed ${r.resumed.length}` : `NOT everything resumed (${(r.resumed || []).filter((x) => !/^(resumed|already continued|gone)/.test(x.outcome)).map((x) => `${short(x.id)}: ${x.outcome}`).join('; ') || r.failed?.why})`}`;
 
 // ---------- the launchd agent for the resume watcher ----------
 

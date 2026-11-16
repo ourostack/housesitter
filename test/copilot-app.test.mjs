@@ -248,6 +248,26 @@ test('restart: a session the app has archived is reported gone, not retried', { 
   assert.equal(w.app.received.filter((m) => m.id === A && /restarted at/.test(m.prompt)).length, 1);
 });
 
+test('restart: the only session not resumed was archived on purpose, so the restart succeeds and --status says archived', { skip }, async () => {
+  const w = await world({ sessions: sessions(), appOpts: { refuse: [A] } });
+  const statuses = [];
+  const r = await restart(w.opts, { ...w.deps, status: (o) => statuses.push(o) });
+  await w.done();
+  assert.match(r.resume.find((x) => x.id === A).outcome, /^gone/);
+  assert.equal(r.ok, true);
+  const last = statuses.at(-1);
+  assert.equal(last.state, 'done');
+  assert.deepEqual(last.archived, [A]);
+  assert.equal(last.not_resumed, undefined);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-state-'));
+  fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify({ started: '2026-11-16T10:00:00.000Z', updated: '2026-11-16T10:01:00.000Z', ...last }));
+  const text = renderState(readState(dir));
+  assert.match(text, /^restart-copilot DONE/);
+  assert.match(text, new RegExp(`archived, not resumed: ${A.slice(0, 8)}`));
+  assert.doesNotMatch(text, /\n  not resumed:/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('restart: waits while someone is using the Mac, then quits; never quits over them', { skip }, async () => {
   const w = await world({ sessions: sessions(), person: 2 });
   const r = await restart(w.opts, w.deps);
