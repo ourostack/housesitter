@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
+import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, settleVerdict, watch, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -43,12 +43,6 @@ test('lastReply, recheckAfter and settleVerdict: ready, defer (with its lanes), 
   assert.equal(v({ state: 'idle', askedAt: t0 + 100, now: t0 + 200, lines: [ev('assistant.turn_start', {}, t0 + 150)] }), 'idle', 'it took a turn and ended it without an answer');
 });
 
-test('pickTargets: what was working, what the restart interrupted, and what was named; an old crash flag is left alone', () => {
-  const before = [{ id: A, state: 'busy', why: 'mid-turn' }, { id: B, state: 'idle', interrupted: true }, { id: C, state: 'idle' }];
-  const after = [{ id: A, interrupted: true }, { id: B, interrupted: true }, { id: C, interrupted: true, title: 'c' }, { id: D }];
-  assert.deepEqual(pickTargets({ before, after, also: [D, 'eeeeeeee'] }).map((t) => [t.id.slice(0, 1), t.known]), [['a', true], ['c', true], ['d', true], ['e', false]]);
-});
-
 test('findMain and family: the app, what it started and anything run from its bundle, not strangers', () => {
   const ps = parsePs(` 100 1 ${BUNDLE}/Contents/MacOS/fake\n 101 100 runtime --server\n 102 101 mcp\n 103 1 ${BUNDLE}/Contents/Resources/helper\n 104 1 other\n 105 100 ${BUNDLE}/Contents/MacOS/fake-child`);
   assert.equal(findMain(ps, BUNDLE).pid, 100);
@@ -70,15 +64,12 @@ test('quitItem finds the Quit entry in a hackamore ls reply', () => {
 
 test('messages say when, why and what to do', () => {
   const at = new Date(2026, 10, 14, 13, 5).getTime();
-  assert.match(resumeText({ at, why: 'a Desk runtime upgrade' }), /^The app was restarted at 13:05 for a Desk runtime upgrade; resume where you left off\./);
   const m = settleText({ by: at, stallSec: 600, why: 'a plugin update (desk 3.2.154 → 3.2.167)' });
   assert.match(m, /restarts for a plugin update \(desk 3\.2\.154 → 3\.2\.167\), as soon as every working session is ready and no later than about 13:05\. Reach a safe point/);
   assert.match(m, /a line that is exactly READY-TO-RESTART\./);
   assert.match(m, /answer instead with a line of its own, DEFER: <n> lanes running, about <m> min, and the restart waits for you and asks again when your estimate is up\./);
   assert.match(m, /goes 10 minutes without a step is not waited for/);
   assert.match(recheckText({ by: at, why: null }), /^Recheck for the restart: are you at a safe point yet\?.*READY-TO-RESTART, or DEFER.*about 13:05/);
-  assert.match(resumeText({ at, why: null, lanes: { lanes: 3, minutes: 45 } }), /You had said 3 lanes were still running \(about 45 min from done\): the restart went ahead without waiting longer, so those lanes were stopped; restart them from their pushed state\.$/);
-  assert.doesNotMatch(resumeText({ at, why: null }), /You had said/);
 });
 
 // A pretend Mac around a pretend app.
@@ -88,7 +79,7 @@ async function world({ sessions, appOpts = {}, quit = 'menu', person = 0, stubbo
   const app = await startApp(home, appOpts);
   const w = { home, app, procs: [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }, { pid: 101, ppid: 100, command: 'runtime --server' }], hk: [], kills: [], opens: 0, personLeft: person };
   // Everything the deps write (resumed.json, resume-only.json) and read (the skip list) lives in this folder, never in the real ones.
-  const real = realDeps({ copilotHome: home, state: path.join(home, 'state'), config: path.join(home, 'restart-copilot.json') });
+  const real = realDeps({ copilotHome: home, home: path.join(home, 'user-home'), state: path.join(home, 'state'), config: path.join(home, 'restart-copilot.json') });
   w.deps = {
     ...real,
     hackamore: ['hackamore'],

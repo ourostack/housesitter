@@ -197,7 +197,7 @@ test('a fake hung app: frozen for two minutes, it is evidence, SIGTERM, SIGKILL 
   assert.equal(inc.length, 1);
   assert.equal(inc[0].kind, 'freeze');
   assert.equal(JSON.parse(fs.readFileSync(path.join(w.deps.state, 'status.json'), 'utf8')).state, 'done');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(w.deps.state, 'last.json'), 'utf8')).resume.length, 2, 'last.json is what the health watch follows');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(w.deps.state, 'last.json'), 'utf8')).resume.length, 2, 'last.json is the record of the restart');
   assert.equal(w.deps.owed.get().length, 0, 'nothing is owed after the resume');
   // The app is healthy again: the next run is quiet and the streak is gone.
   assert.equal((await w.beat()).action, 'ok');

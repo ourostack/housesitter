@@ -114,8 +114,36 @@ export const AGENTS = {
   os: { label: 'bot.ouro.housesitter.os-updates', args: ['restart-copilot', '--os-updates', '--quiet'], every: 300, logName: 'housesitter-os-updates.launchd.log' },
   steer: { label: 'bot.ouro.housesitter.steer', args: ['steer', '--repair', '--no-sessions', '--quiet'], every: 120, logName: 'housesitter-steer.launchd.log' },
   disk: { label: 'bot.ouro.housesitter.disk-prune', args: ['restart-copilot', '--disk-prune', '--quiet'], every: 600, logName: 'housesitter-disk-prune.launchd.log' },
-  health: { label: 'bot.ouro.housesitter.health-watch', args: ['restart-copilot', '--health-watch', '--quiet'], every: 60, logName: 'housesitter-health-watch.launchd.log' },
 };
+
+// Jobs an older version installed and this one retired (the six-hour health watch is Shepherd's now): unloaded and removed, so no
+// launchd job keeps calling a flag that is gone.
+export const RETIRED = ['bot.ouro.housesitter.health-watch'];
+
+export async function retireAgents({ home = os.homedir(), dry = false, launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid() } = {}) {
+  const out = [];
+  for (const label of RETIRED) {
+    const plist = agentPath(label, home);
+    if (!fs.existsSync(plist)) continue;
+    out.push(dry ? { ok: true, dry_run: true, label, plist } : await uninstallAgent({ label, home, launchctl, uid }));
+  }
+  return out;
+}
+
+// What --status shows of the recovery jobs: the heartbeat's last run and the last incidents. The six-hour health watch is Shepherd's.
+export function readRecovery(dir, now = Date.now()) {
+  const b = readJson(path.join(dir, 'heartbeat.json'), {});
+  return { beat_at: b.beat_at || null, beat_age_s: b.beat_at ? Math.round((now - Date.parse(b.beat_at)) / 1000) : null, app: b.app || null, bad: b.bad || null, incidents: readIncidents(dir).slice(-5) };
+}
+
+export function renderRecovery(r) {
+  const L = [];
+  if (r.beat_at) L.push(`heartbeat: last run ${r.beat_age_s} s ago${r.beat_age_s > 180 ? ' (STALE: the job may not be running)' : ''}${r.bad ? `; the app is failing its probe since ${r.bad.since} (${r.bad.failures.join(', ')})` : '; the app answers'}`);
+  else L.push('heartbeat: not running yet (restart-copilot --install-recovery)');
+  L.push('health watch: Shepherd\'s; `shepherd watch --status` shows the resumed sessions it follows');
+  for (const i of r.incidents) L.push(`  ${i.at} ${i.kind}${i.cause ? ` (${i.cause})` : ''}${i.ok === false ? ' FAILED' : ''}${i.evidence ? `: ${i.evidence}` : ''}`);
+  return L.join('\n');
+}
 
 // The Mac must not sleep while agents work on it: a user-level caffeinate held by launchd (no password needed).
 export const KEEP_AWAKE = { label: 'bot.ouro.housesitter.keep-awake', program: ['/usr/bin/caffeinate', '-imsu'], keepAlive: true, logName: 'housesitter-keep-awake.log' };
