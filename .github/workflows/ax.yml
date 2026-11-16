@@ -1,11 +1,12 @@
 name: ax
 # Ouro AX: the X-ray against the fake KVM on a loopback address, and the action claims. Both upload artifacts whose names
-# contain "xray", which the adoption ledger reads. The X-ray gates on having written a report; its conformance gate
-# (--conformance) turns on once the CLI conforms.
+# contain "xray", which the adoption ledger reads. The X-ray job fails when a must claim does not hold, so a change
+# that breaks one can't merge.
 on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 permissions:
   contents: read
 concurrency:
@@ -40,7 +41,7 @@ jobs:
           rc=$?
           set -e
           echo "X-ray exit $rc"
-          node -e "if (!require('./xray/report.json').summary) process.exit(1)"
+          node -e "const s = require('./xray/report.json').summary; if (!s) process.exit(1); if (s.mustHolding !== s.must) { console.error('X-ray: ' + s.mustHolding + ' of ' + s.must + ' must claims hold; see xray/xray.md in the artifact'); process.exit(1); }"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
