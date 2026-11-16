@@ -31,15 +31,22 @@ export function actionsFor({ kvm, sitter }) {
   return a;
 }
 
+// The screen as the Reins protocol's section 1 describes it: focus, path, state, context and the actions accepted now,
+// each {name, title, input?, from}. The one node is the focus, so context is empty.
 export function screen(name, { kvm, sitter, via }) {
-  return { focus: name, path: [name], state: { kvm, sitter: sitter ? { state: sitter.state, since: sitter.since, at: sitter.at, can: sitter.can, obs: sitter.obs } : null, via }, actions: actionsFor({ kvm, sitter }) };
+  const title = (n) => { const s = n.replace(/_/g, ' '); return s[0].toUpperCase() + s.slice(1); };
+  const actions = actionsFor({ kvm, sitter }).map((a) => {
+    const takesInput = Object.keys(a.input.properties || {}).length > 0;
+    return { name: a.name, title: title(a.name), ...(takesInput ? { input: a.input } : {}), from: name, summary: a.summary };
+  });
+  return { focus: name, path: [name], state: { kvm, sitter: sitter ? { state: sitter.state, since: sitter.since, at: sitter.at, can: sitter.can, obs: sitter.obs } : null, via }, context: {}, actions };
 }
 
 // Run one action against a driver (pixels) or the sitter (unlock, power). Returns { ok, result } or throws Refusal.
 export async function run(name, action, input, { scr, hands, sitter }) {
   const a = scr.actions.find((x) => x.name === action);
   if (!a) throw new Refusal('action-unavailable', `${action} isn't available on ${name} right now`, { available: scr.actions.map((x) => x.name) });
-  const bad = validate(a.input, input ?? {});
+  const bad = validate(a.input ?? obj(), input ?? {});
   if (bad) throw new Refusal('input-invalid', bad.message, { path: bad.path });
   if (['unlock', 'want_desktop', 'power_cycle', 'power_on'].includes(action)) {
     const r = await sitter.op(action, action === 'want_desktop' ? (input || {}) : {});
