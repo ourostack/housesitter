@@ -29,6 +29,10 @@ import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
 import * as Steer from '../src/steer.mjs';
 import * as Arrival from '../src/laptop-arrival.mjs';
+import { cli, isCommand } from '../src/cli-table.mjs';
+import { quietPipes, runCli } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
+
+quietPipes(process);
 
 const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac), { key: mac.kvm?.ssh_key || null });
 const sitterDir = (mac) => mac.kvm?.sitter_home || '/etc/kvmd/user/housesitter';
@@ -45,114 +49,6 @@ async function reinsLayer() {
     throw new Refusal('action-failed', `ls and do need @ouro.bot/hackamore, which is not installed here. Run \`npm install\` in ${ROOT}, or run housesitter with \`npx github:ourostack/housesitter\`. Every other command works without it.`);
   }
 }
-
-const HELP = `housesitter ${VERSION}: your agents' Mac, looked after while you're away.
-
-  housesitter demo                         the real evening it was built for, replayed (no hardware)
-  housesitter demo night                   one bad night, rehearsed: a panic, a freeze, a changed password
-  housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
-      [--notify ntfy|<url>] [--email <you@example.com>] [--watched-by <url>] [--location home|away] [--fingerprint <sha256>]
-      [--this-mac] [--outbox] [--dry-run] [--fake]
-  housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account>   store a secret (read from stdin, no echo);
-                                           apple-account stays on this Mac (never the KVM) and also lets hackamore type it into
-                                           Setup Assistant's iCloud password pane and nowhere else
-  housesitter apple-account <mac> [--now | --watch | --expect-reboot --why "<the 12:00 update reboot>" | --install-agent | --uninstall-agent [--dry-run] | --status]
-                                           the Apple Account password prompt after an update reboot: within 30 min of a boot
-                                           Housesitter coordinated (--expect-reboot marks one before it), or with --now, it is
-                                           typed from the Keychain into that prompt only; a verification code is never typed;
-                                           every use is logged (no value) and the agent is told once
-  housesitter proof <mac> [--record <dir>] record what the KVM sees while you restart the Mac
-                                           (desktops are never recorded unless --all-frames)
-  housesitter plug <mac> find|adopt [ip]|status   the smart plug on the Mac's cord: set it up safely, read it
-  housesitter plug <mac> prove --attended  one real 10 s power cut, watched until the Mac is back
-
-  housesitter doctor <mac> [--private]     everything in one screen: what the KVM sees, the Mac, the budgets
-                                           (--private hides the picture, for a screenshot or a screen share)
-  housesitter look <mac>                   one read-only look at the screen   (--picture <file>: a saved one)
-  housesitter screenshot <mac> [--out f.jpg] [--max-width 1280]
-  housesitter click <mac> <x> <y> [--right|--double]    in the last screenshot's pixels
-  housesitter type <mac> <text>            housesitter key <mac> <combo>     housesitter scroll <mac> <up|down> [n]
-  housesitter computer <mac> '<json>'      an Anthropic computer-use action, as-is
-  housesitter unlock|power-cycle|power-on <mac>     ask the sitter (it keeps its own limits and checks)
-  housesitter unlock <mac> --trial|--hold  arm one supervised try of the stored password, or disarm it
-  housesitter unlock <mac> --attended-test you are locking and unlocking on purpose: its own budget (30 an hour)
-  housesitter want-desktop <mac> [--minutes 10]   an agent needs the UI: unlock now, and again if it locks meanwhile
-                                           (only with "unlock_lock_screen": "on_request" or true in its config)
-  housesitter watch-kvm <mac> --install   on the Mac: a LaunchAgent that checks the KVM every minute, and tells you
-                                           once if it goes silent (and once when it's back): the Mac watches its KVM
-                                           [--silent-min 5] [--test]; also --once, --status, --uninstall
-  housesitter alert-test <mac> [--again]  one real "I'm stuck" message through the rules, marked TEST (over SSH; once a day)
-  housesitter learn-prompt <mac> --i-see-the-field [--filevault]  teach it the prompt you see on the KVM; --filevault during a restart
-  housesitter learn-prompt <mac> --i-see-the-field --grid <x> <y>  the login window's list of users: x y is your
-                                           account's tile, as fractions of the screen (0.48 0.87)
-  housesitter power-cycle <mac> --attended  you have looked: skip the frozen-desktop check (never the budgets)
-
-  housesitter ls <mac>                     the Mac as state + the actions available now (Ouro Reins)
-  housesitter do <mac> <action> ['<json>'] run one; refusals: action-unavailable, input-invalid, action-failed
-  housesitter forget <mac> --yes           wipe the secrets from the KVM and stop the sitter
-  housesitter peer send <text> [--re <id>] [--now]
-                                           Ouroboros to Housesitter, the agent on the KVM: free text through a secret gist,
-                                           sent within 6 minutes (--now: at once; 10 gist writes an hour at most)
-  housesitter peer inbox [--peek]          Housesitter's new messages, oldest first, each shown once (--peek: don't mark them read);
-                                           also sends queued messages that are due
-  housesitter peer flush [--now]           send the queued messages if due (--now: at once, within the hourly cap)
-  housesitter peer watch [--agent ouroboros] [--every 30] [--once] [--ouro <path>]
-  housesitter peer drill <label> [--minutes 60] | --end   mark a planned drill: the link labels everything sent meanwhile
-                                           wake the agent with ouro msg when Housesitter writes (marks nothing read),
-                                           and send its queued messages when due; logs to peer-watch.log beside the config
-  housesitter restart-copilot [--resume] [--dry-run|--detach]   restart the GitHub Copilot app on this Mac and lose no session's work:
-                                           ask working sessions to reach a safe point, quit through the app's Quit menu
-                                           (hackamore), relaunch, then send each session that was working a resume message
-                                           and check it took a turn. --dry-run lists what it would do now; --detach runs it
-                                           as a launchd job that survives the app quitting; --status shows the run now or the last
-                                           (state, step, start time, result)
-  housesitter restart-copilot --resume-only [--watch [--open-at-login]] [--dry-run]   resume what an app stop left unfinished
-                                           (a crash, an update, a login), restarting nothing; --watch does it for every new app
-                                           process; --open-at-login also opens a closed app once per login
-  housesitter restart-copilot --heartbeat [--dry-run]   one probe of the app with no model turns: its socket and its window (the main
-                                           thread, through an accessibility read). Failing for 2 minutes is a freeze: it takes a sample,
-                                           quits the app (SIGTERM, then SIGKILL to exact pids), relaunches it, resumes the working
-                                           sessions and tells the agent once. A crash report and no app is relaunched the same way;
-                                           a gap of 5+ minutes between its own runs is the Mac stopping, recorded with its cause
-  housesitter restart-copilot --health-watch [--dry-run]   one pass of the six-hour watch after any restart, recovery or reboot, no model
-                                           turns: for each resumed session, did it take a turn, is it erroring, is it stuck busy; asks
-                                           again once, and tells the agent by name only about what stays broken; --status shows it
-  housesitter restart-copilot --os-updates [--now] [--window 2-5] [--dry-run]   one pass for a pending macOS update, which macOS installs itself (no admin rights here):
-                                           reads softwareupdate -l, the automatic-update settings and the enforced install deadline; shortly before macOS
-                                           acts (the deadline less 90 min, the quiet hours with nobody at the Mac, or the install starting) it gets every
-                                           working session to a safe point, arms the Apple Account prompt fill (apple-account --expect-reboot) and holds
-                                           until the reboot, then launchd and the resume watcher bring everything back; if the Mac did not restart it
-                                           stands down. Automatic install off: tells the agent once which setting a person must turn on. --now runs the
-                                           safe point at once and waits 20 min for a person to restart the Mac
-      [--listing <file>]                   with --os-updates: read a saved softwareupdate -l (rehearse with --dry-run)
-  housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute, the OS-update check every 5 min) and a
-                                           caffeinate that keeps the Mac awake; --mac also installs that Mac's apple-account agent; --uninstall-recovery removes them
-  housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
-                                           that runs --resume-only --watch --open-at-login at login and keeps it running
-  housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded is older than the
-                                           newest release in the app's plugin cache and that release changes a skill, hook, agent or Desk's MCP tool list, run
-                                           restart-copilot --resume --detach for it, unless someone is using the Mac, a restart ran in the last
-                                           6 h (--cooldown-hours) or is running; logs the decision
-  housesitter restart-copilot --install-plugin-updates [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.plugin-update-restart)
-                                           that runs --plugin-updates every 5 minutes; --uninstall-plugin-updates removes it
-      [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
-      [--settle 600] [--settle-max 10800] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
-  housesitter steer [--repair] [--list] [--no-sessions] [--peer <device name>] [--install|--uninstall]   can another computer see and drive this Mac's
-                                           agent sessions through Agency Hub? The daemon connected, tracking every session and under launchd; this Mac's
-                                           device and live sessions readable in Hub's service; whether new sessions start with Remote control on.
-                                           --repair puts the daemon back under launchd with track-all; --list shows the sessions as Hub reads them;
-                                           --peer says whether this Mac can read another Mac's device (the laptop's view of the mini);
-                                           --install loads bot.ouro.housesitter.steer (every 2 min, no model turns); exit 1 when something is wrong
-  housesitter laptop-arrival [--config <file>] [--dry-run] [--status] [--install|--uninstall]   when a Mac that was away is back online, bring it up to
-                                           date and tell the agent once: update and restart its Copilot app (sessions saved and resumed), unload the jobs
-                                           this Mac took over, verify its Hub daemon; every step checks first, so a second run changes nothing
-  housesitter fleet [--stale-min 15] [--disk-floor-gb 20] [--always-on <mac>,<mac>] [--from <gist.json>]   every Mac side by side from the fleet
-                                           gist's health records: how old each is and what is wrong (exit 1 when anything is);
-                                           HOUSESITTER_FLEET_GIST and HOUSESITTER_FLEET_USER choose the gist and the gh account
-  housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
-  housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
-
-  --json for machine output. Config: ${configPath()}. Docs: https://github.com/ourostack/housesitter`;
 
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
@@ -427,8 +323,15 @@ async function restartCopilot() {
 function need(n, usage) { if (!n) throw new Refusal('input-invalid', `usage: ${usage}`); }
 
 async function main() {
-  if (!cmd || cmd === 'help' || flag('--help') || flag('-h')) { console.log(HELP); return 0; }
   if (cmd === 'version' || flag('--version')) { console.log(VERSION); return 0; }
+  // Help, `help --json`, and an unknown command are the kit's (src/cli-table.mjs); every command word runs below.
+  if (!isCommand(args)) {
+    const code = await runCli(cli, args, { stdout: process.stdout, stderr: process.stderr });
+    // process.exit below would cut a piped stdout short, so wait for what the kit wrote.
+    await new Promise((done) => process.stdout.write('', done));
+    return code;
+  }
+
 
   if (cmd === 'demo' && name !== 'night') {
     const steps = replay();

@@ -12,9 +12,9 @@
     "./screen": "./src/screen.mjs",
     "./fake": "./src/fake.mjs"
   },
-  "files": ["bin", "src", "device", "plugins", "spec", "assets/evening.json", "docs/tailnet-policy.hujson", "README.md", "LICENSE", "llms.txt"],
+  "files": ["bin", "src", "lib/ouro-ui", "device", "plugins", "spec", "assets/evening.json", "docs/tailnet-policy.hujson", "README.md", "LICENSE", "llms.txt"],
   "dependencies": { "@ouro.bot/hackamore": "github:ourostack/hackamore#v0.1.5" },
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22.18" },
   "scripts": {
     "test": "node --test test/*.test.mjs && python3 -m unittest discover -s test -p 'test_*.py'",
     "demo": "node bin/housesitter.mjs demo"

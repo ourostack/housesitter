@@ -127,7 +127,7 @@ Ouroboros and Housesitter are buddies: each is the other's way back from silence
 2. **USB-C** from the KVM into a port **on the Mac itself**. The FileVault screen only sees the Mac's own ports.
 3. **Ethernet** for the KVM, with PoE or its own USB-C power. Never power the KVM through the smart plug.
 
-Then, on the agent Mac (or any Mac on the same network), with Node 20 or later:
+Then, on the agent Mac (or any Mac on the same network), with Node 22.18 or later (the command line runs TypeScript as it is; the sitter on the KVM is Python and does not need Node):
 
 ```sh
 npm install -g github:ourostack/housesitter

@@ -240,7 +240,7 @@ test('housesitter peer send, flush and inbox from the shell; the queue outlives 
   assert.ok(fs.existsSync(path.join(dir, 'peer-seen.json')));
   assert.equal((await cli(['peer', 'send'], e)).status, 2);
   assert.equal((await cli(['peer', 'shout'], e)).status, 2);
-  const help = (await cli(['help'], e)).stdout;
+  const help = (await cli(['help', 'peer'], e)).stdout;
   assert.match(help, /housesitter peer send <text>/);
   assert.match(help, /housesitter peer flush \[--now\]/);
   await gh.close();
