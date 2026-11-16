@@ -27,7 +27,32 @@ test('help --json is the kit\'s: pure JSON that lists every command with its eff
   const help = JSON.parse(r.stdout);
   assert.deepEqual(help.commands.map((c) => c.name).sort(), [...COMMAND_WORDS].sort());
   for (const c of help.commands) assert.ok(['private', 'others'].includes(c.effect), c.name);
+  assert.equal(help.commands.find((c) => c.name === 'peer inbox').effect, 'private');
+  assert.equal(help.commands.find((c) => c.name === 'peer send').effect, 'others');
   assert.deepEqual(help.exitCodes.map((e) => e.name), ['ok', 'error', 'usage', 'findings']);
+});
+
+test('the overview lists peer once with the group summary', () => {
+  for (const args of [['help'], ['--help']]) {
+    const r = run(args);
+    assert.equal(r.status, 0, r.stderr);
+    const rows = r.stdout.split('\n').filter((line) => /^\s+peer\s/.test(line));
+    assert.equal(rows.length, 1);
+    assert.match(rows[0], /talk to Housesitter, the agent on the KVM: peer send, peer inbox/);
+  }
+});
+
+test('version and tailnet-policy return JSON without changing their plain output', () => {
+  const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  const policy = fs.readFileSync(path.join(ROOT, 'docs/tailnet-policy.hujson'), 'utf8');
+  for (const [command, key, value] of [['version', 'version', version], ['tailnet-policy', 'policy', policy]]) {
+    const plain = run([command]);
+    const json = run([command, '--json']);
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.equal(json.status, 0, json.stderr);
+    assert.equal(plain.stdout, `${value}\n`);
+    assert.deepEqual(JSON.parse(json.stdout), { [key]: value });
+  }
 });
 
 test('an unknown command exits 2 with one line on stderr and nothing on stdout', () => {

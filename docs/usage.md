@@ -107,4 +107,4 @@ housesitter tailnet-policy               a Tailscale policy where the KVM reache
 housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 ```
 
-Add `--json` to any command for machine output. The config file is `~/.config/housesitter/config.json`, or `$HOUSESITTER_CONFIG`.
+Add `--json` to any command for machine output. `version --json` returns `{"version":"..."}` and `tailnet-policy --json` returns `{"policy":"..."}`, with the full policy text. The config file is `~/.config/housesitter/config.json`, or `$HOUSESITTER_CONFIG`.

@@ -6,6 +6,7 @@
 import { defineCli, defineCommand, parse } from '../lib/ouro-ui/registry/ouro/ax/command.ts';
 import { BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE } from '../lib/ouro-ui/registry/ouro/ax/exit-codes.ts';
 import { runCli } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
+import { AxError } from '../lib/ouro-ui/registry/ouro/ax/problem.ts';
 
 const mac = (description = 'the Mac, as its name in the config') => ({ name: 'mac', description });
 const word = (name, description, extra = {}) => ({ name, description, ...extra });
@@ -97,8 +98,28 @@ export const cli = defineCli({
   ],
   exits: defineExitCodes([...BASE_EXIT_CODES, FINDINGS_EXIT_CODE]),
   globalFlags: FLAGS,
+  groups: { peer: 'talk to Housesitter, the agent on the KVM: peer send, peer inbox' },
   commands: COMMANDS,
 });
+
+// The kit lists groups separately by effect. Hide the private row only in the text overview; command help, JSON
+// manifests and parsing still use the full table and retain each command's actual effect.
+const overviewCli = {
+  ...cli,
+  commands: cli.commands.map((c) => c.name === 'peer inbox' ? { ...c, hidden: true } : c),
+};
+
+export async function runHelp(argv, io) {
+  let parsed;
+  try {
+    parsed = parse(cli, argv);
+  } catch (e) {
+    if (!(e instanceof AxError)) throw e;
+    return runCli(cli, argv, io);
+  }
+  const overview = parsed.kind === 'help' && parsed.topic === undefined && !parsed.json;
+  return runCli(overview ? overviewCli : cli, argv, io);
+}
 
 /**
  * Whether bin/housesitter.mjs runs argv through its own switch. Help (`help`, `--help`, `-h`, a command's own help) and
