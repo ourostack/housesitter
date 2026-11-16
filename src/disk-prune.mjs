@@ -1,7 +1,7 @@
 // `housesitter restart-copilot --disk-prune`: keep the data volume under 80% with no model turns. launchd runs one pass
 // every ten minutes; a pass does nothing below 80% used. Above it, it prunes safe classes in this order and stops as soon
 // as the volume is back under 75%:
-//   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh, the Copilot SDK)
+//   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh)
 //   2. the Copilot app's worktrees that no session uses and nobody has touched for a day: a worktree goes only if
 //      no unarchived app session has it, no running process has a file open under it, and nothing in it changed in
 //      24 hours. A name never qualifies one. Uncommitted or unpushed work is saved under ~/AgentBundles/disk-rescue first.
@@ -26,7 +26,7 @@ export const DP = {
 const GIB = 1073741824;
 export const gib = (b) => `${(b / GIB).toFixed(1)} GiB`;
 
-export const CACHES = ['.npm/_cacache', '.cache/gh', 'Library/Caches/ms-playwright', 'Library/Caches/pip', 'Library/Caches/go-build', 'Library/Caches/pnpm', 'Library/Caches/github-copilot-sdk'];
+export const CACHES = ['.npm/_cacache', '.cache/gh', 'Library/Caches/ms-playwright', 'Library/Caches/pip', 'Library/Caches/go-build', 'Library/Caches/pnpm'];
 
 // Why a worktree may not be removed now, or null when it may. `w`: { dir, linked, usedByApp, open, changedAt }.
 export function whyKeep(w, now, t = DP) {

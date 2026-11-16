@@ -2,7 +2,7 @@
 // worktree that a session uses, a process has open, or that changed in the last day is never removed, whatever its name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pass, whyKeep } from '../src/disk-prune.mjs';
+import { CACHES, pass, whyKeep } from '../src/disk-prune.mjs';
 
 const DAY = 24 * 3600000, GIB = 1073741824;
 const NOW = Date.parse('2026-11-16T12:00:00Z');
@@ -95,4 +95,10 @@ test('what it reclaimed is said once; when nothing is safe it says so at most on
   await pass({}, n.d); await pass({}, n.d);
   assert.equal(n.log.told.length, 1);
   assert.match(n.log.told[0], /nothing safe/);
+});
+
+// 2026-11-16: pruning Library/Caches/github-copilot-sdk deleted the Copilot app's own CLI, which it unpacks only at
+// launch, so no session could start or reopen until the app restarted. Only caches that rebuild on demand are pruned.
+test('the Copilot app\'s runtime is never pruned as a cache', () => {
+  assert.ok(!CACHES.some((c) => /github-copilot|copilot-sdk/i.test(c)), CACHES.join(', '));
 });
