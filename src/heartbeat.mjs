@@ -106,6 +106,8 @@ export function classifyGap({ from, to, facts }) {
           : `restarted at ${hhmm(f.boot)} and the logs name no reason (no update recorded, no panic report)`;
     return { cause: planned ? 'planned-update' : upd ? 'update' : panic ? 'panic' : 'reboot-unknown', mins, text: `The Mac stopped running my jobs for ${mins} min (${win}): it ${why}${f.onDemand ? '; from ' + hhmm(f.onDemand) + ' the system had stopped starting jobs while it prepared the restart' : ''}.` };
   }
+  // The job itself was switched off (launchctl disable/bootout) for the gap: nothing hung, and nobody needs telling.
+  if (f.paused) return { cause: 'paused', mins, text: `The heartbeat job was switched off for ${mins} min (${win}); that is not a hang.` };
   if ((f.sleeps || []).length) return { cause: 'sleep', mins, text: `The Mac slept for ${mins} min (${win}): ${f.sleeps.slice(0, 2).join('; ')}. I have set it to stay awake${f.pmsetSleep ? ` (the system setting is still "sleep ${f.pmsetSleep}"; changing that needs an administrator's password)` : ''}.` };
   if (f.onDemand) return { cause: 'restart-pending', mins, text: `The Mac stopped starting my jobs for ${mins} min (${win}): from ${hhmm(f.onDemand)} the system was preparing a restart or shutdown, and it did not restart in that time.` };
   return { cause: 'hang', mins, text: `The Mac stopped running my jobs for ${mins} min (${win}) with no reboot and no sleep in its logs: a hang or heavy stall.${f.load ? ` Load then: ${f.load}.` : ''}${f.memory ? ` Memory: ${f.memory}.` : ''}` };
@@ -207,13 +209,14 @@ export function parseHistory(text) {
 // What the Mac's own logs say about a gap. Each lookup is best effort and bounded; a missing one is simply absent.
 async function gapFacts(from, to, { state, home }) {
   const ts = (ms) => new Date(ms).toLocaleString('sv-SE').replace('T', ' ');
-  const [boot, hist, sleepLog, onDemand, load, vm] = await Promise.all([
+  const [boot, hist, sleepLog, onDemand, load, vm, offLog] = await Promise.all([
     sysctlBoot(),
     run('/usr/sbin/softwareupdate', ['--history'], { timeoutMs: 30000 }),
     run('/usr/bin/pmset', ['-g', 'log'], { timeoutMs: 90000 }),
     run('/usr/bin/log', ['show', '--start', ts(from), '--end', ts(to), '--style', 'compact', '--predicate', 'process == "launchd" AND eventMessage CONTAINS "on-demand-only"'], { timeoutMs: 90000 }),
     run('/usr/bin/uptime', []),
     run('/usr/bin/vm_stat', []),
+    run('/usr/bin/log', ['show', '--start', ts(from), '--end', ts(to), '--style', 'compact', '--predicate', 'process == "launchd" AND eventMessage CONTAINS "housesitter.heartbeat" AND (eventMessage CONTAINS[c] "disable" OR eventMessage CONTAINS[c] "bootout" OR eventMessage CONTAINS[c] "removing")'], { timeoutMs: 90000 }),
   ]);
   const inWin = (s) => { const m = s.match(/^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)/); if (!m) return null; const t = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime(); return t >= from - 60000 && t <= to ? t : null; };
   const sleeps = sleepLog.stdout.split('\n').filter((l) => /^\S+ \S+ [-+]\d{4} (Sleep|Wake|DarkWake)\s/.test(l) && inWin(l)).map((l) => l.replace(/\s+/g, ' ').slice(0, 120));
@@ -222,8 +225,11 @@ async function gapFacts(from, to, { state, home }) {
   const panics = diagDirs.flatMap((d) => { try { return fs.readdirSync(d).filter((n) => /panic|^Kernel/i.test(n)).map((n) => ({ n, t: fs.statSync(path.join(d, n)).mtimeMs })).filter((x) => x.t >= from - 600000); } catch { return []; } }).map((x) => x.n);
   const pm = (await run('/usr/bin/pmset', ['-g'], { timeoutMs: 10000 })).stdout.match(/^\s*sleep\s+(\d+)/m);
   const free = vm.stdout.match(/Pages free:\s+(\d+)/);
+  // A pause marker ({from,to} in ms; `to` absent while still paused) written by whoever disables the job also counts.
+  const mark = readJson(path.join(state, 'heartbeat-paused.json'), null);
+  const paused = Boolean(offLog.stdout.split('\n').some((l) => inWin(l) && /disable|bootout|removing/i.test(l)) || (mark && Number(mark.from) <= to && (mark.to == null || Number(mark.to) >= from)));
   return {
-    boot, installs: parseHistory(hist.stdout), sleeps, onDemand: od?.t || null, panics, planned: readJson(path.join(state, 'os-update.json'), {}).reboot || null,
+    paused, boot, installs: parseHistory(hist.stdout), sleeps, onDemand: od?.t || null, panics, planned: readJson(path.join(state, 'os-update.json'), {}).reboot || null,
     pmsetSleep: pm && Number(pm[1]) > 0 ? pm[1] : null, load: (load.stdout.match(/load averages?: (.*)$/m) || [])[1] || null, memory: free ? `${Math.round(Number(free[1]) * 16384 / 1048576)} MB free` : null,
   };
 }
@@ -245,6 +251,8 @@ export async function pass(opts, deps, say = () => {}) {
   const now = deps.now();
   const out = (m) => say(`${iso(now)} heartbeat${opts.dry_run ? ' (dry run)' : ''}: ${m}`);
   const st = deps.readState() || {};
+  // A streak recorded by an older version judged the socket or window; only no-progress is judged now.
+  if (st.bad && !(st.bad.failures || []).includes('no-progress')) st.bad = null;
   const res = { action: 'ok', failures: [] };
   const save = (extra = {}) => { if (!opts.dry_run) deps.writeState({ ...st, ...extra, beat_at: iso(deps.now()) }); };
   const gap = st.beat_at ? now - Date.parse(st.beat_at) : 0;
@@ -253,6 +261,7 @@ export async function pass(opts, deps, say = () => {}) {
   // The Mac's own gap first: it is recorded whatever else happens in this run.
   if (!opts.dry_run) {
     if (stall) st.stall_pending = await handleStall({ stall, deps, out });
+    if (st.stall_pending?.cause === 'paused') st.stall_pending = null;
     if (st.stall_pending) st.stall_pending = await settleStall({ st, deps, now, t, out });
   }
 
