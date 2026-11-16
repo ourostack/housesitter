@@ -301,3 +301,28 @@ test('settleStall tells after ten minutes even if no resume was recorded', { ski
   assert.equal(await settleStall({ st, deps }), null);
   assert.match(told[0], /^The Mac stopped\. The sessions had not finished resuming/);
 });
+
+test('a gap while the job was switched off is "paused", never a hang, and is never told', { skip }, async () => {
+  assert.equal(classifyGap({ from: 0, to: 66 * 60000, facts: { paused: true, load: '1' } }).cause, 'paused');
+  const w = await world({ sessions: sessions() });
+  w.facts = { paused: true };
+  await w.beat();
+  await w.beat(66 * 60000);
+  assert.deepEqual(w.told, [], 'a pause is recorded but nobody is told');
+  await w.beat(40000);
+  assert.deepEqual(w.told, []);
+  await w.done();
+});
+
+test('a streak from before the progress rule (socket-timeout) is dropped, not reported', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  await w.beat();
+  const f = path.join(w.root, 'state', 'heartbeat.json');
+  const o = JSON.parse(fs.readFileSync(f, 'utf8'));
+  o.bad = { since: new Date(Date.now() - 4565000).toISOString(), last: new Date(Date.now() - 4000000).toISOString(), count: 5, failures: ['socket-timeout'] };
+  fs.writeFileSync(f, JSON.stringify(o));
+  const r = await w.beat();
+  assert.equal(r.action, 'ok');
+  assert.ok(!r.lines.some((l) => /socket-timeout|did not for/.test(l)));
+  await w.done();
+});
