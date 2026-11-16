@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { currentLink, deploy, liveBin, releasesRoot } from '../src/deploy.mjs';
+import { currentLink, deploy, liveBin, programArgs, releasesRoot, renderDeploy } from '../src/deploy.mjs';
 
 const UID = 501;
 const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
@@ -47,13 +47,7 @@ function fixture() {
 
 // launchctl with no real effect: `print` answers for the labels in `loaded`; every other call succeeds and is recorded.
 function fakeLaunchctl(loaded = new Set()) {
-  const calls = [];
-  const fn = (a) => {
-    calls.push(a.join(' '));
-    if (a[0] === 'print') return { code: loaded.has(a[1].split('/').pop()) ? 0 : 1, stderr: '' };
-    return { code: 0, stderr: '' };
-  };
-  return { calls, fn };
+  return statefulLaunchctl(loaded);
 }
 
 function plist(label, args, { keepAlive = false, interval = null } = {}) {
@@ -157,6 +151,94 @@ test('a dry run prints every step and changes nothing', async () => {
   fs.rmSync(f.base, { recursive: true, force: true });
 });
 
+// launchctl with state: bootout unloads, bootstrap loads (and can be made to fail a number of times first), print reads the state.
+function statefulLaunchctl(loaded = new Set(), failBootstrap = {}) {
+  const calls = [];
+  const fn = (a) => {
+    calls.push(a.join(' '));
+    const label = a[0] === 'bootstrap' ? path.basename(a[2], '.plist') : (a[2] || a[1] || '').split('/').pop();
+    if (a[0] === 'print') return { code: loaded.has(label) ? 0 : 1, stderr: '' };
+    if (a[0] === 'bootout') { loaded.delete(label); return { code: 0, stderr: '' }; }
+    if (a[0] === 'bootstrap') {
+      if ((failBootstrap[label] ?? 0) > 0) { failBootstrap[label]--; return { code: 5, stderr: 'Bootstrap failed: 5: Input/output error' }; }
+      loaded.add(label);
+      return { code: 0, stderr: '' };
+    }
+    return { code: loaded.has(label) ? 0 : 1, stderr: '' };
+  };
+  return { calls, fn, loaded };
+}
+
+test('a bootstrap that fails once is retried after a pause, and the job is verified loaded', async () => {
+  const f = fixture();
+  await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const cloneBin = path.join(f.clone, 'bin', 'housesitter.mjs');
+  writePlist(f, 'bot.ouro.housesitter.apple-account', plist('bot.ouro.housesitter.apple-account', ['/usr/local/bin/node', cloneBin, 'apple-account', 'mini', '--watch'], { keepAlive: true }));
+  f.publish('0.10.0');
+  const pauses = [];
+  const lc = statefulLaunchctl(new Set(['bot.ouro.housesitter.apple-account']), { 'bot.ouro.housesitter.apple-account': 1 });
+  const r = await deploy({ name: 'housesitter', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc.fn, sleep: (ms) => pauses.push(ms) });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(lc.calls.filter((c) => c.startsWith('bootstrap') && c.includes('apple-account')).length, 2);
+  assert.ok(pauses.includes(2000), 'the retry waits before it tries again');
+  assert.ok(lc.loaded.has('bot.ouro.housesitter.apple-account'));
+  assert.equal(r.jobs.find((j) => j.label === 'bot.ouro.housesitter.apple-account').action, 'reloaded');
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('a job that stays unloaded fails the deploy loudly, with the bootstrap command to run', async () => {
+  const f = fixture();
+  await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const cloneBin = path.join(f.clone, 'bin', 'housesitter.mjs');
+  writePlist(f, 'bot.ouro.housesitter.disk-prune', plist('bot.ouro.housesitter.disk-prune', ['/usr/local/bin/node', cloneBin, 'restart-copilot', '--disk-prune'], { interval: 600 }));
+  f.publish('0.10.0');
+  const file = path.join(f.agents, 'bot.ouro.housesitter.disk-prune.plist');
+  const lc = statefulLaunchctl(new Set(['bot.ouro.housesitter.disk-prune']), { 'bot.ouro.housesitter.disk-prune': 99 });
+  const r = await deploy({ name: 'housesitter', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc.fn, sleep: () => {} });
+  assert.equal(r.ok, false);
+  assert.equal(r.failed, 'reload');
+  assert.deepEqual(r.unloaded.map((u) => u.command), [`launchctl bootstrap gui/${UID} ${file}`]);
+  assert.match(renderDeploy(r), new RegExp(`launchctl bootstrap gui/${UID} ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('a script a job runs that names this tool is repointed to the live release, and the job is kicked', async () => {
+  const f = fixture();
+  await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const cloneBin = path.join(f.clone, 'bin', 'housesitter.mjs');
+  const script = path.join(f.home, '.config', 'housesitter', 'peer-watch.sh');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, `#!/bin/sh\nexec /usr/local/bin/node ${cloneBin} peer watch mini --once\n`, { mode: 0o755 });
+  writePlist(f, 'bot.ouro.housesitter-peer-watch', plist('bot.ouro.housesitter-peer-watch', ['/bin/sh', script], { interval: 60 }));
+  const plistBefore = readPlist(f, 'bot.ouro.housesitter-peer-watch');
+  f.publish('0.10.0');
+  const lc = statefulLaunchctl(new Set(['bot.ouro.housesitter-peer-watch']));
+  const r = await deploy({ name: 'housesitter', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc.fn, sleep: () => {} });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const live = path.join(currentLink('housesitter', f.home), 'bin', 'housesitter.mjs');
+  const body = fs.readFileSync(script, 'utf8');
+  assert.ok(body.includes(live) && !body.includes(cloneBin), body);
+  assert.equal(fs.statSync(script).mode & 0o777, 0o755, 'the script keeps its mode');
+  assert.equal(readPlist(f, 'bot.ouro.housesitter-peer-watch'), plistBefore, 'the plist itself names no copy and is not rewritten');
+  assert.ok(lc.calls.includes(`kickstart -k gui/${UID}/bot.ouro.housesitter-peer-watch`));
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('an old copy of the tool in a job is pointed at the live release in place, and the argv keeps its length', async () => {
+  const f = fixture();
+  await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const old = path.join(f.home, 'Library', 'Application Support', 'housesitter', 'app', 'bin', 'housesitter.mjs');
+  const argv = ['/usr/local/bin/node', old, 'restart-copilot', '--heartbeat'];
+  writePlist(f, 'bot.ouro.housesitter.heartbeat', plist('bot.ouro.housesitter.heartbeat', argv, { interval: 30 }));
+  f.publish('0.10.0');
+  const r = await deploy({ name: 'housesitter', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn, sleep: () => {} });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const now = programArgs(readPlist(f, 'bot.ouro.housesitter.heartbeat'));
+  assert.equal(now.length, argv.length, 'the same number of arguments');
+  assert.deepEqual(now.filter((_, i) => i !== 1), argv.filter((_, i) => i !== 1), 'every other argument is untouched, in place');
+  assert.equal(now[1], path.join(currentLink('housesitter', f.home), 'bin', 'housesitter.mjs'));
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
 test('shepherd gets the same swap: its clone-pointing plist is rewritten and reloaded, and housesitter\'s jobs are not its', async () => {
   const f = fixture();
   const cloneBin = path.join(f.clone, 'bin', 'shepherd.mjs');
