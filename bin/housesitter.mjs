@@ -29,10 +29,11 @@ import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
 import * as Steer from '../src/steer.mjs';
 import * as Arrival from '../src/laptop-arrival.mjs';
-import { cli, isCommand } from '../src/cli-table.mjs';
+import { cli, isCommand, previewOf, refusalOf } from '../src/cli-table.mjs';
 import { quietPipes, runCli } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
 
 quietPipes(process);
+const kitIo = { stdout: process.stdout, stderr: process.stderr };
 
 const sitterSsh = (mac) => sshRunner(mac.name, kvmHost(mac), { key: mac.kvm?.ssh_key || null });
 const sitterDir = (mac) => mac.kvm?.sitter_home || '/etc/kvmd/user/housesitter';
@@ -323,15 +324,23 @@ async function restartCopilot() {
 function need(n, usage) { if (!n) throw new Refusal('input-invalid', `usage: ${usage}`); }
 
 async function main() {
-  if (cmd === 'version' || flag('--version')) { console.log(VERSION); return 0; }
+  if (flag('--version')) { console.log(VERSION); return 0; }
   // Help, `help --json`, and an unknown command are the kit's (src/cli-table.mjs); every command word runs below.
   if (!isCommand(args)) {
-    const code = await runCli(cli, args, { stdout: process.stdout, stderr: process.stderr });
+    const code = await runCli(cli, args, kitIo);
     // process.exit below would cut a piped stdout short, so wait for what the kit wrote.
     await new Promise((done) => process.stdout.write('', done));
     return code;
   }
-
+  // The kit checks the call first: its words, its flags, and the --why an acting command needs.
+  const refused = await refusalOf(args, kitIo);
+  if (refused) { await new Promise((done) => process.stdout.write('', done)); return refused.exit; }
+  if (cmd === 'version') { console.log(VERSION); return 0; }
+  const previewed = previewOf(args);
+  if (previewed) {
+    if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: previewed }); else console.log(previewed);
+    return 0;
+  }
 
   if (cmd === 'demo' && name !== 'night') {
     const steps = replay();

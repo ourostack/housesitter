@@ -35,6 +35,7 @@ jobs:
           node lib/ouro-ui/registry/ouro/ax/xray.ts --cli "node bin/housesitter.mjs" --inventory inventory.json \
             --home "$RUNNER_TEMP/xray-home" --env "KVM_URL=https://127.0.0.1:5999" \
             --guard "node scripts/assert-mock.mjs --home $RUNNER_TEMP/xray-home --port 5999" \
+            --state "ls mock" --state "status mock" \
             --commit "$GITHUB_SHA" --json --md xray/xray.md > xray/report.json
           rc=$?
           set -e

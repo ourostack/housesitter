@@ -213,7 +213,7 @@ const cli = (args, env) => new Promise((resolve) => {
 test('housesitter peer send, flush and inbox from the shell; the queue outlives each process', async () => {
   const { gists, gh, dir, env } = await setup();
   const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') };
-  const s = await cli(['peer', 'send', 'which', 'sessions', 'resumed?', '--re', 'h1', '--json'], e);
+  const s = await cli(['peer', 'send', 'which', 'sessions', 'resumed?', '--re', 'h1', '--json', '--why', 'the person asked'], e);
   assert.equal(s.status, 0, s.stderr);
   const sent = JSON.parse(s.stdout);
   assert.equal(sent.status, 'sent');
@@ -221,11 +221,11 @@ test('housesitter peer send, flush and inbox from the shell; the queue outlives 
   assert.equal(msg.text, 'which sessions resumed?');
   assert.equal(msg.re, 'h1');
   assert.match(msg.from, /^ouroboros@/);
-  const q = await cli(['peer', 'send', 'and', 'the', 'browser?'], e);
+  const q = await cli(['peer', 'send', 'and', 'the', 'browser?', '--why', 'the person asked'], e);
   assert.match(q.stdout, /^queued [0-9a-f]{8} for housesitter: it goes out by \d{4}-/);
   assert.equal(Object.keys(gists[O_TO_H]).length, 1);
-  assert.match((await cli(['peer', 'flush'], e)).stdout, /^1 queued: they go out by /);
-  const q2 = JSON.parse((await cli(['peer', 'send', 'later', '--json'], e)).stdout);
+  assert.match((await cli(['peer', 'flush', '--why', 'the person asked'], e)).stdout, /^1 queued: they go out by /);
+  const q2 = JSON.parse((await cli(['peer', 'send', 'later', '--json', '--why', 'the person asked'], e)).stdout);
   assert.equal(q2.status, 'queued');
   gists[H_TO_O]['20261109T100000Z-0000000c.json'] = JSON.stringify({ v: 1, id: 'c1', at: '2026-11-09T10:00:00Z', from: 'housesitter@comet', text: 'unlocked; desktop is back' });
   const i = await cli(['peer', 'inbox'], { ...e, HOUSESITTER_PEER_FLUSH_SEC: '0' }); // due: the inbox sends the queue
@@ -233,16 +233,16 @@ test('housesitter peer send, flush and inbox from the shell; the queue outlives 
   assert.match(i.stdout, /housesitter@comet {2}c1\nunlocked; desktop is back/);
   assert.equal(Object.keys(gists[O_TO_H]).length, 3);
   assert.ok(gists[O_TO_H][q2.file]);
-  const u = await cli(['peer', 'send', 'about', 'to', 'restart', '--now'], e);
+  const u = await cli(['peer', 'send', 'about', 'to', 'restart', '--now', '--why', 'the person asked'], e);
   assert.match(u.stdout, /^sent [0-9a-f]{8} to housesitter/);
-  assert.equal((await cli(['peer', 'flush', '--now'], e)).stdout.trim(), 'nothing queued');
+  assert.equal((await cli(['peer', 'flush', '--now', '--why', 'the person asked'], e)).stdout.trim(), 'nothing queued');
   assert.equal((await cli(['peer', 'inbox'], e)).stdout.trim(), 'nothing new');
   assert.ok(fs.existsSync(path.join(dir, 'peer-seen.json')));
   assert.equal((await cli(['peer', 'send'], e)).status, 2);
   assert.equal((await cli(['peer', 'shout'], e)).status, 2);
-  const help = (await cli(['help', 'peer'], e)).stdout;
+  const help = (await cli(['help', 'peer', 'send'], e)).stdout;
   assert.match(help, /housesitter peer send <text>/);
-  assert.match(help, /housesitter peer flush \[--now\]/);
+  assert.match((await cli(['help', 'peer', 'flush'], e)).stdout, /housesitter peer flush/);
   await gh.close();
 });
 
@@ -344,7 +344,7 @@ test('housesitter peer watch --once from the shell', async () => {
   fs.writeFileSync(ouro, `#!/bin/sh\nprintf '%s|' "$@" >> '${calls}'\necho >> '${calls}'\n`, { mode: 0o755 });
   const [f1, c1] = hmsg('c9', '2026-11-09T11:59:00Z', 'up again');
   gists[H_TO_O][f1] = c1;
-  const r = await cli(['peer', 'watch', '--once', '--agent', 'ouroboros', '--ouro', ouro], { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') });
+  const r = await cli(['peer', 'watch', '--once', '--agent', 'ouroboros', '--ouro', ouro, '--why', 'the person asked'], { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /woke ouroboros for c9/);
   assert.match(fs.readFileSync(calls, 'utf8'), /^msg\|--to\|ouroboros\|1 new message from Housesitter .*bin\/housesitter\.mjs peer inbox/);
@@ -421,7 +421,7 @@ test('peer watch runs `ouro up` once for a do: ouro-up message, reports back, th
 test('a planned drill: `peer drill` labels everything sent until it ends, and the watch says so when it wakes the agent', async () => {
   const { gists, gh, dir, env, time, p } = await setup();
   const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') };
-  const d = await cli(['peer', 'drill', 'battle', 'test', 'row', '9', '--minutes', '30', '--json'], e);
+  const d = await cli(['peer', 'drill', 'battle', 'test', 'row', '9', '--minutes', '30', '--json', '--why', 'the person asked'], e);
   assert.equal(d.status, 0, d.stderr);
   const drill = JSON.parse(fs.readFileSync(path.join(dir, 'drill.json'), 'utf8'));
   assert.equal(drill.label, 'battle test row 9');
@@ -439,7 +439,7 @@ test('a planned drill: `peer drill` labels everything sent until it ends, and th
   await w.tick();
   assert.match(x.calls.at(-1)[4], /This is a planned drill \(battle test row 9\): handle it for real, but say "planned drill \(battle test row 9\)" in anything you report, and don't relay it to Ari as an incident\.$/);
 
-  assert.equal((await cli(['peer', 'drill', '--end'], e)).status, 0);
+  assert.equal((await cli(['peer', 'drill', '--end', '--why', 'the person asked'], e)).status, 0);
   time.now = Date.now() + 1000;
   await p.send('all clear', { now: true });
   assert.equal(sent().at(-1), 'all clear');
