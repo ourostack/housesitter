@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
+import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -92,6 +92,7 @@ async function world({ sessions, appOpts = {}, quit = 'menu', person = 0, stubbo
   w.deps = {
     ...real,
     hackamore: ['hackamore'],
+    windowOpen: async () => true,
     appDir: () => BUNDLE,
     ps: async () => w.procs,
     startedAt: async () => w.startedAt,
@@ -284,8 +285,115 @@ test('restart: a straggler gets SIGTERM by exact pid; one that will not die stop
   const r2 = await restart(w2.opts, w2.deps);
   await w2.done();
   assert.equal(r2.failed.stage, 'quit');
-  assert.match(r2.failed.why, /still running after the quit and a SIGTERM: 100, 101/);
+  assert.match(r2.failed.why, /still running after the quit, a SIGTERM and a SIGKILL: 100, 101/);
   assert.equal(w2.opens, 0);
+});
+
+// 2026-11-16: three processes outlived the quit and a SIGTERM, the run FAILED with "Nothing was relaunched", and the Dock
+// showed the app "Running in Background" with no window until a person clicked it.
+test('restart: stragglers that survive SIGTERM get SIGKILL, only while they still run the command they ran at the quit', { skip }, async () => {
+  const w = await world({ sessions: sessions(), stubborn: true });
+  w.deps.hk = async (argv) => { if (argv[0] === 'ls') return { code: 0, json: { actions: [{ name: 'menu', input: { properties: { item: { enum: ['App > Quit Fake'] } } } }] } }; w.procs = w.procs.filter((p) => p.pid === 101 || p.pid === 102); return { code: 0, json: {} }; };
+  w.procs.push({ pid: 102, ppid: 100, command: 'helper --gpu' });
+  w.deps.kill = (pid, sig) => {
+    w.kills.push([pid, sig]);
+    if (sig === 'SIGKILL') w.procs = w.procs.filter((p) => p.pid !== pid);
+    // 102 exits on SIGTERM and its pid is reused by an unrelated program that must never be killed.
+    if (pid === 102 && sig === 'SIGTERM') w.procs = [...w.procs.filter((p) => p.pid !== 102), { pid: 102, ppid: 1, command: '/usr/bin/unrelated' }];
+    return true;
+  };
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed));
+  assert.deepEqual(w.kills, [[101, 'SIGTERM'], [102, 'SIGTERM'], [101, 'SIGKILL']]);
+  assert.equal(w.opens, 1);
+});
+
+test('restart: an app that will not die or will not come back is retried, and the agent is told once as the last resort', { skip }, async () => {
+  const w = await world({ sessions: sessions(), stubborn: true });
+  w.deps.kill = () => true;
+  const told = [];
+  w.deps.tell = async (m) => { told.push(m); };
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.equal(r.failed.stage, 'quit');
+  assert.equal(told.length, 1);
+  assert.match(told[0], /could not finish.*SIGKILL/);
+  const w2 = await world({ sessions: sessions() });
+  let tries = 0;
+  w2.deps.open = async () => { tries++; if (tries < 3) return { code: 1, stderr: 'LSOpenURLsWithRole() failed' }; w2.startedAt = Date.now(); w2.procs = [{ pid: 200, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }]; return { code: 0, stderr: '' }; };
+  w2.opts.t = { ...w2.opts.t, relaunchPause: 1 };
+  const r2 = await restart(w2.opts, w2.deps);
+  await w2.done();
+  assert.equal(r2.ok, true, JSON.stringify(r2.failed));
+  assert.equal(tries, 3, 'the relaunch is retried, not abandoned at the first failure');
+  const w3 = await world({ sessions: sessions() });
+  const told3 = [];
+  w3.deps.tell = async (m) => { told3.push(m); };
+  w3.deps.open = async () => ({ code: 1, stderr: 'no' });
+  w3.opts.t = { ...w3.opts.t, relaunchPause: 1 };
+  const r3 = await restart(w3.opts, w3.deps);
+  await w3.done();
+  assert.equal(r3.failed.stage, 'relaunch');
+  assert.equal(told3.length, 1, 'one message through the agent, never silence');
+});
+
+test('restart: an app running without a window gets one opened; one that never shows a window is told to the agent', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  const opens = [];
+  const open = w.deps.open;
+  w.deps.open = async (app, o) => { opens.push(o.background); return open(app, o); };
+  let shown = false;
+  w.deps.windowOpen = async () => shown;
+  const open2 = w.deps.open;
+  w.deps.open = async (app, o) => { const x = await open2(app, o); if (o.background === false) shown = true; return x; };
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed));
+  assert.deepEqual(opens, [true, false], 'launched in the background, then opened in front when no window showed');
+  const w2 = await world({ sessions: sessions() });
+  const told = [];
+  w2.deps.tell = async (m) => { told.push(m); };
+  w2.deps.windowOpen = async () => false;
+  w2.opts.t = { ...w2.opts.t, window: 50 };
+  const r2 = await restart(w2.opts, w2.deps);
+  await w2.done();
+  assert.equal(r2.failed.stage, 'relaunch');
+  assert.match(r2.failed.why, /no window opened/);
+  assert.equal(told.length, 1);
+});
+
+// The app's process is named `github`, not "GitHub Copilot"; System Events could not find it. hackamore's read can.
+test('restart: the window is read through hackamore and matched by pid, so the process name does not matter', { skip }, async () => {
+  const ls = (state) => ({ code: 0, json: { state, actions: [{ name: 'menu', input: { properties: { item: { enum: ['App > Quit Fake'] } } } }] } });
+  assert.equal(windowFromLs(ls({ app: { name: 'GitHub Copilot', pid: 200 }, window: { title: 'Copilot' } }), 200), true);
+  assert.equal(windowFromLs(ls({ app: { name: 'GitHub Copilot', pid: 200 }, window: null }), 200), false);
+  assert.equal(windowFromLs(ls({ app: { name: 'GitHub Copilot', pid: 999 }, window: null }), 200), null, 'another process is not this app');
+  assert.equal(windowFromLs({ code: 2, json: null }, 200), null);
+  const w = await world({ sessions: sessions() });
+  w.procs = [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/github` }, { pid: 101, ppid: 100, command: 'runtime --server' }];
+  delete w.deps.windowOpen;
+  let shown = false;
+  const hk = w.deps.hk;
+  w.deps.hk = async (argv, o) => (argv[0] === 'ls' && w.opens ? ls({ app: { name: 'GitHub Copilot', pid: 200 }, window: shown ? { title: 'Copilot' } : null }) : hk(argv, o));
+  const open = w.deps.open;
+  const fronts = [];
+  w.deps.open = async (a, o) => { if (o.background === false) { shown = true; fronts.push(1); } const x = await open(a, o); w.procs = w.procs.map((p) => ({ ...p, command: p.command.replace('/fake', '/github') })); return x; };
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed));
+  assert.equal(fronts.length, 1, 'no window was read through hackamore, so one was opened in front');
+});
+
+test('restart: the run log names the sessions that defer, not just how many', { skip }, async () => {
+  const w = await world({ sessions: sessions(), appOpts: { react: (id, prompt, append) => {
+    if (/Heads up/.test(prompt)) append('assistant.message', { content: 'Lanes are mid-run.\nDEFER: 4 lanes running, about 1 min', toolRequests: [] });
+  } } });
+  w.opts.t = { ...w.opts.t, settle: 300, settleMax: 700, recheckMin: 100, recheckMax: 100, beat: 100 };
+  const lines = [];
+  await restart(w.opts, w.deps, (m) => lines.push(m));
+  await w.done();
+  assert.ok(lines.some((l) => /waiting for \d+ session\(s\): 2 deferred \(aaaaaaaa "busy a", cccccccc "busy c"\)/.test(l)), lines.filter((l) => /waiting/.test(l)).join(' | '));
 });
 
 test('plan: changes nothing and names what it would do; no Quit item or no hackamore is said plainly', { skip }, async () => {

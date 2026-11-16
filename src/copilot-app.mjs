@@ -370,7 +370,8 @@ async function restartSteps(opts, deps, log) {
       if (now - beat >= t.beat) {
         beat = now;
         const rest = open.filter((id) => !st.get(id).outcome);
-        log(`waiting for ${rest.length} session(s): ${rest.filter((id) => st.get(id).deferred).length} deferred, ${rest.filter((id) => !st.get(id).deferred).length} still working; goes ahead by ${new Date(by).toISOString()}`);
+        const named = (ids) => ids.map((id) => `${short(id)}${asked.find((x) => x.id === id)?.title ? ` "${asked.find((x) => x.id === id).title}"` : ''}`).join(', ');
+        log(`waiting for ${rest.length} session(s): ${rest.filter((id) => st.get(id).deferred).length} deferred${named(rest.filter((id) => st.get(id).deferred)) ? ` (${named(rest.filter((id) => st.get(id).deferred))})` : ''}, ${rest.filter((id) => !st.get(id).deferred).length} still working${named(rest.filter((id) => !st.get(id).deferred)) ? ` (${named(rest.filter((id) => !st.get(id).deferred))})` : ''}; goes ahead by ${new Date(by).toISOString()}`);
       }
     }
     const of = (...k) => asked.filter((s) => k.includes(st.get(s.id).outcome)).map((s) => s.id);
@@ -391,7 +392,9 @@ async function restartSteps(opts, deps, log) {
   }
 
   // 2. Quit, then wait for every process of the app.
-  const familyPids = family(await deps.ps(), mainBefore.pid, dir);
+  const psAtQuit = await deps.ps();
+  const familyPids = family(psAtQuit, mainBefore.pid, dir);
+  const cmdAt = new Map(psAtQuit.map((x) => [x.pid, x.command]));
   let q;
   if (opts.sigterm) { deps.kill(mainBefore.pid, 'SIGTERM'); q = { ok: true, method: 'sigterm', pid: mainBefore.pid }; } else q = await hackamoreQuit(deps, app, { personWaitMs: t.person, log });
   if (!q.ok) {
@@ -401,7 +404,9 @@ async function restartSteps(opts, deps, log) {
     return fail('quit', q.why);
   }
   step('quit sent', { method: q.method, ...(q.item ? { item: q.item } : {}) });
-  const alive = async () => { const ps = await deps.ps(); const set = new Set(familyPids); return ps.filter((x) => set.has(x.pid) || x.command.includes(`${dir}/Contents/`)).map((x) => x.pid); };
+  // A pid counts only while it still runs the command it ran at the quit: pids get reused.
+  const ownsPid = (x) => (new Set(familyPids).has(x.pid) && x.command === cmdAt.get(x.pid)) || x.command.includes(`${dir}/Contents/`);
+  const alive = async () => (await deps.ps()).filter(ownsPid).map((x) => x.pid);
   let left = await alive();
   const quitSentAt = deps.now();
   const answered = [];
@@ -429,7 +434,19 @@ async function restartSteps(opts, deps, log) {
       for (const end = deps.now() + Math.min(t.quit, 20000); left.length && deps.now() < end;) { await deps.sleep(1000); left = await alive(); }
     }
   }
-  if (left.length) return fail('quit', `${left.length} process(es) of ${app} still running after the quit and a SIGTERM: ${left.join(', ')}. Nothing was relaunched; look at them (ps -p ${left[0]}) before trying again`);
+  if (left.length) {
+    // SIGTERM and its grace did not end them: SIGKILL exactly these pids, each re-checked against its own command first.
+    const ps = await deps.ps();
+    const mine = left.filter((pid) => { const x = ps.find((p) => p.pid === pid); return x && ownsPid(x); });
+    step('stragglers survived SIGTERM; SIGKILL to exactly these pids', { pids: mine, commands: mine.map((pid) => (ps.find((p) => p.pid === pid).command || '').slice(0, 80)) });
+    for (const pid of mine) deps.kill(pid, 'SIGKILL');
+    for (const end = deps.now() + Math.min(t.quit, 10000); left.length && deps.now() < end;) { await deps.sleep(1000); left = await alive(); }
+  }
+  if (left.length) {
+    const why = `${left.length} process(es) of ${app} still running after the quit, a SIGTERM and a SIGKILL: ${left.join(', ')}. Nothing was relaunched; look at them (ps -p ${left[0]})`;
+    await told(deps, `The Copilot app restart could not finish: ${why}. The app is down or stuck and I could not bring it back by myself.`);
+    return fail('quit', why);
+  }
   step('app exited', { processes: familyPids.length });
 
   // A step of the caller's own while the app is down (a macOS update that restarts the Mac). If it takes over, nothing is
@@ -440,22 +457,48 @@ async function restartSteps(opts, deps, log) {
     if (a.ok) { report.ok = true; report.handed_over = a.what || true; return report; }
   }
 
-  // 3. Relaunch.
-  const opened = await deps.open(app, { background: opts.background !== false });
-  if (opened.code !== 0) return fail('relaunch', `open -a "${app}" failed: ${opened.stderr.trim().slice(0, 200)}`);
-  let main = null;
-  for (const end = deps.now() + t.up; !main && deps.now() < end;) { main = findMain(await deps.ps(), dir, await deps.appExe?.(dir)); if (!main) await deps.sleep(1000); }
-  if (!main) return fail('relaunch', `${app} did not start within ${Math.round(t.up / 1000)} s`);
-  const startedAt = (await deps.startedAt(main.pid)) || deps.now();
-  deps.generation?.set(`${main.pid}:${startedAt}`, 'restart-copilot');
-  report.restarted_at = new Date(deps.now()).toISOString();
-  step('relaunched', { pid: main.pid, from: mainBefore.pid });
-  if (opts.stand_in) { report.ok = true; return report; }
-  let ready = false;
-  for (const end = deps.now() + t.up; !ready && deps.now() < end;) { ready = await appReady(deps); if (!ready) await deps.sleep(2000); }
+  // 3. Relaunch, and do not stop until the app's socket answers and a window is open: retried, and a person is told only
+  // when it still will not come back.
+  const tries = Math.max(1, t.relaunchTries || 3);
+  let main = null, ready = false, startedAt, lastWhy = '';
+  for (let n = 1; n <= tries && !ready; n++) {
+    main = findMain(await deps.ps(), dir, await deps.appExe?.(dir));
+    if (!main) {
+      const opened = await deps.open(app, { background: opts.background !== false });
+      if (opened.code !== 0) { lastWhy = `open -a "${app}" failed: ${opened.stderr.trim().slice(0, 200)}`; step(`relaunch try ${n} of ${tries}: ${lastWhy}`); await deps.sleep(t.relaunchPause ?? 5000); continue; }
+      for (const end = deps.now() + t.up; !main && deps.now() < end;) { main = findMain(await deps.ps(), dir, await deps.appExe?.(dir)); if (!main) await deps.sleep(1000); }
+      if (!main) { lastWhy = `${app} did not start within ${Math.round(t.up / 1000)} s`; step(`relaunch try ${n} of ${tries}: ${lastWhy}`); continue; }
+    }
+    startedAt = (await deps.startedAt(main.pid)) || deps.now();
+    deps.generation?.set(`${main.pid}:${startedAt}`, 'restart-copilot');
+    report.restarted_at = new Date(deps.now()).toISOString();
+    step('relaunched', { pid: main.pid, from: mainBefore.pid, try: n });
+    if (opts.stand_in) { report.ok = true; return report; }
+    for (const end = deps.now() + t.up; !ready && deps.now() < end;) { ready = await appReady(deps); if (!ready) await deps.sleep(2000); }
+    if (!ready) { lastWhy = `${app} is running but its socket did not answer within ${Math.round(t.up / 1000)} s`; step(`relaunch try ${n} of ${tries}: ${lastWhy}`); if (n < tries) { deps.kill(main.pid, 'SIGTERM'); await deps.sleep(t.relaunchPause ?? 5000); } }
+  }
   if (!ready) {
     report.not_resumed = before.filter((s) => s.state === 'busy').map((s) => s.id);
-    return fail('relaunch', `${app} is running but its socket did not answer within ${Math.round(t.up / 1000)} s; the ${report.not_resumed.length} session(s) that were working (report.not_resumed) were not resumed`);
+    const why = `${lastWhy}; the ${report.not_resumed.length} session(s) that were working (report.not_resumed) were not resumed`;
+    await told(deps, `The Copilot app restart could not bring the app back after ${tries} tries: ${why}.`);
+    return fail('relaunch', why);
+  }
+  // A background launch can leave the app running with no window (the Dock says "Running in Background"): open one.
+  const hasWindow = async () => (deps.windowOpen ? deps.windowOpen(app, { pid: main.pid }) : windowFromLs(await deps.hk(['ls', app], { timeoutMs: 20000 }), main.pid));
+  const win = await hasWindow();
+  if (win === null) { await deps.open(app, { background: false }); step('could not read whether the app has a window; asked it to open one'); }
+  else if (win === false) {
+    let seen = false;
+    for (let n = 1; n <= tries && !seen; n++) {
+      await deps.open(app, { background: false });
+      for (const end = deps.now() + (t.window ?? 15000); !seen && deps.now() < end;) { await deps.sleep(1000); seen = (await hasWindow()) === true; }
+      step(seen ? 'the app was running without a window; opened one' : `the app has no window yet (try ${n} of ${tries})`);
+    }
+    if (!seen) {
+      const why = `${app} is running but no window opened after ${tries} tries`;
+      await told(deps, `The Copilot app restart: ${why}; someone needs to click it in the Dock.`);
+      return fail('relaunch', why);
+    }
   }
   step('socket answering');
   // The Hub daemon outlives the app, but the sessions the app brings back must be readable through it: check, and repair at once.
@@ -474,6 +517,18 @@ async function restartSteps(opts, deps, log) {
   step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !isDone(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
   return report;
 }
+
+// Whether the app has a window, from `hackamore ls <app>` (which holds the Accessibility grant): true or false, or null when
+// it cannot be read or the screen read belongs to another process. The app's process is named `github`, so it is matched by pid.
+export function windowFromLs(r, pid) {
+  const st = r?.json?.state;
+  if (!st || r.code !== 0 || !st.app) return null;
+  if (pid && st.app.pid !== pid) return null;
+  return Boolean(st.window);
+}
+
+// One message to the agent when a restart cannot finish on its own; best effort.
+async function told(deps, text) { try { await deps.tell?.(text); } catch { /* the failure is in the run log too */ } }
 
 export async function resumeAfter({ before, opts, startedAt, restartedAt, t, lanes = new Map() }, deps, log = () => {}) {
   await deps.sleep(t.grace);
