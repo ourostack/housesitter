@@ -206,7 +206,13 @@ async function laptopArrival() {
     if (json) emit(r); else say(flag('--uninstall') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${Arrival.LABEL}); every minute it checks whether the laptop is back, with no model turns` : `✗ launchctl would not load it: ${r.error}`);
     return r.ok ? 0 : 1;
   }
-  const cfg = Arrival.loadConfig(file);
+  let cfg;
+  try { cfg = Arrival.loadConfig(file); } catch (e) {
+    if (!flag('--dry-run') || !/no config/.test(e.message)) throw e;
+    const line = `laptop-arrival: dry run; nothing was done. There is no config at ${file}, so there is nothing to check. Without --dry-run this brings a returning Mac up to date and tells the agent once.`;
+    if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: line }); else console.log(line);
+    return 0;
+  }
   const deps = Arrival.realArrivalDeps(cfg);
   deps.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   if (flag('--status')) { const st = deps.readState(); json ? emit(st) : say(JSON.stringify(st, null, 2)); return 0; }
@@ -300,7 +306,16 @@ async function restartCopilot() {
     return { ok: r.bad.length === 0, why: r.bad.map((b) => b.code).join(', '), repaired: r.repaired };
   };
   if (flag('--dry-run')) {
-    const p = await Copilot.plan(opts, deps);
+    const p = await Copilot.plan(opts, deps).catch((e) => {
+      // No app database here, so no sessions to plan for: say so, and exit 0 as a preview does.
+      if (/database/.test(e.message)) return { no_database: e.message.split(' (')[0] };
+      throw e;
+    });
+    if (p.no_database) {
+      const line = `restart-copilot: dry run; nothing was done. ${p.no_database}, so there are no sessions to plan for. Without --dry-run this would restart the app and resume the sessions it was working on.`;
+      if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: line }); else console.log(line);
+      return 0;
+    }
     if (json) emit({ dry_run: true, ...p }); else say(Copilot.render({ dry_run: true, ...p }));
     return p.quit.method === 'unavailable' ? 1 : 0;
   }
