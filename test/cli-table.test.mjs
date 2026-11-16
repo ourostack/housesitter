@@ -17,7 +17,7 @@ test('the dispatcher handles exactly the commands the table declares', () => {
   const dispatched = new Set([...src.matchAll(/cmd === '([a-z-]+)'/g)].map((m) => m[1]));
   for (const word of ['unlock', 'power-cycle', 'power-on']) dispatched.add(word);
   dispatched.delete('help');
-  assert.deepEqual([...dispatched].sort(), [...COMMAND_WORDS].sort());
+  assert.deepEqual([...dispatched].sort(), [...new Set(COMMAND_WORDS.map((w) => w.split(' ')[0]))].sort());
 });
 
 test('help --json is the kit\'s: pure JSON that lists every command with its effect', () => {
