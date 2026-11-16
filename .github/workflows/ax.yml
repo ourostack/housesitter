@@ -1,0 +1,65 @@
+name: ax
+# Ouro AX: the X-ray against the fake KVM on a loopback address, and the action claims. Both upload artifacts whose names
+# contain "xray", which the adoption ledger reads. The X-ray gates on having written a report; its conformance gate
+# (--conformance) turns on once the CLI conforms.
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ax-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  xray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm install --omit=dev --no-audit --no-fund
+      - name: Start the mock KVM on loopback, and prove it is the mock
+        run: |
+          mkdir -p "$RUNNER_TEMP/xray-home"
+          node scripts/xray-mock.mjs --home "$RUNNER_TEMP/xray-home" --port 5999 > "$RUNNER_TEMP/mock.log" 2>&1 &
+          for i in $(seq 1 20); do node scripts/assert-mock.mjs --home "$RUNNER_TEMP/xray-home" --port 5999 && break; sleep 1; done
+          node scripts/assert-mock.mjs --home "$RUNNER_TEMP/xray-home" --port 5999
+      - name: Ouro AX X-ray
+        run: |
+          node scripts/inventory.mjs > inventory.json
+          mkdir -p xray
+          set +e
+          node lib/ouro-ui/registry/ouro/ax/xray.ts --cli "node bin/housesitter.mjs" --inventory inventory.json \
+            --home "$RUNNER_TEMP/xray-home" --env "KVM_URL=https://127.0.0.1:5999" \
+            --guard "node scripts/assert-mock.mjs --home $RUNNER_TEMP/xray-home --port 5999" \
+            --commit "$GITHUB_SHA" --json --md xray/xray.md > xray/report.json
+          rc=$?
+          set -e
+          echo "X-ray exit $rc"
+          node -e "if (!require('./xray/report.json').summary) process.exit(1)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xray
+          path: xray/
+  action-claims:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Action claims over the committed projections
+        run: |
+          mkdir -p xray-actions
+          node tools/ouro-actions/ouro-actions.mts check actions/housesitter.actions.mts actions/generated \
+            --report xray-actions/report.json --app Housesitter --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: actions-xray
+          path: xray-actions/
