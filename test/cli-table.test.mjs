@@ -58,3 +58,27 @@ test('a peer link or a returning Mac names a Mac the config knows; an unknown on
   assert.equal(missing.status, 2);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// 2026-11-16: #98 made every acting command need --why, and every installed launchd job (heartbeat, health watch,
+// plugin and OS updates, crash resume, the Apple Account watch, laptop arrival) began failing with "needs --why",
+// so freeze and crash recovery stopped. A scheduled job the person installed, a read-only look and a dry run act for
+// no one new, so they run without --why; an agent's own restart still needs one.
+test('installed jobs, read-only looks and dry runs run without --why; an agent\'s restart still needs one', async () => {
+  const { cli } = await import('../src/cli-table.mjs');
+  const { parse } = await import('../lib/ouro-ui/registry/ouro/ax/command.ts');
+  const { AGENTS } = await import('../src/recovery.mjs');
+  const refusal = (argv) => { try { parse(cli, argv); return null; } catch (e) { return e.shape?.code ?? String(e); } };
+  const needsWhy = (argv) => refusal(argv) === 'needs-why';
+  const jobs = [
+    ...Object.values(AGENTS).map((a) => a.args),
+    ['restart-copilot', '--resume-only', '--watch', '--open-at-login'],
+    ['restart-copilot', '--plugin-updates', '--quiet'],
+    ['apple-account', 'mini', '--watch'],
+    ['laptop-arrival', 'laptop', '--config', '/tmp/laptop-arrival.json', '--quiet'],
+    ['peer', 'watch', 'mini', '--agent', 'ouroboros', '--every', '60', '--ouro', '/tmp/ouro'],
+    ['peer', 'watch', 'mini', '--once'],
+  ];
+  for (const argv of jobs) assert.equal(refusal(argv), null, argv.join(' '));
+  for (const argv of [['restart-copilot', '--status'], ['restart-copilot', '--dry-run'], ['restart-copilot', '--dry-run', '--list'], ['apple-account', 'mini', '--status'], ['laptop-arrival', 'mini', '--dry-run']]) assert.equal(needsWhy(argv), false, argv.join(' '));
+  for (const argv of [['restart-copilot', '--resume'], ['restart-copilot'], ['apple-account', 'mini', '--now'], ['peer', 'send', 'hi'], ['click', 'mini', '1', '2']]) assert.equal(needsWhy(argv), true, argv.join(' '));
+});
