@@ -39,7 +39,14 @@ function fake(over = {}) {
     thin: (x) => { log.thinned = (log.thinned || []); log.thinned.push(x); free += 10 * GIB; return true; },
     ledger: (r) => { log.ledger = (log.ledger || []); log.ledger.push(r); },
     breakdown: () => over.breakdown || null,
-    gzip: (f) => { log.gz.push(f); free += 10 * GIB; },
+    sessionRows: async () => ({ archived: over.archived || [], live: new Set(over.live || []), known: new Set([...(over.live || []), ...(over.archived || []), ...(over.listed || [])]) }),
+    // Shepherd's compressHistory, as a fake: 5:1 on the history it is given, and a refusal for the ids in over.compressFails.
+    compress: async (id, { dryRun }) => {
+      if (over.compressFails?.includes(id)) return { id, ok: false, before: null, after: null, why: 'refused' };
+      const before = (over.hist || []).find((x) => x.id === id)?.size ?? 0, after = Math.round(before / 5);
+      if (!dryRun) { log.gz.push(id); free += before - after; }
+      return { id, ok: true, before, after: dryRun ? null : after, why: null };
+    },
     tell: async (m) => { log.told.push(m); },
     readState: () => log.state,
     writeState: (o) => { log.state = o; },
@@ -96,7 +103,56 @@ test('caches go first; histories of sessions the app lists, or changed in the la
   const { d, log } = fake({ freeGib: 60, caches: ['/h/.npm/_cacache'], hist, live: ['live-1'], openFiles: ['/s/open-5/events.jsonl'] });
   await pass({}, d);
   assert.deepEqual(log.cache, ['/h/.npm/_cacache']);
-  assert.deepEqual(log.gz, ['/s/gone-4/events.jsonl']);
+  assert.deepEqual(log.gz, ['gone-4']);
+});
+
+test('an archived session\'s history is compressed on every pass, above the floor and without waiting a day', async () => {
+  const hist = [{ id: 'arch-1', file: '/s/arch-1/events.jsonl', size: 4 * GIB, mtime: NOW - 60000 }];
+  const { d, log } = fake({ freeGib: 600, hist, archived: ['arch-1'] });
+  const r = await pass({}, d);
+  assert.equal(r.action, 'ok');
+  assert.deepEqual(log.gz, ['arch-1']);
+  assert.equal(r.reclaimed.histories, 4 * GIB - Math.round(4 * GIB / 5));
+});
+
+test('a live session\'s history is never compressed, above the floor or below it', async () => {
+  const hist = [{ id: 'live-2', file: '/s/live-2/events.jsonl', size: 4 * GIB, mtime: NOW - 9 * DAY }];
+  for (const freeGib of [600, 60]) {
+    const { d, log } = fake({ freeGib, hist, live: ['live-2'] });
+    await pass({}, d);
+    assert.deepEqual(log.gz, [], `free ${freeGib} GiB`);
+  }
+});
+
+test('an unlisted session\'s history still waits a day and the floor', async () => {
+  const hist = [{ id: 'gone-7', file: '/s/gone-7/events.jsonl', size: 4 * GIB, mtime: NOW - 3 * 3600000 }];
+  let f = fake({ freeGib: 600, hist }); await pass({}, f.d); assert.deepEqual(f.log.gz, [], 'above the floor');
+  f = fake({ freeGib: 60, hist }); await pass({}, f.d); assert.deepEqual(f.log.gz, [], 'quiet for less than a day');
+  const old = [{ ...hist[0], mtime: NOW - 2 * DAY }];
+  f = fake({ freeGib: 600, hist: old }); await pass({}, f.d); assert.deepEqual(f.log.gz, [], 'above the floor, even when quiet');
+  f = fake({ freeGib: 60, hist: old }); await pass({}, f.d); assert.deepEqual(f.log.gz, ['gone-7']);
+});
+
+test('a dry run compresses nothing, archived or unlisted, and reports what it would', async () => {
+  const hist = [
+    { id: 'arch-1', file: '/s/arch-1/events.jsonl', size: 4 * GIB, mtime: NOW - 60000 },
+    { id: 'gone-7', file: '/s/gone-7/events.jsonl', size: 4 * GIB, mtime: NOW - 9 * DAY },
+  ];
+  const { d, log } = fake({ freeGib: 60, hist, archived: ['arch-1'] });
+  const r = await pass({ dry_run: true }, d);
+  assert.deepEqual(log.gz, []);
+  assert.equal(r.reclaimed.histories, 8 * GIB);
+});
+
+test('reclaimed bytes are before minus after; a history Shepherd refuses is not counted', async () => {
+  const hist = [
+    { id: 'arch-1', file: '/s/arch-1/events.jsonl', size: 4 * GIB, mtime: NOW },
+    { id: 'arch-2', file: '/s/arch-2/events.jsonl', size: 2 * GIB, mtime: NOW },
+  ];
+  const { d, log } = fake({ freeGib: 600, hist, archived: ['arch-1', 'arch-2'], compressFails: ['arch-2'] });
+  const r = await pass({}, d);
+  assert.deepEqual(log.gz, ['arch-1']);
+  assert.equal(r.reclaimed.histories, 4 * GIB - Math.round(4 * GIB / 5));
 });
 
 test('what it reclaimed is said once; when nothing is safe it says so at most once a day', async () => {

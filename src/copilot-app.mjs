@@ -189,6 +189,9 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     sql: guard(app.sql),
     historySize: app.historySize,
     history: app.history,
+    // sendTo puts a compressed history back first, so it needs Shepherd's history path and gunzip.
+    historyPath: app.historyPath,
+    gunzip: app.gunzip,
     hk: async (argv, { timeoutMs = 60000 } = {}) => {
       const r = await run(cmd[0], [...cmd.slice(1), ...argv], { timeoutMs });
       let json = null; try { json = JSON.parse(r.stdout); } catch { /* not JSON */ }
