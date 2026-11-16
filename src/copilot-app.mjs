@@ -196,8 +196,6 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     },
     kill: (pid, sig) => { try { process.kill(pid, sig); return true; } catch { return false; } },
     open: async (appName, { background }) => run('/usr/bin/open', [...(background ? ['-g'] : []), '-a', appName]),
-    // Windows of the app's process, by System Events; null when that cannot be read (no permission).
-    windowOpen: async (appName) => { const r = await run('/usr/bin/osascript', ['-e', `tell application "System Events" to count windows of (first process whose name is "${appName.replace(/"/g, '')}")`], { timeoutMs: 15000 }); const n = Number(r.stdout.trim()); return r.code === 0 && Number.isFinite(n) ? n > 0 : null; },
     exchange: guard(app.exchange),
     appExe: async (dir) => (await run('/usr/bin/plutil', ['-extract', 'CFBundleExecutable', 'raw', '-o', '-', path.join(dir, 'Contents', 'Info.plist')])).stdout.trim() || null,
     // Which app process (pid and start time) has had its sessions resumed already, so two resumers never both send.
@@ -486,13 +484,14 @@ async function restartSteps(opts, deps, log) {
     return fail('relaunch', why);
   }
   // A background launch can leave the app running with no window (the Dock says "Running in Background"): open one.
-  const win = deps.windowOpen ? await deps.windowOpen(app) : true;
+  const hasWindow = async () => (deps.windowOpen ? deps.windowOpen(app, { pid: main.pid }) : windowFromLs(await deps.hk(['ls', app], { timeoutMs: 20000 }), main.pid));
+  const win = await hasWindow();
   if (win === null) { await deps.open(app, { background: false }); step('could not read whether the app has a window; asked it to open one'); }
   else if (win === false) {
     let seen = false;
     for (let n = 1; n <= tries && !seen; n++) {
       await deps.open(app, { background: false });
-      for (const end = deps.now() + (t.window ?? 15000); !seen && deps.now() < end;) { await deps.sleep(1000); seen = (await deps.windowOpen(app)) === true; }
+      for (const end = deps.now() + (t.window ?? 15000); !seen && deps.now() < end;) { await deps.sleep(1000); seen = (await hasWindow()) === true; }
       step(seen ? 'the app was running without a window; opened one' : `the app has no window yet (try ${n} of ${tries})`);
     }
     if (!seen) {
@@ -517,6 +516,15 @@ async function restartSteps(opts, deps, log) {
   report.ok = res.every((r) => isDone(r.outcome));
   step(report.ok ? 'every session resumed' : 'some sessions did not resume', { not: res.filter((r) => !isDone(r.outcome)).map((r) => `${short(r.id)}: ${r.outcome}`) });
   return report;
+}
+
+// Whether the app has a window, from `hackamore ls <app>` (which holds the Accessibility grant): true or false, or null when
+// it cannot be read or the screen read belongs to another process. The app's process is named `github`, so it is matched by pid.
+export function windowFromLs(r, pid) {
+  const st = r?.json?.state;
+  if (!st || r.code !== 0 || !st.app) return null;
+  if (pid && st.app.pid !== pid) return null;
+  return Boolean(st.window);
 }
 
 // One message to the agent when a restart cannot finish on its own; best effort.

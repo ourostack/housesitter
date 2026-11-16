@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
+import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -361,6 +361,28 @@ test('restart: an app running without a window gets one opened; one that never s
   assert.equal(r2.failed.stage, 'relaunch');
   assert.match(r2.failed.why, /no window opened/);
   assert.equal(told.length, 1);
+});
+
+// The app's process is named `github`, not "GitHub Copilot"; System Events could not find it. hackamore's read can.
+test('restart: the window is read through hackamore and matched by pid, so the process name does not matter', { skip }, async () => {
+  const ls = (state) => ({ code: 0, json: { state, actions: [{ name: 'menu', input: { properties: { item: { enum: ['App > Quit Fake'] } } } }] } });
+  assert.equal(windowFromLs(ls({ app: { name: 'GitHub Copilot', pid: 200 }, window: { title: 'Copilot' } }), 200), true);
+  assert.equal(windowFromLs(ls({ app: { name: 'GitHub Copilot', pid: 200 }, window: null }), 200), false);
+  assert.equal(windowFromLs(ls({ app: { name: 'GitHub Copilot', pid: 999 }, window: null }), 200), null, 'another process is not this app');
+  assert.equal(windowFromLs({ code: 2, json: null }, 200), null);
+  const w = await world({ sessions: sessions() });
+  w.procs = [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/github` }, { pid: 101, ppid: 100, command: 'runtime --server' }];
+  delete w.deps.windowOpen;
+  let shown = false;
+  const hk = w.deps.hk;
+  w.deps.hk = async (argv, o) => (argv[0] === 'ls' && w.opens ? ls({ app: { name: 'GitHub Copilot', pid: 200 }, window: shown ? { title: 'Copilot' } : null }) : hk(argv, o));
+  const open = w.deps.open;
+  const fronts = [];
+  w.deps.open = async (a, o) => { if (o.background === false) { shown = true; fronts.push(1); } const x = await open(a, o); w.procs = w.procs.map((p) => ({ ...p, command: p.command.replace('/fake', '/github') })); return x; };
+  const r = await restart(w.opts, w.deps);
+  await w.done();
+  assert.equal(r.ok, true, JSON.stringify(r.failed));
+  assert.equal(fronts.length, 1, 'no window was read through hackamore, so one was opened in front');
 });
 
 test('restart: the run log names the sessions that defer, not just how many', { skip }, async () => {
