@@ -6,3 +6,4 @@ __pycache__/
 proof-*/
 
 .rehearsal-*/
+package-lock.json
