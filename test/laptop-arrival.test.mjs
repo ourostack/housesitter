@@ -2,7 +2,7 @@
 // nothing. The laptop here is a small simulation behind the route's `sh` and `gate`; the always-on Mac's own parts are fakes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SCRIPTS, appNeed, cmpVersion, describePlan, detect, parseGate, parseKv, pass, renderPass } from '../src/laptop-arrival.mjs';
+import { SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, renderPass } from '../src/laptop-arrival.mjs';
 
 const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, step_tries: 6 };
 
@@ -235,4 +235,8 @@ test('detect asks the bus only when Hub says online, or when Hub cannot be read 
   assert.equal(probes, 0, 'a probe is not due yet');
   assert.equal((await detect(CFG, { last_probe: new Date(0).toISOString(), phase: 'down' }, deps, 400000)).kind, 'up');
   assert.equal(probes, 1);
+});
+
+test('a missing config names the fields it needs and where to read how', () => {
+  assert.throws(() => loadConfig('/nonexistent/laptop-arrival.json'), (e) => /no config at \/nonexistent\/laptop-arrival\.json/.test(e.message) && /"peer"/.test(e.message) && /"route"/.test(e.message) && /housesitter laptop-arrival --help/.test(e.message));
 });
