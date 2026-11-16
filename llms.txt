@@ -39,5 +39,6 @@
 - src/hands.mjs: the pixel driver and transports
 - src/adopt.mjs: arrival day
 - device/sitter.py: the always-on watcher on the KVM (Python 3 standard library only)
-- src/copilot-app.mjs: restart-copilot's steps (snapshot, ask, quit through hackamore, relaunch, resume, verify); the peer watch reads its status.json
+- src/copilot-app.mjs: restart-copilot's steps (ask, quit through hackamore, relaunch, resume, verify); the peer watch reads its status.json
+- The house and the flock: Housesitter keeps the Mac and the app as a running process; the app's sessions are [Shepherd](https://github.com/ourostack/shepherd)'s, and Housesitter calls its library for safe points, progress and resume messages.
 - src/peer.mjs and plugins/housesitter/peer.py: the two ends of the peer link; src/peer-watch.mjs: the Mac's watcher

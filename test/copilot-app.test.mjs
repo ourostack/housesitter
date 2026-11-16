@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configPath, family, findMain, installKeeper, KEEPER_LABEL, loopState, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, lastTurnAt, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
+import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, pickTargets, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, runInProgress, settleVerdict, watch, resumeText, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -13,17 +13,6 @@ const skip = !haveSqlite() || typeof WebSocket !== 'function';
 const BUNDLE = '/Applications/Fake Copilot.app';
 const ev = (type, data = {}, at = Date.now()) => JSON.stringify({ type, data, timestamp: new Date(at).toISOString() });
 const A = 'aaaaaaaa-0000-4000-8000-000000000001', B = 'bbbbbbbb-0000-4000-8000-000000000002', C = 'cccccccc-0000-4000-8000-000000000003', D = 'dddddddd-0000-4000-8000-000000000004';
-
-test('loopState: working mid-turn, between tool turns and on a running subagent; not working when finished or stopped', () => {
-  const run = (...types) => loopState(types.map((t) => (Array.isArray(t) ? ev(t[0], t[1]) : ev(t))));
-  assert.equal(run('user.message', 'assistant.turn_start').working, true);
-  assert.equal(run('user.message', 'assistant.turn_start', ['assistant.message', { toolRequests: [{}] }], 'assistant.turn_end').working, true, 'a turn that asked for tools is cut between turns');
-  assert.equal(run('user.message', 'assistant.turn_start', ['assistant.message', { toolRequests: [] }], 'assistant.turn_end').working, false);
-  assert.equal(run('user.message', 'assistant.turn_start', 'subagent.started', ['assistant.message', { toolRequests: [] }], 'assistant.turn_end').working, true);
-  assert.equal(run('user.message', 'assistant.turn_start', ['abort', { reason: 'user_initiated' }]).working, false);
-  assert.equal(run('user.message', 'assistant.turn_start', ['abort', { reason: 'subagent_cancelled' }]).working, true, 'only a person\'s stop counts');
-  assert.equal(run().working, false);
-});
 
 test('lastReply, recheckAfter and settleVerdict: ready, defer (with its lanes), idle, stalled and out of time are told apart', () => {
   const t0 = 1_000_000;
@@ -434,9 +423,7 @@ test('watch: opens a closed app once per login, then resumes the sessions of eac
   await w.done();
 });
 
-test('lastTurnAt and readSkipConfig: the last loop event, and a skip list that a bad file cannot break', () => {
-  assert.equal(lastTurnAt([ev('user.message', {}, 1000), ev('assistant.turn_start', {}, 2000), ev('session.resume', {}, 9000)]), 2000, 'only the agent loop counts, not a resume marker');
-  assert.equal(lastTurnAt([]), null);
+test('readSkipConfig: a skip list that a bad file cannot break', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-skip-'));
   const f = path.join(dir, 'restart-copilot.json'), warns = [];
   assert.deepEqual(readSkipConfig(f, (m) => warns.push(m)), [], 'no file, no skips, no complaint');

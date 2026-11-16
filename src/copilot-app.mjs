@@ -23,31 +23,33 @@
 // Everything that touches the Mac goes through `deps`, so tests run the whole sequence against a pretend Mac.
 
 import { execFile, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFER, READY, ShepherdError, appReady, continuedSince, deps as shepherdDeps, lastReply, sendTo, snapshot, tookTurnSince } from '@ouro.bot/shepherd';
 import { Refusal } from './hands.mjs';
 import { which } from './peer-watch.mjs';
 
+// The app's sessions (the socket, the database, the histories) are Shepherd's; these are re-exported for the callers here.
+export { MAX_HISTORY_BYTES, appReady, lastReply, sendTo, snapshot, tookTurnSince } from '@ouro.bot/shepherd';
+
 export const DEFAULT_APP = 'GitHub Copilot';
-export const LOOKBACK_MS = 24 * 3600000;
-export const TAIL_BYTES = 4 * 1024 * 1024;
 export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3, concurrency: 4, backoff: [2000, 6000, 15000] };
 // A session the app no longer has (archived or deleted on purpose) is not a failed resume.
 export const isGone = (o) => /^gone/.test(o || '');
 export const isDone = (o) => o === 'resumed' || o === 'already continued' || isGone(o);
 
 export const LABEL = 'bot.ouro.housesitter.restart-copilot';
-export const STALE_MS = 24 * 3600000;
-// A session whose history is bigger than this is never resumed by us: the app loads the whole file into memory on resume.
-export const MAX_HISTORY_BYTES = 500 * 1024 * 1024;
 export const configPath = (home = os.homedir()) => process.env.HOUSESITTER_RESTART_CONFIG || path.join(home, '.config', 'housesitter', 'restart-copilot.json');
 
 const sleepReal = (ms) => new Promise((r) => setTimeout(r, ms));
 const hhmm = (ms) => new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 const short = (id) => String(id).slice(0, 8);
+
+// A Shepherd failure is the Refusal this module has always thrown: the same problem and fix, under the same code.
+const refused = (e) => (e instanceof ShepherdError ? new Refusal(e.code === 'node-too-old' ? 'action-unavailable' : 'action-failed', e.message) : e);
+const guard = (fn) => async (...a) => { try { return await fn(...a); } catch (e) { throw refused(e); } };
 
 // ---------- pure ----------
 
@@ -77,22 +79,6 @@ export function family(procs, mainPid, bundleDir) {
   return [...out].sort((a, b) => a - b);
 }
 
-const LOOP = new Set(['user.message', 'assistant.turn_start', 'assistant.message', 'assistant.turn_end', 'abort', 'session.task_complete',
-  'tool.execution_start', 'tool.execution_complete', 'subagent.started', 'subagent.completed', 'external_tool.requested', 'external_tool.completed']);
-const textOf = (r) => (typeof r === 'string' ? r : r?.content != null ? String(r.content) : JSON.stringify(r ?? ''));
-const parse = (l) => { try { return JSON.parse(l); } catch { return null; } };
-
-// When the session's agent loop last did something (the time of its last loop event in these history lines), or null.
-export function lastTurnAt(lines) {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i];
-    if (!l) continue;
-    const e = parse(l);
-    if (e && LOOP.has(e.type) && Date.parse(e.timestamp || '') > 0) return Date.parse(e.timestamp);
-  }
-  return null;
-}
-
 // The skip list file: { "skip": [ids] }. A missing file is an empty list; a bad one is reported and ignored (the keeper must keep resuming the rest).
 export function readSkipConfig(file = configPath(), warn = () => {}) {
   let text;
@@ -109,80 +95,6 @@ export function readSkipConfig(file = configPath(), warn = () => {}) {
 // Every id to leave out: --skip and the shared file, read at each call so an edit counts without a reload.
 export const skipOf = (opts, deps) => [...new Set([...(opts.skip || []), ...(deps.skipList?.() || [])])];
 
-// Was this session's agent loop working when its history ended? Mid-turn, between turns that asked for tools, with a
-// subagent running, or waiting on an async shell or background agent that never reported back. A person's stop, a
-// finished task and a plain finished turn are not work.
-export function loopState(lines) {
-  let last = null, lastMsg = null, running = 0, finished = false;
-  let shells = new Map(), agents = new Map();
-  const starts = new Map();
-  for (const l of lines) {
-    if (!l) continue;
-    const e = parse(l);
-    if (!e) continue;
-    const d = e.data || {};
-    if (e.type === 'session.start' || e.type === 'session.resume') { shells = new Map(); agents = new Map(); running = 0; }
-    if (e.type === 'tool.execution_start') starts.set(d.toolCallId, d);
-    if (e.type === 'tool.execution_complete') {
-      const s = starts.get(d.toolCallId);
-      const out = textOf(d.result);
-      if (s?.toolName === 'bash' && s.arguments?.mode === 'async') {
-        const id = (out.match(/shellId:\s*([^\s>"\\]+)/) || [])[1] || s.arguments?.shellId;
-        if (id && !/completed with exit code|has completed/i.test(out)) shells.set(String(id), s.arguments?.description || 'shell');
-      }
-      if (s && (s.toolName === 'read_bash' || s.toolName === 'stop_bash') && s.arguments?.shellId != null) {
-        if (s.toolName === 'stop_bash' || /completed with exit code|has completed|no (such )?shell|not found|stopped/i.test(out)) shells.delete(String(s.arguments.shellId));
-      }
-    }
-    if (e.type === 'system.notification') {
-      const k = d.kind || {};
-      if (k.shellId != null) shells.delete(String(k.shellId));
-      if (k.agentId) agents.delete(k.agentId);
-    }
-    if (e.type === 'subagent.started' && d.executionMode === 'background') { agents.set(e.agentId || d.toolCallId, d.agentDisplayName || d.agentName || 'agent'); continue; }
-    if ((e.type === 'subagent.completed' || e.type === 'subagent.failed') && agents.has(e.agentId || d.toolCallId)) { agents.delete(e.agentId || d.toolCallId); continue; }
-    if (!LOOP.has(e.type)) continue;
-    if (e.type === 'abort' && d.reason && d.reason !== 'user_initiated') continue;
-    if (e.type === 'subagent.started') running++;
-    if (e.type === 'subagent.completed') running = Math.max(0, running - 1);
-    if (e.type === 'assistant.message') { lastMsg = e; finished = false; }
-    if (e.type === 'session.task_complete') finished = true;
-    if (e.type === 'user.message') { lastMsg = null; running = 0; finished = false; }
-    last = e.type;
-  }
-  const owed = [...[...shells.values()].map((x) => `shell "${x}"`), ...[...agents.values()].map((x) => `background agent ${x}`)];
-  if (last === 'abort') return { working: false, why: 'stopped by the person' };
-  if (last === 'session.task_complete' || (last === 'assistant.turn_end' && finished)) return { working: false, why: 'task complete' };
-  if (last === 'assistant.turn_end') {
-    const asked = (lastMsg?.data?.toolRequests || []).length > 0;
-    if (asked) return { working: true, why: 'between turns (its last turn called tools and no next turn started)' };
-    if (running > 0) return { working: true, why: `${running} subagent(s) still running` };
-    if (owed.length) return { working: true, why: `waiting on ${owed.slice(0, 3).join(', ')}` };
-    return { working: false, why: 'its turn had ended' };
-  }
-  return last ? { working: true, why: `mid-turn (last ${last})` } : { working: false, why: 'no agent activity' };
-}
-
-// Did anything (a person, a resumer, a queue) send the session a message after `since`? Then it was continued.
-export function continuedSince(lines, since) {
-  for (const l of lines) {
-    if (!l || !/"type":"user\.message"/.test(l.slice(0, 80))) continue;
-    const e = parse(l);
-    if (e && Date.parse(e.timestamp || '') > since) return true;
-  }
-  return false;
-}
-
-// Did the session start a new agent turn after `since`?
-export function tookTurnSince(lines, since) {
-  for (const l of lines) {
-    if (!l || !/"type":"assistant\.turn_start"/.test(l.slice(0, 80))) continue;
-    const e = parse(l);
-    if (e && Date.parse(e.timestamp || '') > since) return true;
-  }
-  return false;
-}
-
 // Who gets a resume message. before/after: [{ id, state: 'busy'|'idle', interrupted }]. A flag the app set before the
 // restart (an old crash nobody resumed) is not this restart's doing and is left alone.
 export function pickTargets({ before, after, also = [] }) {
@@ -196,32 +108,11 @@ export function pickTargets({ before, after, also = [] }) {
   return out.map((t) => ({ ...t, known: now.has(t.id), title: (now.get(t.id) || was.get(t.id))?.title || null }));
 }
 
-export const READY = 'READY-TO-RESTART';
-export const DEFER = 'DEFER';
 export const settleText = ({ by, stallSec, why, what = 'the GitHub Copilot app restarts' }) => `Heads up: ${what}${why ? ` for ${why}` : ''}, as soon as every working session is ready and no later than about ${hhmm(by)}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, and start nothing long. When you are there, say so: end your turn with a line that is exactly ${READY}. If stopping your background lanes (subagents, shell jobs) now would lose work you cannot redo from pushed state, answer instead with a line of its own, ${DEFER}: <n> lanes running, about <m> min, and the restart waits for you and asks again when your estimate is up. A session that has not deferred and goes ${stallSec < 120 ? `${stallSec} seconds` : `${Math.round(stallSec / 60)} minutes`} without a step is not waited for. You will be sent a message to resume once the app is back.`;
 export const recheckText = ({ by, why }) => `Recheck for the restart${why ? ` for ${why}` : ''}: are you at a safe point yet? Answer with a line of its own: ${READY}, or ${DEFER}: <n> lanes running, about <m> min again. The restart goes ahead at about ${hhmm(by)} whatever the answers.`;
 export const cancelText = ({ why }) => `The restart${why ? ` for ${why}` : ''} was called off: the app did not quit and is still running, so nothing was stopped. Carry on with what you were doing; there is nothing to resume.`;
 const lanesNote = (l) => (l ? ` You had said ${l.lanes ?? 'some'} lane${l.lanes === 1 ? ' was' : 's were'} still running${l.minutes != null ? ` (about ${l.minutes} min from done)` : ''}: the restart went ahead without waiting longer, so those lanes were stopped; restart them from their pushed state.` : '');
 export const resumeText = ({ at, why, lanes = null }) => `The app was restarted at ${hhmm(at)}${why ? ` for ${why}` : ''}; resume where you left off. Anything that was in flight when it stopped (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish. Your background subagents and shell jobs were stopped; restart any unfinished ones from their pushed state.${lanesNote(lanes)}`;
-
-// What the session last answered to the ask, after `since`: { kind: 'ready', at } or { kind: 'defer', at, lanes, minutes }, or null.
-// An answer is a line of its own: the ready token, or the defer token, a colon, and "N lanes running" with "about M min".
-export function lastReply(lines, since) {
-  let out = null;
-  for (const l of lines) {
-    if (!l || !l.includes('assistant.message')) continue;
-    const e = parse(l);
-    const at = Date.parse(e?.timestamp || '');
-    if (e?.type !== 'assistant.message' || !(at > since)) continue;
-    for (const raw of String(e.data?.content ?? '').split('\n')) {
-      const line = raw.replace(/[`*_]/g, '').trim();
-      if (line.replace(/[\s.]/g, '') === READY) out = { kind: 'ready', at };
-      const d = line.match(new RegExp(`^${DEFER}\\s*:\\s*(\\d+)\\s+lanes?\\s+running(?:\\s*,?\\s*about\\s+(\\d+)\\s*min)?`, 'i'));
-      if (d) out = { kind: 'defer', at, lanes: Number(d[1]), minutes: d[2] == null ? null : Number(d[2]) };
-    }
-  }
-  return out;
-}
 
 // When to ask a deferring session again: its own estimate, kept between recheckMin and recheckMax.
 export const recheckAfter = (reply, t) => Math.min(t.recheckMax, Math.max(t.recheckMin, reply.minutes == null ? t.recheckMax / 2 : reply.minutes * 60000));
@@ -277,19 +168,6 @@ const run = (file, argv, { timeoutMs = 30000 } = {}) => new Promise((res) => {
   execFile(file, argv, { timeout: timeoutMs, maxBuffer: 64 << 20 }, (err, stdout, stderr) => res({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), stdout: String(stdout || ''), stderr: String(stderr || '') }));
 });
 
-function readTail(f, bytes = TAIL_BYTES) {
-  let fd;
-  try {
-    fd = fs.openSync(f, 'r');
-    const size = fs.fstatSync(fd).size;
-    const len = Math.min(size, bytes);
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString('utf8').split('\n');
-    return len < size ? lines.slice(1) : lines;
-  } catch { return []; } finally { if (fd !== undefined) fs.closeSync(fd); }
-}
-
 // The hackamore this package depends on, run with the node that runs housesitter.
 function bundledHackamore() {
   try { return [process.execPath, path.join(path.dirname(fileURLToPath(import.meta.resolve('@ouro.bot/hackamore'))), '..', 'bin', 'hackamore.mjs')]; } catch { return null; }
@@ -298,6 +176,7 @@ function bundledHackamore() {
 export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), hackamore = null, state = stateDir(), config = configPath(), warn = () => {} } = {}) {
   const given = hackamore || process.env.HOUSESITTER_HACKAMORE || which('hackamore');
   const cmd = given ? given.trim().split(/\s+/) : bundledHackamore();
+  const app = shepherdDeps({ copilotHome });
   return {
     home: copilotHome,
     hackamore: cmd,
@@ -306,15 +185,10 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     sleep: sleepReal,
     ps: async () => parsePs((await run('/bin/ps', ['-axo', 'pid=,ppid=,command='])).stdout),
     startedAt: async (pid) => Date.parse((await run('/bin/ps', ['-o', 'lstart=', '-p', String(pid)])).stdout.trim()),
-    sql: async (q) => {
-      const db = path.join(copilotHome, 'data.db');
-      if (!fs.existsSync(db)) throw new Refusal('action-failed', `there is no Copilot app database at ${db}: the app has not run on this Mac, or --copilot-home points elsewhere. Fix: pass --copilot-home <dir> with this Mac's Copilot folder, or open the app once so it creates the database.`);
-      const r = await run('/usr/bin/sqlite3', ['-readonly', '-json', '-cmd', '.timeout 3000', db, q]);
-      if (r.code !== 0) throw new Refusal('action-failed', `SQLite refused the Copilot app's database at ${db}: ${r.stderr.trim().slice(0, 160)}. Fix: pass --copilot-home <dir> with this Mac's Copilot folder, or open the app once so it creates the database.`);
-      return r.stdout.trim() ? JSON.parse(r.stdout) : [];
-    },
-    historySize: (id) => { try { return fs.statSync(path.join(copilotHome, 'session-state', id, 'events.jsonl')).size; } catch { return 0; } },
-    history: (id) => { const f = path.join(copilotHome, 'session-state', id, 'events.jsonl'); try { return { lines: readTail(f), mtime: fs.statSync(f).mtimeMs }; } catch { return { lines: [], mtime: 0 }; } },
+    // The app's database, histories and socket: Shepherd's.
+    sql: guard(app.sql),
+    historySize: app.historySize,
+    history: app.history,
     hk: async (argv, { timeoutMs = 60000 } = {}) => {
       const r = await run(cmd[0], [...cmd.slice(1), ...argv], { timeoutMs });
       let json = null; try { json = JSON.parse(r.stdout); } catch { /* not JSON */ }
@@ -322,7 +196,7 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     },
     kill: (pid, sig) => { try { process.kill(pid, sig); return true; } catch { return false; } },
     open: async (appName, { background }) => run('/usr/bin/open', [...(background ? ['-g'] : []), '-a', appName]),
-    exchange: (messages, opts) => exchange(copilotHome, messages, opts),
+    exchange: guard(app.exchange),
     appExe: async (dir) => (await run('/usr/bin/plutil', ['-extract', 'CFBundleExecutable', 'raw', '-o', '-', path.join(dir, 'Contents', 'Info.plist')])).stdout.trim() || null,
     // Which app process (pid and start time) has had its sessions resumed already, so two resumers never both send.
     generation: {
@@ -352,61 +226,7 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
   };
 }
 
-// One conversation with the app's local WebSocket (port and token in <home>/run/): send, collect until done() or the wait ends.
-export function exchange(copilotHome, messages, { done = () => false, waitMs = 10000, keep = () => true } = {}) {
-  const rd = (n) => fs.readFileSync(path.join(copilotHome, 'run', n), 'utf8').trim().split(/\s+/)[0];
-  let port, token;
-  try { port = rd('ws.port'); token = rd('ws.token'); } catch { return Promise.resolve([{ type: 'socket_error', message: 'no ws.port or ws.token: the app is not serving' }]); }
-  if (typeof WebSocket !== 'function') throw new Refusal('action-unavailable', 'the app\'s socket needs Node 22 or newer (global WebSocket); run housesitter with a newer node');
-  return new Promise((resolve) => {
-    const got = [];
-    let ws; try { ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}&observer=1`); } catch { resolve([{ type: 'socket_error' }]); return; }
-    let over = false;
-    const finish = () => { if (over) return; over = true; clearTimeout(timer); try { ws.close(); } catch { /* closed */ } resolve(got); };
-    const timer = setTimeout(finish, waitMs);
-    ws.addEventListener('open', () => { for (const m of messages) ws.send(JSON.stringify(m)); });
-    ws.addEventListener('message', (e) => { let j; try { j = JSON.parse(String(e.data)); } catch { return; } if (!keep(j)) return; got.push(j); if (done(j, got)) finish(); });
-    ws.addEventListener('error', () => { got.push({ type: 'socket_error' }); finish(); });
-  });
-}
-
-export const appReady = async (deps) => (await deps.exchange([], { done: (j) => j.type === 'server_hello', keep: (j) => j.type === 'server_hello', waitMs: 3000 })).some((j) => j.type === 'server_hello');
-
-export async function sendTo(deps, id, prompt, waitMs) {
-  const request_id = randomUUID();
-  const got = await deps.exchange([{ type: 'send_message', session_id: id, prompt, delivery_mode: 'immediate', request_id }], {
-    keep: (j) => j.request_id === request_id || (j.session_id === id && /message_(sent|queued|delivery)/.test(j.type)) || j.type === 'socket_error',
-    done: (j) => /^(session_message_sent|session_message_queued|session_message_delivery_unknown|error|socket_error)$/.test(j.type),
-    // A session whose runtime is not loaded loads first, often for more than 20 s; closing early cancels the send.
-    waitMs,
-  });
-  const last = got.at(-1);
-  return { ok: Boolean(last && /session_message_(sent|queued)/.test(last.type)), reply: last?.type || 'no reply', error: last?.type === 'error' || last?.type === 'socket_error' ? String(last.message || (last.type === 'socket_error' ? 'socket_error: the app\'s socket refused or dropped the connection' : '')).slice(0, 200) : null };
-}
-
 // ---------- the steps ----------
-
-const ROWS = `SELECT s.id, s.title, s.mode, s.is_running AS running, s.was_interrupted AS interrupted, s.execution_location AS loc
-FROM sessions s LEFT JOIN workspaces w ON w.session_id = s.id
-WHERE s.archived_at IS NULL AND w.archived_at IS NULL`;
-
-// Every local, unarchived session (except those whose id starts with an entry of skip): its mode, and whether its agent loop is working (busy) or not (idle).
-export async function snapshot(deps, now = deps.now(), skip = []) {
-  const rows = (await deps.sql(ROWS)).filter((r) => (r.loc === 'local' || !r.loc) && !skip.some((p) => r.id.startsWith(p)));
-  return rows.map((r) => {
-    const bytes = deps.historySize?.(r.id) || 0;
-    if (bytes > MAX_HISTORY_BYTES) return { id: r.id, title: r.title, mode: r.mode || null, state: 'idle', why: `its history is ${Math.round(bytes / 1048576)} MB, over the ${MAX_HISTORY_BYTES / 1048576} MB resume cap`, running: Boolean(r.running), interrupted: Boolean(r.interrupted), oversize: bytes };
-    const h = deps.history(r.id);
-    const last = lastTurnAt(h.lines);
-    // A session whose last turn is over a day old is never resumed, whatever flag the app still carries for it.
-    const stale = last != null ? last < now - STALE_MS : h.mtime > 0 && h.mtime < now - STALE_MS;
-    if (stale) return { id: r.id, title: r.title, mode: r.mode || null, state: 'idle', why: 'its last turn was over 24 h ago', running: false, interrupted: false, stale: true };
-    const v = h.mtime >= now - LOOKBACK_MS ? loopState(h.lines) : { working: false, why: 'no recent activity' };
-    // The app's own running flag counts too: either one says the session had work in flight.
-    const busy = v.working || Boolean(r.running);
-    return { id: r.id, title: r.title, mode: r.mode || null, state: busy ? 'busy' : 'idle', why: v.working ? v.why : r.running ? 'the app marks it running' : v.why, running: Boolean(r.running), interrupted: Boolean(r.interrupted) };
-  });
-}
 
 async function hackamoreQuit(deps, app, { personWaitMs, log }) {
   const ls = await deps.hk(['ls', app]);
