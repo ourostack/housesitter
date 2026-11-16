@@ -45,11 +45,14 @@ export function findOuro(home = os.homedir(), env = process.env) {
 }
 
 // One message to the agent, which tells the person. Every message is also appended to told.log in the state folder.
+// Ouro's CLI asks who wanted a message sent: this is Housesitter's standing job, set up by the operator.
+export const WHY = 'Housesitter is the operator\'s standing Mac-keeping job; it reports what it did without being asked';
+
 export function realTell({ state, home = os.homedir(), agent = process.env.HOUSESITTER_AGENT || 'ouroboros' } = {}) {
   return async (text) => {
     const ouro = findOuro(home);
     let r = { code: 1, stderr: 'the ouro CLI was not found' };
-    if (ouro) r = await run(ouro, ['msg', '--to', agent, text], { timeoutMs: 60000 });
+    if (ouro) r = await run(ouro, ['msg', '--to', agent, '--why', WHY, text], { timeoutMs: 60000 });
     try { fs.mkdirSync(state, { recursive: true }); fs.appendFileSync(path.join(state, 'told.log'), `${JSON.stringify({ at: new Date().toISOString(), ok: r.code === 0, text, error: r.code === 0 ? undefined : String(r.stderr).trim().slice(0, 200) })}\n`); } catch { /* the log is a courtesy */ }
     return { ok: r.code === 0, error: r.code === 0 ? null : String(r.stderr).trim().slice(0, 200) };
   };

@@ -22,7 +22,7 @@ function fake(over = {}) {
     worktrees: () => Object.keys(over.wts || {}),
     linked: (x) => over.wts[x].linked !== false,
     open: (x) => (over.wts?.[x]?.open) || (over.openFiles || []).includes(x),
-    changedAt: (x) => NOW - over.wts[x].ageMs,
+    changedAt: (x) => NOW - (over.wts?.[x]?.ageMs ?? over.cloneAge?.[x] ?? 9 * DAY),
     git: (x) => ({ dirty: Boolean((over.wts?.[x] || over.gits?.[x] || {}).dirty), unpushed: Boolean((over.wts?.[x] || over.gits?.[x] || {}).unpushed) }),
     rescue: (x) => { log.rescued.push(x); return `/bundles/${x.split('/').pop()}`; },
     removeWorktree: (x) => { log.removed.push(x); free += 20 * GIB; },
@@ -31,6 +31,8 @@ function fake(over = {}) {
     deadSessions: () => over.dead || [],
     quietFor: (dir) => (over.dead || []).find((x) => x.dir === dir).quietFor ?? Infinity,
     clonesIn: (dirs) => over.clones?.[dirs[0]] || [],
+    clones: () => over.clonesList || [],
+    clone: (x) => ({ unique: Boolean(over.uniq?.includes(x)) }),
     idleSessions: () => new Set(over.idle || []),
     thinnable: () => over.thin || [],
     thin: (x) => { log.thinned = (log.thinned || []); log.thinned.push(x); free += 10 * GIB; return true; },
@@ -72,7 +74,7 @@ test('unsaved work is saved to a bundle before its worktree is removed', async (
   await pass({}, d);
   assert.deepEqual(log.rescued, ['/w/r/dirty']);
   assert.deepEqual(log.removed, ['/w/r/dirty', '/w/r/clean']);
-  assert.match(log.told[0], /Unsaved work was kept in \/bundles\/dirty/);
+  assert.match(log.told[0], /Unsaved work from 1 worktree\(s\) was saved under ~\/AgentBundles\/disk-rescue/);
 });
 
 test('above the floor nothing is touched; it stops at floor + margin; a dry run changes nothing', async () => {
@@ -186,4 +188,12 @@ test('thin uses the repository\'s own script: clean media leaves the tree, modif
   assert.ok(fs.existsSync(path.join(wt, 'edited.png')) && fs.existsSync(path.join(wt, 'new.png')) && fs.existsSync(path.join(wt, 'doc.md')));
   assert.equal(fs.readFileSync(path.join(wt, 'edited.png'), 'utf8'), 'changed');
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a full clone goes only when it holds nothing Git does not and has been quiet three days', async () => {
+  const clonesList = ['/c/clean', '/c/unique', '/c/recent', '/c/used', '/c/launchd', '/c/open'];
+  const f = fake({ clonesList, uniq: ['/c/unique'], cloneAge: { '/c/recent': DAY }, used: ['/c/used'], protect: ['/c/launchd'], openFiles: ['/c/open'] });
+  const r = await pass({}, f.d);
+  assert.deepEqual(f.log.cache, ['/c/clean']);
+  assert.equal(r.reclaimed.clones.length, 1);
 });
