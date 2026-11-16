@@ -10,7 +10,9 @@
 //   4. linked git worktrees (the app's own, and the ones agents keep under ~/code): a worktree goes only if no unarchived
 //      app session has it, no running process has a file open under it, nothing in it changed in 24 hours, and it is not
 //      something launchd runs from. A name never qualifies one. Unsaved work is saved to a bundle first.
-//   5. the history of a session the app no longer lists, compressed, never deleted
+//   5. full clones agents left under ~/code or in a session's files/ that hold nothing Git does not: clean, no stash, no
+//      second worktree, every branch on a remote, nothing open, untouched for 3 days (a clone is one `git clone` away)
+//   6. the history of a session the app no longer lists, compressed, never deleted
 // Each hour it records free space in a ledger; each day it measures where the bytes are and says which sources grew,
 // so the cause gets fixed and not only the symptom. A pass that finds nothing safe rests an hour before it scans again.
 
@@ -28,6 +30,7 @@ export const DP = {
   deadQuiet: 2 * 24 * 3600000, // the heavy parts of an unlisted session go only after this long untouched
   minHistory: 20 * 1048576, // smaller histories are not worth compressing
   nag: 24 * 3600000, // how often "still under the floor" may be said
+  cloneQuiet: 3 * 24 * 3600000, // a full clone is removed only after this long untouched
   rest: 3600000, // after a pass that found nothing safe, the next scan waits this long
   ledgerEvery: 55 * 60000, // free space is recorded about hourly
   breakdownEvery: 24 * 3600000, // where the bytes are is measured daily
@@ -75,7 +78,7 @@ export async function pass(opts, deps, say = () => {}) {
   if (!opts.force && !opts.dry_run && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
 
   await deps.load?.();
-  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], sessions: 0, histories: 0, rescued: [] };
+  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, sessions: 0, histories: 0, rescued: [] };
   const done = () => deps.usage().free >= t.floor + t.margin;
 
   for (const c of deps.caches()) {
@@ -128,6 +131,15 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.worktrees.push(dir); out(`removed worktree ${dir}: ${gib(n)}`);
   }
 
+  for (const dir of deps.clones?.() || []) {
+    if (done()) break;
+    const why = deps.protectedBy?.(dir) ? 'launchd or Housesitter runs from it' : used.has(dir) ? 'an unarchived app session uses it' : deps.open(dir) ? 'a running process has it open' : !(now - deps.changedAt(dir) >= t.cloneQuiet) ? 'something in it changed in the last 3 days' : deps.clone(dir).unique ? 'it holds work that is not on a remote' : null;
+    if (why) { out(`kept clone ${dir}: ${why}`); continue; }
+    const n = deps.size(dir);
+    if (!opts.dry_run) deps.remove(dir);
+    reclaimed.clones.push(dir); reclaimed.cloned += n; out(`removed clone ${dir}: ${gib(n)}`);
+  }
+
   const hlive = deps.liveSessions();
   for (const h of deps.histories()) {
     if (done()) break;
@@ -137,14 +149,14 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   const after = deps.usage();
-  const total = reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const total = reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
   const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
   const tail = `${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work was kept in ${reclaimed.rescued.join(', ')}.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
@@ -217,6 +229,25 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
         }
       } catch { /* none */ }
       return out;
+    },
+    // Full clones (a .git folder) under ~/code and in sessions' files/: only those with nothing Git does not hold.
+    clones: () => {
+      const roots = [path.join(home, 'code'), ...(() => { try { return fs.readdirSync(sessions).map((i) => path.join(sessions, i, 'files')); } catch { return []; } })()];
+      const out = [];
+      for (const r of roots) {
+        if (!fs.existsSync(r)) continue;
+        const f = sh('/usr/bin/find', [r, '-maxdepth', r.startsWith(sessions) ? '4' : '2', '-name', '.git', '-type', 'd', '-prune', '-print'], { timeout: 120000 });
+        for (const g of String(f.stdout).split('\n').filter(Boolean)) out.push(path.dirname(g));
+      }
+      return out;
+    },
+    // `unique`: anything here a clone would not give back (unsaved changes, a stash, a commit on no remote, a second worktree, no remote at all).
+    clone: (d) => {
+      const g = (...a) => sh('/usr/bin/git', ['-C', d, ...a]);
+      const worktrees = g('worktree', 'list', '--porcelain').stdout.split('\n').filter((l) => l.startsWith('worktree ')).length;
+      const unique = g('status', '--porcelain').stdout.trim() !== '' || g('stash', 'list').stdout.trim() !== '' || g('remote').stdout.trim() === '' ||
+        g('log', '--oneline', '--branches', '--tags', '--not', '--remotes').stdout.trim() !== '' || worktrees !== 1 || g('rev-parse', '--git-dir').status !== 0;
+      return { unique };
     },
     // What launchd runs from, and the clone Housesitter itself runs from, with their own worktrees: never removed.
     protectedBy: (d) => {
