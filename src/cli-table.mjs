@@ -34,7 +34,7 @@ const COMMANDS = [
   cmd({ name: 'forget', summary: 'wipe the secrets from the KVM and stop the sitter', effect: 'private', examples: ['housesitter forget <mac> --yes'] }),
   cmd({ name: 'ls', summary: 'the Mac as state, plus the actions available now (Ouro Reins)', effect: 'private', readOnly: true, examples: ['housesitter ls <mac>'] }),
   cmd({ name: 'do', summary: 'run one action the Mac offers now', effect: 'others', examples: ['housesitter do <mac> <action> \'<json>\''] }),
-  cmd({ name: 'peer', summary: 'talk with Housesitter, the agent on the KVM: send, inbox, flush, watch, drill', effect: 'others', examples: ['housesitter peer send <text>', 'housesitter peer inbox'] }),
+  cmd({ name: 'peer', summary: 'talk with Housesitter, the agent on the KVM: send, inbox, flush, watch, drill', effect: 'others', examples: ['housesitter peer send <text>', 'housesitter peer inbox', 'housesitter peer flush [--now]'] }),
   cmd({ name: 'restart-copilot', summary: 'restart the GitHub Copilot app without losing any session\'s work', effect: 'others', examples: ['housesitter restart-copilot --dry-run'] }),
   cmd({ name: 'steer', summary: 'whether another computer can see and drive this Mac\'s agent sessions', effect: 'private', examples: ['housesitter steer --list'] }),
   cmd({ name: 'laptop-arrival', summary: 'when a Mac that was away is back, bring it up to date and tell the agent once', effect: 'others', examples: ['housesitter laptop-arrival --dry-run'] }),
