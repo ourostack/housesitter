@@ -25,6 +25,17 @@ const FLAGS = Object.fromEntries([
 // does not act is answered with what it would do. adopt, restart-copilot and laptop-arrival keep their own --dry-run.
 const OWN_DRY_RUN = new Set(['adopt', 'restart-copilot', 'laptop-arrival']);
 
+// --why is for an action someone asked for. A dry run or a --status look acts on nothing, and a job the person installed
+// on a timer runs as the person set it up, so these run without one. Each list is the flags a command's installed job
+// passes (AGENTS in src/recovery.mjs, the crash-resume, Apple Account, laptop-arrival and peer-watch installers).
+const SCHEDULED = {
+  'restart-copilot': ['heartbeat', 'health-watch', 'plugin-updates', 'os-updates', 'resume-only'],
+  'apple-account': ['watch'],
+  'laptop-arrival': ['quiet'],
+  'peer watch': ['every', 'once'],
+};
+const WHY = { type: 'string', required: true, placeholder: '"who asked you, and what they said"', description: 'Who asked you, and what they said, like "Riley asked me to post the banner"; it is logged with the action.' };
+
 const COMMANDS = [
   cmd({ name: 'demo', summary: 'the real evening it was built for, replayed (no hardware)', effect: 'private', readOnly: true, args: [word('name', 'night, for one bad night, rehearsed', { required: false })], examples: ['housesitter demo', 'housesitter demo night'] }),
   cmd({ name: 'adopt', summary: 'set up a new KVM next to a Mac: three cables in, then this', effect: 'private', args: [mac()], examples: ['housesitter adopt <mac> --address <ip>'] }),
@@ -63,7 +74,12 @@ const COMMANDS = [
   cmd({ name: 'tailnet-policy', summary: 'a Tailscale policy where the KVM reaches nothing', effect: 'private', readOnly: true, examples: ['housesitter tailnet-policy'] }),
   cmd({ name: 'version', summary: 'print the version', effect: 'private', readOnly: true, examples: ['housesitter version'] }),
 ].map((c) => (c.effect === 'others'
-  ? { ...c, why: 'required', ...(c.examples ? { examples: c.examples.map((e) => `${e} --why "the person asked"`) } : {}) }
+  ? {
+    ...c,
+    why: 'required',
+    flags: { ...c.flags, why: { ...WHY, unless: ['dry-run', 'status', ...(SCHEDULED[c.name] ?? [])] } },
+    ...(c.examples ? { examples: c.examples.map((e) => (/--(dry-run|status)\b/.test(e) ? e : `${e} --why "the person asked"`)) } : {}),
+  }
   : c));
 
 /** Every command word the table declares, in the order the overview lists them. */
