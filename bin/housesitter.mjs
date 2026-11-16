@@ -209,7 +209,7 @@ async function laptopArrival() {
   let cfg;
   try { cfg = Arrival.loadConfig(file); } catch (e) {
     if (!flag('--dry-run') || !/no config/.test(e.message)) throw e;
-    const line = `laptop-arrival: dry run; nothing was done. There is no config at ${file}, so there is nothing to check. Without --dry-run this brings a returning Mac up to date and tells the agent once.`;
+    const line = `laptop-arrival: dry run; nothing was done. There is no config at ${file}, so there is nothing to check. Without --dry-run this brings a returning Mac up to date and tells the agent once; the agent is the one who sees it.`;
     if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: line }); else console.log(line);
     return 0;
   }
@@ -308,11 +308,11 @@ async function restartCopilot() {
   if (flag('--dry-run')) {
     const p = await Copilot.plan(opts, deps).catch((e) => {
       // No app database here, so no sessions to plan for: say so, and exit 0 as a preview does.
-      if (/database/.test(e.message)) return { no_database: e.message.split(' (')[0] };
+      if (/database/.test(e.message)) return { no_database: e.message.split('. Fix:')[0] };
       throw e;
     });
     if (p.no_database) {
-      const line = `restart-copilot: dry run; nothing was done. ${p.no_database}, so there are no sessions to plan for. Without --dry-run this would restart the app and resume the sessions it was working on.`;
+      const line = `restart-copilot: dry run; nothing was done. ${p.no_database}, so there are no sessions to plan for. Without --dry-run this would restart the app and resume the sessions it was working on, which the people using those sessions see.`;
       if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: line }); else console.log(line);
       return 0;
     }

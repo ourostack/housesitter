@@ -303,8 +303,10 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     ps: async () => parsePs((await run('/bin/ps', ['-axo', 'pid=,ppid=,command='])).stdout),
     startedAt: async (pid) => Date.parse((await run('/bin/ps', ['-o', 'lstart=', '-p', String(pid)])).stdout.trim()),
     sql: async (q) => {
-      const r = await run('/usr/bin/sqlite3', ['-readonly', '-json', '-cmd', '.timeout 3000', path.join(copilotHome, 'data.db'), q]);
-      if (r.code !== 0) throw new Refusal('action-failed', `could not read the Copilot app's database at ${path.join(copilotHome, 'data.db')} (${r.stderr.trim().slice(0, 160)}). Fix: pass --copilot-home <dir> with this Mac's Copilot folder, or open the app once so it creates the database.`);
+      const db = path.join(copilotHome, 'data.db');
+      if (!fs.existsSync(db)) throw new Refusal('action-failed', `there is no Copilot app database at ${db}: the app has not run on this Mac, or --copilot-home points elsewhere. Fix: pass --copilot-home <dir> with this Mac's Copilot folder, or open the app once so it creates the database.`);
+      const r = await run('/usr/bin/sqlite3', ['-readonly', '-json', '-cmd', '.timeout 3000', db, q]);
+      if (r.code !== 0) throw new Refusal('action-failed', `SQLite refused the Copilot app's database at ${db}: ${r.stderr.trim().slice(0, 160)}. Fix: pass --copilot-home <dir> with this Mac's Copilot folder, or open the app once so it creates the database.`);
       return r.stdout.trim() ? JSON.parse(r.stdout) : [];
     },
     historySize: (id) => { try { return fs.statSync(path.join(copilotHome, 'session-state', id, 'events.jsonl')).size; } catch { return 0; } },
