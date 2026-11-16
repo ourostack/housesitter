@@ -308,7 +308,7 @@ async function restartCopilot() {
   if (flag('--dry-run')) {
     const p = await Copilot.plan(opts, deps).catch((e) => {
       // No app database here, so no sessions to plan for: say so, and exit 0 as a preview does.
-      if (/database/.test(e.message)) return { no_database: e.message.split('. Fix:')[0] };
+      if (/database|no app called/.test(e.message)) return { no_database: e.message.split('. Fix:')[0] };
       throw e;
     });
     if (p.no_database) {
