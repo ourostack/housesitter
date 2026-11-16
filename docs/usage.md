@@ -101,6 +101,7 @@ housesitter steer [--repair] [--list] [--no-sessions] [--peer <device name>] [--
                                          --repair puts the daemon back under launchd with track-all; --list shows the sessions as Hub reads them;
                                          --peer says whether this Mac can read another Mac's device (the laptop's view of the mini);
                                          --install loads bot.ouro.housesitter.steer (every 2 min, no model turns); exit 1 when something is wrong
+housesitter hold [--dry-run] [--json] [--quiet] [--why "<reason>"]   keep the launchd jobs listed under launchd_disabled in config off: disable each again if it came back on, and stop it if it is running (by PID); --quiet prints only what it changed; bot.ouro.housesitter.hold runs it hourly (installed by --install-recovery); exit 1 when a job cannot be stopped
 housesitter laptop-arrival <mac> [--config <file>] [--dry-run] [--status] [--install|--uninstall]   when a Mac that was away is back online, bring it up to
                                          date and tell the agent once: update and restart its Copilot app (sessions saved and resumed), unload the jobs
                                          this Mac took over, verify its Hub daemon; every step checks first, so a second run changes nothing

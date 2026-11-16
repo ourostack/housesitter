@@ -28,6 +28,7 @@ import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
 import * as Steer from '../src/steer.mjs';
+import * as Hold from '../src/hold.mjs';
 import * as Arrival from '../src/laptop-arrival.mjs';
 import * as Deploy from '../src/deploy.mjs';
 import { isCommand, previewOf, refusalOf, runHelp } from '../src/cli-table.mjs';
@@ -176,6 +177,27 @@ async function appleAccount() {
   const r = await Apple.attempt({ mac: name, explicit: flag('--now') }, deps);
   if (json) emit(r); else say(`${r.status}${r.why ? `: ${r.why}` : ''}`);
   return ['filled', 'no-dialog', 'left-alone', 'waiting'].includes(r.status) ? 0 : 1;
+}
+
+async function holdCmd() {
+  const quiet = flag('--quiet');
+  const dry = flag('--dry-run');
+  const labels = loadConfig().launchd_disabled ?? null;
+  if (labels !== null && !Array.isArray(labels)) throw new Refusal('input-invalid', `launchd_disabled in ${configPath()} must be a list of launchd labels`);
+  // The installed job passes --quiet and stays silent; a person who runs it with no list is told where to add one.
+  if (labels === null && !dry && !quiet) throw new Refusal('input-invalid', Hold.NO_LIST);
+  const rows = labels ? Hold.holdDisabled(labels, { dry }) : [];
+  const failed = rows.some((r) => r.error);
+  const text = labels === null ? Hold.NO_LIST : Hold.acted(rows).length ? Hold.renderHold(rows) : Hold.ALL_OFF(rows.length);
+  if (dry) {
+    if (json) emit({ ok: !failed, dry_run: true, nothing_done: true, rows, message: `${text}\n${Hold.PREVIEW}` });
+    else console.log(`${text}\n${Hold.PREVIEW}`);
+    return failed ? 1 : 0;
+  }
+  if (json) emit({ ok: !failed, rows });
+  else if (Hold.acted(rows).length) say(text);
+  else if (labels !== null && !quiet) say(text);
+  return failed ? 1 : 0;
 }
 
 async function steerCmd() {
@@ -468,6 +490,7 @@ async function main() {
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
   if (cmd === 'steer') return steerCmd();
+  if (cmd === 'hold') return holdCmd();
   // The returning Mac is the `peer` in laptop-arrival.json; it has no KVM, so config.json need not list it.
   if (cmd === 'laptop-arrival') return laptopArrival();
 

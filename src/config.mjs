@@ -17,6 +17,8 @@
 //       "outbox": { "gist": "…", "inbox": "…", "token": "keychain:housesitter/studio-outbox" },
 //       "tailscale": { "tag": "tag:kvm", "hostname": "kvm-studio", "authkey": "keychain:housesitter/tailnet-kvm" } } } }
 //
+// Top level, beside "macs": "launchd_disabled": ["<label>", …], the launchd jobs `housesitter hold` keeps off.
+//
 // Secret references (never the secret itself): keychain:<service>[/<account>] (macOS Keychain), env:<NAME>,
 // file:<path>. A secret is read when it's needed and passed on in a request body or on stdin, never in argv.
 
