@@ -95,7 +95,11 @@ export async function pass(opts, deps, say = () => {}) {
   const acts = [];
   for (const [id, s] of Object.entries(r.sessions)) {
     if (skip.some((p) => id.startsWith(p)) || s.status === 'gone') continue;
-    if ((deps.historySize?.(id) || 0) > MAX_HISTORY_BYTES) { if (s.status !== 'oversize') out(`${short(id)} ${s.title || ''}: its history is over the ${MAX_HISTORY_BYTES / 1048576} MB resume cap; not resending`); s.status = 'oversize'; continue; }
+    // Archived (the app no longer lists it) or already handed off: nothing left to watch, and nothing to tell.
+    if (!rows.has(id)) { s.status = 'gone'; out(`${short(id)} ${s.title || ''}: archived; dropped from the roster`); continue; }
+    const big = (deps.historySize?.(id) || 0) > MAX_HISTORY_BYTES;
+    if (big && (await deps.handedOff?.(id))) { s.status = 'gone'; out(`${short(id)} ${s.title || ''}: handed off to a successor; dropped from the roster`); continue; }
+    if (big) { if (s.status !== 'oversize') out(`${short(id)} ${s.title || ''}: its history is over the ${MAX_HISTORY_BYTES / 1048576} MB resume cap; not resending`); s.status = 'oversize'; continue; }
     const h = deps.history(id);
     const sn = snap.get(id);
     const dx = diagnose({ since: r.since, now, lines: h.lines, mtime: h.mtime, row: rows.get(id), working: sn?.state === 'busy', t });
@@ -115,6 +119,13 @@ export async function pass(opts, deps, say = () => {}) {
       if (s.status !== 'broken') out(`${short(id)} ${s.title || ''}: still broken after the second resume: ${s.problem}`);
       s.status = 'broken';
     } else s.status = 'asked-again';
+  }
+  // Held back for size is by design, not broken: said once, as a hand-off to do.
+  const held = Object.entries(r.sessions).filter(([, s]) => s.status === 'oversize' && !s.heldTold);
+  if (held.length && !opts.dry_run) {
+    await deps.tell(`${held.length} session${held.length === 1 ? ' is' : 's are'} held back from resuming because the history is too large (not broken): ${held.map(([id, s]) => `${s.title ? `"${s.title}" ` : ''}(${short(id)})`).join('; ')}. ${held.length === 1 ? 'It needs' : 'They need'} a hand-off to a fresh successor session.`);
+    for (const [, s] of held) s.heldTold = iso(now);
+    out(`told once about ${held.length} session(s) held back for size`);
   }
   const broken = Object.entries(r.sessions).filter(([, s]) => s.status === 'broken');
   const key = broken.map(([id]) => id).sort().join(',');
@@ -144,6 +155,25 @@ export function realHealthDeps({ home = os.homedir(), copilotHome, hackamore, st
     readState: () => readJson(file, {}),
     writeState: (o) => writeJson(file, o),
     tell: realTell({ state, home }),
+    // A session whose history is too large and that Ouroboros already nudged to hand off, or that a newer session's kickoff names.
+    handedOff: async (id) => {
+      const o = readJson(path.join(home, 'AgentBundles', 'ouroboros.ouro', 'state', 'senses', 'app-sessions', 'oversize.json'), {});
+      if (o.sessions?.[id]?.nudgedAt) return true;
+      const root = path.join(base.home, 'session-state');
+      let names = [];
+      try { names = fs.readdirSync(root); } catch { return false; }
+      for (const n of names) {
+        if (n === id) continue;
+        try {
+          const f = path.join(root, n, 'events.jsonl');
+          if (Date.now() - fs.statSync(f).mtimeMs > 86400000) continue;
+          const fd = fs.openSync(f, 'r'); const buf = Buffer.alloc(16384); const len = fs.readSync(fd, buf, 0, buf.length, 0); fs.closeSync(fd);
+          const head = buf.toString('utf8', 0, len);
+          if ((head.includes(id) || head.includes(id.slice(0, 8))) && /successor|hand-?off|handed off|carry on from/i.test(head)) return true;
+        } catch { /* unreadable */ }
+      }
+      return false;
+    },
     // The app's own flags for these sessions.
     rows: async (ids) => {
       if (!ids.length) return [];

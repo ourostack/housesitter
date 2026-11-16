@@ -49,3 +49,24 @@ test('the health watch does not re-send a resume to an over-cap session', async 
   assert.equal(st.roster.sessions[BIG].status, 'oversize');
   assert.deepEqual(d.sent, []);
 });
+
+const rosterWith = (ids) => ({ roster: { source: 's', since: Date.now() - 3600000, at: Date.now() - 3600000, why: 'x', begun: new Date().toISOString(), until: new Date(Date.now() + 3600000).toISOString(), told: [], sessions: Object.fromEntries(ids.map((i) => [i, { title: `t-${i.slice(0, 2)}`, status: 'pending' }])) } });
+const watchDeps = (st, over = {}) => ({ ...mkDeps(), state: '/nonexistent', readState: () => st.v, writeState: (o) => { st.v = o; }, historySize: () => MAX_HISTORY_BYTES + 1, rows: async () => [{ id: BIG }], ...over });
+
+test('an over-cap session is told once as held back, needing a hand-off, never as broken', async () => {
+  const st = { v: rosterWith([BIG]) }; const told = [];
+  const d = watchDeps(st, { tell: async (m) => { told.push(m); return { ok: true }; } });
+  await pass({}, d); await pass({}, d);
+  assert.equal(told.length, 1);
+  assert.match(told[0], /held back.*not broken.*hand-off/);
+  assert.ok(!/broken even after/.test(told[0]));
+});
+
+test('archived sessions, and over-cap ones already handed off, leave the roster without a word', async () => {
+  const st = { v: rosterWith([BIG, SMALL]) }; const told = [];
+  const d = watchDeps(st, { tell: async (m) => { told.push(m); return { ok: true }; }, rows: async () => [{ id: BIG }], handedOff: async (id) => id === BIG });
+  await pass({}, d);
+  assert.equal(st.v.roster.sessions[SMALL].status, 'gone', 'archived: the app no longer lists it');
+  assert.equal(st.v.roster.sessions[BIG].status, 'gone', 'handed off');
+  assert.deepEqual(told, []);
+});
