@@ -308,7 +308,9 @@ What each route gives another computer, as tested on the Mac mini on 15 November
 
 ### When a Mac that was away comes back
 
-`housesitter laptop-arrival` runs on the always-on Mac and brings a Mac that has been away (a laptop at the office, offline for days) up to date by itself, with no model turns. Once a minute it asks Hub's service whether the laptop's device is online, and only then asks the laptop's bus daemon for a shell. A new arrival (gone 10 minutes or more, or rebooted) runs these steps; each looks first and acts only when something is off, so running the list twice changes nothing:
+Changed: `peer flush`, `peer watch` and `laptop-arrival` now take the Mac's name first, as configured (`housesitter peer flush studio`). An unknown name is refused with the configured names. An agent installed with `laptop-arrival --install` before this change must be installed again, with the Mac's name, to keep running.
+
+`housesitter laptop-arrival <mac>` runs on the always-on Mac and brings a Mac that has been away (a laptop at the office, offline for days) up to date by itself, with no model turns. Once a minute it asks Hub's service whether the laptop's device is online, and only then asks the laptop's bus daemon for a shell. A new arrival (gone 10 minutes or more, or rebooted) runs these steps; each looks first and acts only when something is off, so running the list twice changes nothing:
 
 1. **housesitter:** a current checkout of this tool on the laptop, which does the restart and the checks there.
 2. **app:** the Copilot app is at least as new as this Mac's and runs at least the configured Desk (`min_desk`) with no newer plugin waiting. If not, `restart-copilot --resume --detach` there, with the READY/DEFER handling for its sessions, by signal when the screen is locked. It waits while someone is using the laptop. The app updates itself; if it is still behind 45 minutes later, `brew upgrade --cask --greedy` runs once and the app restarts again. At most two restarts per arrival.

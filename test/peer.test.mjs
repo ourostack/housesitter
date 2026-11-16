@@ -48,6 +48,7 @@ const setup = async (extraEnv = {}) => {
   const gists = { [O_TO_H]: {}, [H_TO_O]: {} };
   const gh = await fakeGists(gists);
   const dir = fs.mkdtempSync(path.join(scratchRoot, 'peer-'));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ macs: { studio: {} } }));
   const env = { HOUSESITTER_GITHUB_API: gh.url, GH_TOKEN: 'test-token', ...extraEnv };
   const time = { now: Date.parse('2026-11-09T12:00:00Z') };
   const make = () => peer({ dir, env, from: 'ouroboros@mini', clock: () => time.now });
@@ -224,7 +225,7 @@ test('housesitter peer send, flush and inbox from the shell; the queue outlives 
   const q = await cli(['peer', 'send', 'and', 'the', 'browser?', '--why', 'the person asked'], e);
   assert.match(q.stdout, /^queued [0-9a-f]{8} for housesitter: it goes out by \d{4}-/);
   assert.equal(Object.keys(gists[O_TO_H]).length, 1);
-  assert.match((await cli(['peer', 'flush', '--why', 'the person asked'], e)).stdout, /^1 queued: they go out by /);
+  assert.match((await cli(['peer', 'flush', 'studio', '--why', 'the person asked'], e)).stdout, /^1 queued: they go out by /);
   const q2 = JSON.parse((await cli(['peer', 'send', 'later', '--json', '--why', 'the person asked'], e)).stdout);
   assert.equal(q2.status, 'queued');
   gists[H_TO_O]['20261109T100000Z-0000000c.json'] = JSON.stringify({ v: 1, id: 'c1', at: '2026-11-09T10:00:00Z', from: 'housesitter@comet', text: 'unlocked; desktop is back' });
@@ -235,7 +236,7 @@ test('housesitter peer send, flush and inbox from the shell; the queue outlives 
   assert.ok(gists[O_TO_H][q2.file]);
   const u = await cli(['peer', 'send', 'about', 'to', 'restart', '--now', '--why', 'the person asked'], e);
   assert.match(u.stdout, /^sent [0-9a-f]{8} to housesitter/);
-  assert.equal((await cli(['peer', 'flush', '--now', '--why', 'the person asked'], e)).stdout.trim(), 'nothing queued');
+  assert.equal((await cli(['peer', 'flush', 'studio', '--now', '--why', 'the person asked'], e)).stdout.trim(), 'nothing queued');
   assert.equal((await cli(['peer', 'inbox'], e)).stdout.trim(), 'nothing new');
   assert.ok(fs.existsSync(path.join(dir, 'peer-seen.json')));
   assert.equal((await cli(['peer', 'send'], e)).status, 2);
@@ -344,7 +345,7 @@ test('housesitter peer watch --once from the shell', async () => {
   fs.writeFileSync(ouro, `#!/bin/sh\nprintf '%s|' "$@" >> '${calls}'\necho >> '${calls}'\n`, { mode: 0o755 });
   const [f1, c1] = hmsg('c9', '2026-11-09T11:59:00Z', 'up again');
   gists[H_TO_O][f1] = c1;
-  const r = await cli(['peer', 'watch', '--once', '--agent', 'ouroboros', '--ouro', ouro, '--why', 'the person asked'], { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') });
+  const r = await cli(['peer', 'watch', 'studio', '--once', '--agent', 'ouroboros', '--ouro', ouro, '--why', 'the person asked'], { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /woke ouroboros for c9/);
   assert.match(fs.readFileSync(calls, 'utf8'), /^msg\|--to\|ouroboros\|1 new message from Housesitter .*bin\/housesitter\.mjs peer inbox/);
