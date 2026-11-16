@@ -31,6 +31,9 @@ function fake(over = {}) {
     deadSessions: () => over.dead || [],
     quietFor: (dir) => (over.dead || []).find((x) => x.dir === dir).quietFor ?? Infinity,
     clonesIn: (dirs) => over.clones?.[dirs[0]] || [],
+    idleSessions: () => new Set(over.idle || []),
+    thinnable: () => over.thin || [],
+    thin: (x) => { log.thinned = (log.thinned || []); log.thinned.push(x); free += 10 * GIB; return true; },
     ledger: (r) => { log.ledger = (log.ledger || []); log.ledger.push(r); },
     breakdown: () => over.breakdown || null,
     gzip: (f) => { log.gz.push(f); free += 10 * GIB; },
@@ -127,11 +130,11 @@ test('a pass that found nothing safe rests an hour before it scans again', async
   assert.equal((await pass({ force: true }, f.d)).action, 'nothing-safe', '--now ignores the rest');
 });
 
-test('whyKeepSession: listed, open or touched in a week: kept', () => {
+test('whyKeepSession: listed, open or touched in two days: kept', () => {
   assert.equal(whyKeepSession({ live: false, open: false, quietFor: Infinity }), null);
   assert.match(whyKeepSession({ live: true, open: false, quietFor: Infinity }), /lists/);
   assert.match(whyKeepSession({ live: false, open: true, quietFor: Infinity }), /open/);
-  assert.match(whyKeepSession({ live: false, open: false, quietFor: 0 }), /7 days/);
+  assert.match(whyKeepSession({ live: false, open: false, quietFor: 0 }), /2 days/);
 });
 
 test('an unlisted, quiet session loses only files/ and images/, after its clones with unsaved work are saved; a listed or recent one loses nothing', async () => {
@@ -152,4 +155,35 @@ test('a worktree launchd runs from is never removed', async () => {
   await pass({}, f.d);
   assert.deepEqual(f.log.removed, ['/c/other/y']);
   assert.match(whyKeep({ dir: '/x', linked: true, protectedBy: '/c/hs', usedByApp: false, open: false, changedAt: 0 }, NOW), /launchd/);
+});
+
+test('an idle session\'s worktree is thinned; a busy one is left whole', async () => {
+  const f = fake({ thin: [{ dir: '/w/a', session: 's-idle' }, { dir: '/w/b', session: 's-busy' }, { dir: '/w/c', session: 's-gone' }], idle: ['s-idle'] });
+  const r = await pass({}, f.d);
+  assert.deepEqual(f.log.thinned, ['/w/a']);
+  assert.equal(r.action, 'pruned');
+  assert.match(f.log.told[0], /1 idle worktree\(s\) made sparse/);
+  const g = fake({ thin: [{ dir: '/w/a', session: 's-idle' }], idle: ['s-idle'] });
+  await pass({ dry_run: true }, g.d); assert.equal(g.log.thinned, undefined, 'a dry run thins nothing');
+});
+
+test('thin uses the repository\'s own script: clean media leaves the tree, modified and untracked files stay', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thin-'));
+  const g = (cwd, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd, encoding: 'utf8' });
+  const main = path.join(root, 'main'); fs.mkdirSync(main); g(main, 'init', '-q', '-b', 'main');
+  fs.mkdirSync(path.join(main, '.github/scripts'), { recursive: true });
+  fs.writeFileSync(path.join(main, '.github/scripts/lean-worktree.sh'), "#!/usr/bin/env bash\nset -euo pipefail\ncd \"${COPILOT_WORKSPACE_PATH:-.}\"\ngit sparse-checkout set --no-cone '/*' '!*.png'\n");
+  for (const f of ['clean.png', 'edited.png', 'doc.md']) fs.writeFileSync(path.join(main, f), 'x');
+  g(main, 'add', '-A'); g(main, 'commit', '-qm', 'one');
+  const wt = path.join(root, 'wt'); g(main, 'worktree', 'add', '-q', '-b', 'b', wt);
+  fs.writeFileSync(path.join(wt, 'edited.png'), 'changed'); fs.writeFileSync(path.join(wt, 'new.png'), 'mine');
+  const d = realDiskDeps({ home: root });
+  assert.equal(d.thin(wt), true);
+  assert.ok(!fs.existsSync(path.join(wt, 'clean.png')), 'clean media is gone from the tree');
+  assert.ok(fs.existsSync(path.join(wt, 'edited.png')) && fs.existsSync(path.join(wt, 'new.png')) && fs.existsSync(path.join(wt, 'doc.md')));
+  assert.equal(fs.readFileSync(path.join(wt, 'edited.png'), 'utf8'), 'changed');
+  fs.rmSync(root, { recursive: true, force: true });
 });
