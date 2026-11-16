@@ -91,6 +91,10 @@ housesitter restart-copilot --install-plugin-updates [--dry-run]   write and loa
                                          that runs --plugin-updates every 5 minutes; --uninstall-plugin-updates removes it
     [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
     [--settle 600] [--settle-max 10800] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
+housesitter deploy housesitter|shepherd [--ref <tag|branch|sha>] [--clone <dir>] [--dry-run] [--json] --why "<who asked, and what they said>"
+                                         build and check the newest v* tag (or --ref) as a release folder, then point current at it
+                                         in one rename; jobs that ran the clone are rewritten to current and reloaded, and the three
+                                         newest releases are kept. Never git pull in a live clone (README: Updating)
 housesitter steer [--repair] [--list] [--no-sessions] [--peer <device name>] [--install|--uninstall]   can another computer see and drive this Mac's
                                          agent sessions through Agency Hub? The daemon connected, tracking every session and under launchd; this Mac's
                                          device and live sessions readable in Hub's service; whether new sessions start with Remote control on.

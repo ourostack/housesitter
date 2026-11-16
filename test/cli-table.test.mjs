@@ -108,6 +108,6 @@ test('installed jobs, read-only looks and dry runs run without --why; an agent\'
     ['peer', 'watch', 'mini', '--once'],
   ];
   for (const argv of jobs) assert.equal(refusal(argv), null, argv.join(' '));
-  for (const argv of [['restart-copilot', '--status'], ['restart-copilot', '--dry-run'], ['restart-copilot', '--dry-run', '--list'], ['apple-account', 'mini', '--status'], ['laptop-arrival', 'mini', '--dry-run']]) assert.equal(needsWhy(argv), false, argv.join(' '));
-  for (const argv of [['restart-copilot', '--resume'], ['restart-copilot'], ['apple-account', 'mini', '--now'], ['peer', 'send', 'hi'], ['click', 'mini', '1', '2']]) assert.equal(needsWhy(argv), true, argv.join(' '));
+  for (const argv of [['restart-copilot', '--status'], ['restart-copilot', '--dry-run'], ['restart-copilot', '--dry-run', '--list'], ['apple-account', 'mini', '--status'], ['laptop-arrival', 'mini', '--dry-run'], ['deploy', 'shepherd', '--dry-run']]) assert.equal(needsWhy(argv), false, argv.join(' '));
+  for (const argv of [['restart-copilot', '--resume'], ['restart-copilot'], ['apple-account', 'mini', '--now'], ['peer', 'send', 'hi'], ['click', 'mini', '1', '2'], ['deploy', 'housesitter']]) assert.equal(needsWhy(argv), true, argv.join(' '));
 });

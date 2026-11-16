@@ -8,4 +8,5 @@
 - **Reusable parts live in hackamore.** What drives any app belongs there; housesitter keeps the KVM, the sitter, the watchdog and the hands. Don't grow a second copy of the engine here.
 - **The house and the flock.** Housesitter keeps the house (the Mac and the app as a running process); the app's sessions are Shepherd's, and Housesitter calls its library for safe points, progress and resume messages. Resume-and-verify and the six-hour health watch are Shepherd's too (`resume()`, `shepherd watch`); Housesitter only notices the app came back and asks Shepherd to resume.
 - **Honest status.** Move a row of the README's "What's verified" table only with evidence (a `housesitter proof` recording, a log). Never show fake footage as real.
+- **Deploy through `housesitter deploy`.** Never `git pull` in a live clone: `housesitter deploy <housesitter|shepherd>` builds and checks a release, then swaps `current` in one rename, and the jobs run from `current`.
 - **Commit email:** `16390116+arimendelow@users.noreply.github.com`.
