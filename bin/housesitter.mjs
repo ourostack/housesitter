@@ -306,6 +306,7 @@ async function restartCopilot() {
   }
   const deps = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir });
   deps.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
+  deps.tell = Rec.realTell({ state: stateDir });
   // After the real app is back, make sure Agency Hub still tracks its sessions (a rehearsal on another app leaves Hub alone).
   if (!val('--app')) deps.steering = async () => {
     const r = await Steer.pass({ repair: true, sessions: false, immediate: true }, Steer.realSteerDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir }));
