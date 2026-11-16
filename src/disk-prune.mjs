@@ -1,12 +1,15 @@
-// `housesitter restart-copilot --disk-prune`: keep the data volume under 80% with no model turns. launchd runs one pass
-// every ten minutes; a pass does nothing below 80% used. Above it, it prunes safe classes in this order and stops as soon
-// as the volume is back under 75%:
+// `housesitter restart-copilot --disk-prune`: keep free space above a floor (500 GiB by default) with no model turns and
+// nothing for an agent to remember. launchd runs one pass every ten minutes; a pass does nothing while free space is above
+// the floor. Below it, it reclaims safe classes in this order and stops once free space is back at floor + 50 GiB:
 //   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh)
-//   2. the Copilot app's worktrees that no session uses and nobody has touched for a day: a worktree goes only if
-//      no unarchived app session has it, no running process has a file open under it, and nothing in it changed in
-//      24 hours. A name never qualifies one. Uncommitted or unpushed work is saved under ~/AgentBundles/disk-rescue first.
-//   3. the history of a session the app no longer lists (gone or archived), compressed, never deleted
-// What it reclaimed is told once, through the agent; a pass that cannot get under 80% says so once a day.
+//   2. the heavy parts (files/, images/) of a session the app no longer lists and nobody has touched for a week: its
+//      history stays, compressed; a git checkout in it with unsaved work is saved under ~/AgentBundles/disk-rescue first
+//   3. linked git worktrees (the app's own, and the ones agents keep under ~/code): a worktree goes only if no unarchived
+//      app session has it, no running process has a file open under it, nothing in it changed in 24 hours, and it is not
+//      something launchd runs from. A name never qualifies one. Unsaved work is saved to a bundle first.
+//   4. the history of a session the app no longer lists, compressed, never deleted
+// Each hour it records free space in a ledger; each day it measures where the bytes are and says which sources grew,
+// so the cause gets fixed and not only the symptom. A pass that finds nothing safe rests an hour before it scans again.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,11 +19,15 @@ import { realDeps, stateDir } from './copilot-app.mjs';
 import { iso, readJson, realTell, writeJson } from './recovery.mjs';
 
 export const DP = {
-  trigger: 80, // percent used at which a pass starts pruning
-  goal: 75, // percent used at which it stops
+  floor: 500 * 1073741824, // free bytes below which a pass starts reclaiming
+  margin: 50 * 1073741824, // it stops once free space is floor + margin
   quiet: 24 * 3600000, // a worktree or history changed within this is never touched
+  deadQuiet: 7 * 24 * 3600000, // the heavy parts of an unlisted session go only after this long untouched
   minHistory: 20 * 1048576, // smaller histories are not worth compressing
-  nag: 24 * 3600000, // how often "still over 80%" may be said
+  nag: 24 * 3600000, // how often "still under the floor" may be said
+  rest: 3600000, // after a pass that found nothing safe, the next scan waits this long
+  ledgerEvery: 55 * 60000, // free space is recorded about hourly
+  breakdownEvery: 24 * 3600000, // where the bytes are is measured daily
 };
 
 const GIB = 1073741824;
@@ -28,25 +35,45 @@ export const gib = (b) => `${(b / GIB).toFixed(1)} GiB`;
 
 export const CACHES = ['.npm/_cacache', '.cache/gh', 'Library/Caches/ms-playwright', 'Library/Caches/pip', 'Library/Caches/go-build', 'Library/Caches/pnpm'];
 
-// Why a worktree may not be removed now, or null when it may. `w`: { dir, linked, usedByApp, open, changedAt }.
+// Why a worktree may not be removed now, or null when it may. `w`: { dir, linked, usedByApp, open, changedAt, protectedBy }.
 export function whyKeep(w, now, t = DP) {
   if (!w.linked) return 'it is a main checkout, not a linked worktree';
+  if (w.protectedBy) return `launchd or Housesitter runs from it (${w.protectedBy})`;
   if (w.usedByApp) return 'an unarchived app session uses it';
   if (w.open) return 'a running process has it open';
   if (!(now - w.changedAt >= t.quiet)) return 'something in it changed in the last 24 hours';
   return null;
 }
 
+// Why the heavy parts of a session folder may not go now, or null when they may. `s`: { live, open, quietFor }.
+export function whyKeepSession(s, t = DP) {
+  if (s.live) return 'the app lists it';
+  if (s.open) return 'a running process has a file open in it';
+  if (!(s.quietFor >= t.deadQuiet)) return 'something in it changed in the last 7 days';
+  return null;
+}
+
+const top = (b) => (b?.top || []).slice(0, 3).map((x) => `${x.name} ${gib(x.size)}${x.grew > 0 ? ` (+${gib(x.grew)} in a day)` : ''}`).join('; ');
+
 // One pass. deps are real (realDiskDeps) or fakes.
 export async function pass(opts, deps, say = () => {}) {
   const t = { ...DP, ...(opts.t || {}) };
   const now = deps.now();
   const out = (m) => say(`${iso(now)} disk-prune: ${m}`);
-  await deps.load?.();
+  const st0 = deps.readState() || {};
   const before = deps.usage();
-  if (before.pct < t.trigger && !opts.force) return { action: 'ok', pct: before.pct };
-  const reclaimed = { caches: 0, worktrees: [], histories: 0, rescued: [] };
-  const done = () => deps.usage().pct < t.goal;
+  const stamp = (patch) => { if (!opts.dry_run) deps.writeState({ ...(deps.readState() || {}), ...patch }); };
+
+  if (!opts.dry_run) {
+    if (!(now - (st0.ledgerAt || 0) < t.ledgerEvery)) { deps.ledger?.({ at: iso(now), free: before.free, pct: before.pct }); stamp({ ledgerAt: now }); }
+    if (!(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) { const b = deps.breakdown?.(st0.breakdown); if (b) stamp({ breakdown: { ...b, at: now } }); }
+  }
+  if (before.free >= t.floor && !opts.force) return { action: 'ok', free: before.free };
+  if (!opts.force && !opts.dry_run && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
+
+  await deps.load?.();
+  const reclaimed = { caches: 0, worktrees: [], sessions: 0, histories: 0, rescued: [] };
+  const done = () => deps.usage().free >= t.floor + t.margin;
 
   for (const c of deps.caches()) {
     if (done()) break;
@@ -55,11 +82,27 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.caches += n; out(`cache ${c}: ${gib(n)}`);
   }
 
+  const live = deps.liveSessions();
+  for (const sdir of deps.deadSessions?.() || []) {
+    if (done()) break;
+    const why = whyKeepSession({ live: live.has(sdir.id), open: deps.open(sdir.dir), quietFor: deps.quietFor(sdir.dir) }, t);
+    if (why) continue;
+    const n = sdir.heavy.reduce((a, h) => a + deps.size(h), 0); if (!n) continue;
+    if (!opts.dry_run) {
+      for (const c of deps.clonesIn(sdir.heavy)) {
+        const g = deps.git(c);
+        if (g.dirty || g.unpushed) { const b = deps.rescue(c); reclaimed.rescued.push(b); out(`saved ${c}'s unsaved work to ${b}`); }
+      }
+      for (const h of sdir.heavy) deps.remove(h);
+    }
+    reclaimed.sessions += n; out(`dropped the files of unlisted session ${sdir.id.slice(0, 8)}: ${gib(n)}`);
+  }
+
   const used = deps.appWorktrees();
   for (const dir of deps.worktrees()) {
     if (done()) break;
-    const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir), open: false, changedAt: 0 };
-    if (w.linked && !w.usedByApp) { w.open = deps.open(dir); if (!w.open) w.changedAt = deps.changedAt(dir); }
+    const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir), open: false, changedAt: 0, protectedBy: deps.protectedBy?.(dir) || null };
+    if (w.linked && !w.usedByApp && !w.protectedBy) { w.open = deps.open(dir); if (!w.open) w.changedAt = deps.changedAt(dir); }
     const why = whyKeep(w, now, t);
     if (why) { out(`kept ${dir}: ${why}`); continue; }
     const n = deps.size(dir);
@@ -71,26 +114,29 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.worktrees.push(dir); out(`removed worktree ${dir}: ${gib(n)}`);
   }
 
-  const live = deps.liveSessions();
+  const hlive = deps.liveSessions();
   for (const h of deps.histories()) {
     if (done()) break;
-    if (live.has(h.id) || now - h.mtime < t.quiet || h.size < t.minHistory || deps.open(h.file)) continue;
+    if (hlive.has(h.id) || now - h.mtime < t.quiet || h.size < t.minHistory || deps.open(h.file)) continue;
     if (!opts.dry_run) deps.gzip(h.file);
     reclaimed.histories += h.size; out(`compressed history ${h.id.slice(0, 8)}: ${gib(h.size)}`);
   }
 
   const after = deps.usage();
-  const total = reclaimed.caches + reclaimed.histories;
-  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.pct, after: after.pct, reclaimed, dry_run: Boolean(opts.dry_run) };
+  const total = reclaimed.caches + reclaimed.histories + reclaimed.sessions;
+  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
+  const growers = top(st.breakdown);
+  const tail = `${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Disk was ${before.pct}% used; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.worktrees.length} unused worktree(s), compressed histories ${gib(reclaimed.histories)}; now ${after.pct}%.${reclaimed.rescued.length ? ` Unsaved work was kept in ${reclaimed.rescued.join(', ')}.` : ''}${after.pct >= t.trigger ? ' Still over 80%: what is left is not safe to prune without Ari.' : ''}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work was kept in ${reclaimed.rescued.join(', ')}.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag) {
-    await deps.tell(`Disk is ${after.pct}% used and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.`);
+    await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
     st.toldAt = now;
   }
+  if (res.action === 'nothing-safe') st.restUntil = now + t.rest; else delete st.restUntil;
   deps.writeState({ ...st, lastPass: { at: iso(now), ...res } });
   return res;
 }
@@ -98,18 +144,38 @@ export async function pass(opts, deps, say = () => {}) {
 // ---------- the real world ----------
 
 const sh = (cmd, args, o = {}) => spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 1 << 26, ...o });
+const nice = (cmd, args, o) => sh('/usr/bin/nice', ['-n', '10', cmd, ...args], o);
 const sizeOf = (p) => { const r = sh('/usr/bin/du', ['-sk', p], { timeout: 300000 }); return (Number(String(r.stdout).split(/\s+/)[0]) || 0) * 1024; };
 
-export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data' } = {}) {
+export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [] } = {}) {
   const base = realDeps({ copilotHome, state });
   const wt = path.join(copilotHome, 'copilot-worktrees');
   const sessions = path.join(copilotHome, 'session-state');
   const rescueRoot = path.join(home, 'AgentBundles', 'disk-rescue');
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
-  let appPaths = null, liveIds = null;
+  let appPaths = null, liveIds = null, openList;
+  let protectedPaths = null;
+  const gitCommon = (d) => { const r = sh('/usr/bin/git', ['-C', d, 'rev-parse', '--git-common-dir']); return r.status === 0 ? path.resolve(d, r.stdout.trim()) : null; };
+  const load_protected = () => {
+    if (protectedPaths) return;
+    protectedPaths = [path.join(home, 'code', 'housesitter'), ...(extraProtected || [])];
+    try {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.plist')) continue;
+        for (const m of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/<string>(\/[^<]+)<\/string>/g)) {
+          const dd = home && m[1].startsWith(`${home}/`) ? m[1] : null;
+          // The repository root a plist's path sits in.
+          let cur = dd; while (cur && cur !== home && !fs.existsSync(path.join(cur, '.git'))) cur = path.dirname(cur);
+          if (cur && cur !== home && fs.existsSync(cur)) protectedPaths.push(cur);
+        }
+      }
+    } catch { /* none */ }
+    protectedPaths = [...new Set(protectedPaths)];
+  };
   return {
     now: () => Date.now(),
-    usage: () => { const r = sh('/bin/df', ['-k', volume]).stdout.trim().split('\n').pop().split(/\s+/); const size = Number(r[1]), used = Number(r[2]); return { pct: Math.round((used / size) * 100) }; },
+    usage: () => { const r = sh('/bin/df', ['-k', volume]).stdout.trim().split('\n').pop().split(/\s+/); const size = Number(r[1]), used = Number(r[2]), free = Number(r[3]) * 1024; return { pct: Math.round((used / size) * 100), free }; },
     caches: () => CACHES.map((c) => path.join(home, c)).filter((p) => fs.existsSync(p)),
     size: sizeOf,
     remove: (p) => fs.rmSync(p, { recursive: true, force: true }),
@@ -120,10 +186,59 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       if (!appPaths) return [];
       const out = [];
       try { for (const r of fs.readdirSync(wt)) for (const n of fs.readdirSync(path.join(wt, r))) { const d = path.join(wt, r, n); if (fs.existsSync(path.join(d, '.git'))) out.push(d); } } catch { /* none */ }
+      // Linked worktrees agents keep under ~/code (a worktree's .git is a file; a clone's is a folder, and is never listed).
+      const codeRoot = path.join(home, 'code');
+      const linkedHere = (d) => { try { return fs.statSync(path.join(d, '.git')).isFile(); } catch { return false; } };
+      try {
+        for (const a of fs.readdirSync(codeRoot)) {
+          const da = path.join(codeRoot, a);
+          if (!fs.statSync(da).isDirectory()) continue;
+          if (linkedHere(da)) out.push(da);
+          else for (const b of fs.readdirSync(da)) { const db = path.join(da, b); try { if (fs.statSync(db).isDirectory() && linkedHere(db)) out.push(db); } catch { /* gone */ } }
+        }
+      } catch { /* none */ }
       return out;
     },
+    // What launchd runs from, and the clone Housesitter itself runs from, with their own worktrees: never removed.
+    protectedBy: (d) => {
+      load_protected();
+      return protectedPaths.find((p) => d === p || d.startsWith(`${p}/`)) || protectedPaths.find((p) => gitCommon(d) === gitCommon(p)) || null;
+    },
     linked: (d) => { try { return fs.statSync(path.join(d, '.git')).isFile(); } catch { return false; } },
-    open: (p) => { const r = sh('/usr/sbin/lsof', fs.statSync(p).isDirectory() ? ['+D', p] : [p], { timeout: 120000 }); return r.error || r.status === null ? true : r.stdout.trim().length > 0; },
+    // One lsof snapshot per pass; when it cannot be read, everything counts as open.
+    open: (p) => {
+      if (openList === undefined) { const r = sh('/usr/sbin/lsof', ['-nP', '-w', '-Fn'], { timeout: 240000 }); openList = r.error || r.status === null ? null : r.stdout.split('\n').filter((l) => l.startsWith('n/')).map((l) => l.slice(1)); }
+      return openList === null ? true : openList.some((f) => f === p || f.startsWith(`${p}/`));
+    },
+    quietFor: (d) => { const r = sh('/usr/bin/find', [d, '-mtime', `-${Math.ceil(DP.deadQuiet / 86400000)}`, '-print', '-quit'], { timeout: 300000 }); return r.error || r.stdout.trim() ? 0 : Infinity; },
+    clonesIn: (dirs) => dirs.flatMap((d) => { const r = sh('/usr/bin/find', [d, '-maxdepth', '5', '-name', '.git', '-prune', '-print'], { timeout: 120000 }); return r.stdout.split('\n').filter(Boolean).map((g) => path.dirname(g)); }),
+    // Session folders the app does not list, biggest first: the parts that are made by the session and rebuilt by no one.
+    deadSessions: () => {
+      if (!liveIds) return [];
+      const out = [];
+      try {
+        for (const id of fs.readdirSync(sessions)) {
+          if (liveIds.has(id)) continue;
+          const dir = path.join(sessions, id);
+          const heavy = ['files', 'images'].map((n) => path.join(dir, n)).filter((p) => fs.existsSync(p));
+          if (!heavy.length) continue;
+          out.push({ id, dir, heavy, size: heavy.reduce((a, h) => a + sizeOf(h), 0) });
+        }
+      } catch { /* none */ }
+      return out.filter((x) => x.size >= 50 * 1048576).sort((a, b) => b.size - a.size);
+    },
+    ledger: (row) => { try { fs.mkdirSync(state, { recursive: true }); fs.appendFileSync(path.join(state, 'disk-ledger.jsonl'), `${JSON.stringify(row)}\n`); } catch { /* a courtesy */ } },
+    // Where the bytes are, daily: each root, and the biggest session folders, with growth since the last measurement.
+    breakdown: (prev) => {
+      const roots = { sessions, worktrees: wt, code: path.join(home, 'code'), caches: path.join(home, 'Library', 'Caches'), trash: path.join(home, '.Trash'), rescue: rescueRoot };
+      const sizes = {}; for (const [k, p] of Object.entries(roots)) sizes[k] = fs.existsSync(p) ? (Number(String(nice('/usr/bin/du', ['-sk', p], { timeout: 1800000 }).stdout).split(/\s+/)[0]) || 0) * 1024 : 0;
+      const ses = {};
+      try { for (const l of String(nice('/usr/bin/du', ['-sk', ...fs.readdirSync(sessions).map((i) => path.join(sessions, i))], { timeout: 1800000 }).stdout).split('\n')) { const m = l.match(/^(\d+)\s+(.*)$/); if (m) ses[path.basename(m[2])] = Number(m[1]) * 1024; } } catch { /* none */ }
+      const prevSes = prev?.sessionSizes || {};
+      const list = [...Object.entries(sizes).map(([k, v]) => ({ name: k, size: v, grew: prev?.roots ? v - (prev.roots[k] || 0) : 0 })), ...Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ name: `session ${k.slice(0, 8)}`, size: v, grew: prev ? v - (prevSes[k] || 0) : 0 }))];
+      const sessionSizes = Object.fromEntries(Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 50));
+      return { roots: sizes, sessionSizes, top: list.sort((a, b) => (b.grew > 0 ? b.grew : 0) - (a.grew > 0 ? a.grew : 0) || b.size - a.size) };
+    },
     changedAt: (d) => {
       const rec = sh('/usr/bin/find', [d, '-mtime', '-1', '-print', '-quit'], { timeout: 300000 });
       if (rec.error || rec.stdout.trim()) return Date.now();
@@ -135,7 +250,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       unpushed: sh('/usr/bin/git', ['-C', d, 'log', '--oneline', 'HEAD', '--not', '--remotes']).stdout.trim() !== '',
     }),
     rescue: (d) => {
-      const dir = path.join(rescueRoot, `${path.relative(wt, d).replace(/\//g, '__')}-${Date.now()}`);
+      const dir = path.join(rescueRoot, `${path.relative(home, d).replace(/\//g, '__')}-${Date.now()}`);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'diff.patch'), sh('/usr/bin/git', ['-C', d, 'diff', 'HEAD']).stdout);
       const files = sh('/usr/bin/git', ['-C', d, 'ls-files', '--others', '--exclude-standard', '-z']).stdout;
@@ -166,6 +281,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     writeState: (o) => writeJson(path.join(state, 'disk-prune.json'), o),
     // Reads the app's database once per pass; the pass calls this first.
     load: async () => {
+      openList = undefined; protectedPaths = null;
       const w = await q('SELECT w.path AS p FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL');
       const s = await q('SELECT id FROM sessions WHERE archived_at IS NULL');
       appPaths = w ? new Set(w.map((r) => r.p)) : null;
