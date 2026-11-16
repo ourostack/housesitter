@@ -23,6 +23,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realDeps, snapshot, stateDir } from './copilot-app.mjs';
 import { iso, readJson, realTell, writeJson } from './recovery.mjs';
+import { withBlock } from './lean-hook.mjs';
 
 export const DP = {
   floor: 500 * 1073741824, // free bytes below which a pass starts reclaiming
@@ -72,6 +73,7 @@ export async function pass(opts, deps, say = () => {}) {
   const stamp = (patch) => { if (!opts.dry_run) deps.writeState({ ...(deps.readState() || {}), ...patch }); };
 
   if (!opts.dry_run) {
+    try { deps.ensureLeanHooks?.(); } catch { /* a courtesy; the pass goes on */ }
     if (!(now - (st0.ledgerAt || 0) < t.ledgerEvery)) { deps.ledger?.({ at: iso(now), free: before.free, pct: before.pct }); stamp({ ledgerAt: now }); }
     if (!(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) { const b = deps.breakdown?.(st0.breakdown); if (b) stamp({ breakdown: { ...b, at: now } }); }
   }
@@ -190,6 +192,11 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
   let appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
   const LEAN = '.github/scripts/lean-worktree.sh';
+  // Linked worktrees agents make inside a session's files/ (a worktree's .git is a file).
+  const sessionWorktrees = () => {
+    const r = sh('/usr/bin/find', [sessions, '-maxdepth', '5', '-name', '.git', '-type', 'f', '-print'], { timeout: 120000 });
+    return String(r.stdout).split('\n').filter((l) => /\/files\//.test(l)).map((l) => path.dirname(l));
+  };
   const leanScript = (d) => {
     for (const ref of ['HEAD', 'origin/HEAD', 'origin/main']) { const r = sh('/usr/bin/git', ['-C', d, 'show', `${ref}:${LEAN}`]); if (r.status === 0 && r.stdout.trim()) return r.stdout; }
     return null;
@@ -239,6 +246,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
           else for (const b of fs.readdirSync(da)) { const db = path.join(da, b); try { if (fs.statSync(db).isDirectory() && linkedHere(db)) out.push(db); } catch { /* gone */ } }
         }
       } catch { /* none */ }
+      for (const d of sessionWorktrees()) if (!out.includes(d)) out.push(d);
       return out;
     },
     // Top-level entries of /private/tmp that belong to this user (agents' scratch; the system's own are not ours).
@@ -294,12 +302,29 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       } catch { /* none */ }
       return out.filter((x) => x.size >= 50 * 1048576).sort((a, b) => b.size - a.size);
     },
+    // Clones agents make worktrees from: ~/code/*, the desk and the CIT workspace, when their repository ships the script.
+    ensureLeanHooks: () => {
+      const cands = [path.join(home, 'personal-desk'), path.join(home, 'CIT-workspace')];
+      try { for (const n of fs.readdirSync(path.join(home, 'code'))) cands.push(path.join(home, 'code', n)); } catch { /* none */ }
+      for (const c of cands) {
+        try {
+          if (!fs.statSync(path.join(c, '.git')).isDirectory()) continue;
+          if (sh('/usr/bin/git', ['-C', c, 'config', '--get', 'core.hooksPath']).stdout.trim()) continue;
+          if (leanScript(c) == null) continue;
+          const f = path.join(c, '.git', 'hooks', 'post-checkout');
+          const had = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null;
+          const next = withBlock(had);
+          if (next !== had) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, next, { mode: 0o755 }); fs.chmodSync(f, 0o755); }
+        } catch { /* one clone's trouble is not the others' */ }
+      }
+    },
     idleSessions: () => idleIds || new Set(),
     // Linked worktrees of unarchived app sessions that are still whole; the script is the repository's own, from the
     // worktree or else from the default branch, so the patterns have one source.
     thinnable: () => {
       if (!appRows) return [];
-      return appRows.filter((r) => fs.existsSync(r.p)).map((r) => ({ dir: r.p, session: r.sid })).filter((w) => {
+      const owned = sessionWorktrees().map((d) => ({ dir: d, session: path.relative(sessions, d).split(path.sep)[0] }));
+      return [...appRows.filter((r) => fs.existsSync(r.p)).map((r) => ({ dir: r.p, session: r.sid })), ...owned].filter((w, i, all) => all.findIndex((x) => x.dir === w.dir) === i).filter((w) => {
         try { if (!fs.statSync(path.join(w.dir, '.git')).isFile()) return false; } catch { return false; }
         return sh('/usr/bin/git', ['-C', w.dir, 'config', '--get', 'core.sparseCheckout']).stdout.trim() !== 'true' && leanScript(w.dir) != null;
       });
