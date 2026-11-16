@@ -46,5 +46,6 @@ export function renderHold(rows) {
   }).join('\n');
 }
 
-export const NO_LIST = `no launchd_disabled list in ${configPath()}: nothing to hold`;
+export const NO_LIST = `nothing to hold: no launchd_disabled list in ${configPath()}. Add the labels to keep off, e.g. {"launchd_disabled": ["com.example.job"]}`;
+export const PREVIEW = 'hold: dry run; nothing was done. Without --dry-run this acts for the person, and other people see it.';
 export const ALL_OFF = (n) => `all ${n} held job${n === 1 ? ' is' : 's are'} off already`;

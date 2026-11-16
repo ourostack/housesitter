@@ -80,15 +80,18 @@ test('a dry run changes nothing and says what it would do', () => {
   assert.match(renderHold(rows), /would disable it again.*would stop it \(pid 9\)/);
 });
 
-test('with no launchd_disabled list, hold does nothing and says so; --quiet says nothing', () => {
+test('with no launchd_disabled list, hold refuses and names the key; --quiet stays silent; --dry-run names its audience', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-hold-'));
   const env = { ...process.env, HOME: home, HOUSESITTER_CONFIG: path.join(home, 'config.json') };
   fs.writeFileSync(env.HOUSESITTER_CONFIG, JSON.stringify({ macs: {} }));
   const loud = spawnSync(process.execPath, [BIN, 'hold', '--why', 'test'], { encoding: 'utf8', env });
-  assert.equal(loud.status, 0, loud.stderr);
-  assert.match(loud.stdout, /no launchd_disabled list/);
+  assert.notEqual(loud.status, 0);
+  assert.match(loud.stdout + loud.stderr, /launchd_disabled/);
   const quiet = spawnSync(process.execPath, [BIN, 'hold', '--quiet'], { encoding: 'utf8', env });
   assert.equal(quiet.status, 0, quiet.stderr);
   assert.equal(quiet.stdout, '');
+  const dry = spawnSync(process.execPath, [BIN, 'hold', '--dry-run'], { encoding: 'utf8', env });
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /other people see it/);
   fs.rmSync(home, { recursive: true, force: true });
 });

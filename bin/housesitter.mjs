@@ -181,20 +181,22 @@ async function appleAccount() {
 
 async function holdCmd() {
   const quiet = flag('--quiet');
-  const labels = loadConfig().launchd_disabled;
-  if (labels == null) {
-    if (json) emit({ ok: true, rows: [], nothing_done: true, message: Hold.NO_LIST });
-    else if (!quiet) say(Hold.NO_LIST);
-    return 0;
-  }
-  if (!Array.isArray(labels)) { if (json) emit({ ok: false, error: 'launchd_disabled must be a list of labels' }); else console.error('launchd_disabled must be a list of labels'); return 1; }
   const dry = flag('--dry-run');
-  const rows = Hold.holdDisabled(labels, { dry });
-  const acted = Hold.acted(rows);
+  const labels = loadConfig().launchd_disabled ?? null;
+  if (labels !== null && !Array.isArray(labels)) throw new Refusal('input-invalid', `launchd_disabled in ${configPath()} must be a list of launchd labels`);
+  // The installed job passes --quiet and stays silent; a person who runs it with no list is told where to add one.
+  if (labels === null && !dry && !quiet) throw new Refusal('input-invalid', Hold.NO_LIST);
+  const rows = labels ? Hold.holdDisabled(labels, { dry }) : [];
   const failed = rows.some((r) => r.error);
-  if (json) emit({ ok: !failed, dry_run: dry, rows });
-  else if (acted.length) say(Hold.renderHold(rows));
-  else if (!quiet) say(Hold.ALL_OFF(rows.length));
+  const text = labels === null ? Hold.NO_LIST : Hold.acted(rows).length ? Hold.renderHold(rows) : Hold.ALL_OFF(rows.length);
+  if (dry) {
+    if (json) emit({ ok: !failed, dry_run: true, nothing_done: true, rows, message: `${text}\n${Hold.PREVIEW}` });
+    else console.log(`${text}\n${Hold.PREVIEW}`);
+    return failed ? 1 : 0;
+  }
+  if (json) emit({ ok: !failed, rows });
+  else if (Hold.acted(rows).length) say(text);
+  else if (labels !== null && !quiet) say(text);
   return failed ? 1 : 0;
 }
 
