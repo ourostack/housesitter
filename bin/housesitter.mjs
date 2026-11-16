@@ -201,7 +201,7 @@ async function laptopArrival() {
   const file = path.resolve(val('--config') || path.join(os.homedir(), '.config', 'housesitter', 'laptop-arrival.json'));
   const bin = fileURLToPath(import.meta.url);
   if (flag('--install') || flag('--uninstall')) {
-    const args = ['laptop-arrival', name, '--config', file, '--quiet'];
+    const args = ['laptop-arrival', '--config', file, '--quiet'];
     const r = flag('--uninstall') ? await Rec.uninstallAgent({ label: Arrival.LABEL }) : await Rec.installAgent({ label: Arrival.LABEL, program: [Watch.stableNode(process.execPath), bin, ...args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: Arrival.EVERY_SEC, logName: 'housesitter-laptop-arrival.launchd.log', dry: flag('--dry-run') });
     if (json) emit(r); else say(flag('--uninstall') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${Arrival.LABEL}); every minute it checks whether the laptop is back, with no model turns` : `✗ launchctl would not load it: ${r.error}`);
     return r.ok ? 0 : 1;
@@ -452,7 +452,8 @@ async function main() {
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
   if (cmd === 'steer') return steerCmd();
-  if (cmd === 'laptop-arrival') { if (!flag('--dry-run')) requireMac(name); return laptopArrival(); }
+  // The returning Mac is the `peer` in laptop-arrival.json; it has no KVM, so config.json need not list it.
+  if (cmd === 'laptop-arrival') return laptopArrival();
 
   need(name, `housesitter ${cmd} <mac>`);
   const mac = macConfig(name);

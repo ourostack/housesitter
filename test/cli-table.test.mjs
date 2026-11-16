@@ -46,7 +46,7 @@ test('help and a command\'s own help go to the kit; a command word runs the disp
 });
 
 
-test('a peer link or a returning Mac names a Mac the config knows; an unknown one is refused with the known names', () => {
+test('a peer link names a Mac the config knows; a returning Mac is the one laptop-arrival.json names; an unknown one is refused with the known names', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-mac-'));
   const config = path.join(dir, 'config.json');
   fs.writeFileSync(config, JSON.stringify({ macs: { studio: {} } }));
@@ -54,8 +54,12 @@ test('a peer link or a returning Mac names a Mac the config knows; an unknown on
   const unknown = spawnSync(process.execPath, [BIN, 'peer', 'flush', 'nope', '--why', 'the person asked'], { encoding: 'utf8', env });
   assert.equal(unknown.status, 2);
   assert.match(unknown.stderr, /no Mac called "nope".*studio/);
-  const missing = spawnSync(process.execPath, [BIN, 'laptop-arrival', '--why', 'the person asked'], { encoding: 'utf8', env });
-  assert.equal(missing.status, 2);
+  // The returning Mac is the file's `peer`, a Mac with no KVM that config.json does not list: no refusal, no name needed.
+  const arrival = path.join(dir, 'laptop-arrival.json');
+  fs.writeFileSync(arrival, JSON.stringify({ peer: 'laptop', route: ['/bin/true'] }));
+  const back = spawnSync(process.execPath, [BIN, 'laptop-arrival', '--config', arrival, '--status', '--json'], { encoding: 'utf8', env: { ...env, HOME: dir } });
+  assert.doesNotMatch(back.stderr, /no Mac called/);
+  assert.equal(back.status, 0, back.stderr);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
