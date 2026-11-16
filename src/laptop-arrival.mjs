@@ -117,7 +117,7 @@ export function describePlan(cfg) {
 
 export function loadConfig(file) {
   const raw = readJson(file, null);
-  if (!raw) throw new Error(`no config at ${file}`);
+  if (!raw) throw new Error(`no config at ${file}: write it with "peer" (the returning Mac) and "route" (the command that reaches it), as "housesitter laptop-arrival --help" shows`);
   const cfg = { ...DEFAULTS, ...raw };
   if (!Array.isArray(cfg.route) || !cfg.route.length) throw new Error('the config needs "route": the command that reaches the laptop, such as ["/path/to/mac"]');
   return cfg;
