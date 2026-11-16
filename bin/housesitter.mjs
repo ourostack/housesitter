@@ -29,6 +29,7 @@ import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
 import * as Steer from '../src/steer.mjs';
 import * as Arrival from '../src/laptop-arrival.mjs';
+import * as Deploy from '../src/deploy.mjs';
 import { isCommand, previewOf, refusalOf, runHelp } from '../src/cli-table.mjs';
 import { quietPipes } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
 
@@ -54,7 +55,7 @@ async function reinsLayer() {
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
 const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--mac', '--window', '--listing', '--peer', '--config'];
+const VALUED = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--heartbeat', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--why', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--mac', '--window', '--listing', '--peer', '--config', '--ref', '--clone'];
 const pos = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const json = flag('--json');
 const say = (t) => { if (!json) console.log(t); };
@@ -108,7 +109,7 @@ async function watchKvm(mac) {
     fs.mkdirSync(path.dirname(agent), { recursive: true });
     fs.mkdirSync(path.join(os.homedir(), 'Library', 'Logs'), { recursive: true });
     const extra = [...(val('--silent-min') ? ['--silent-min', String(silentMin)] : []), ...(test ? ['--test'] : [])];
-    fs.writeFileSync(agent, Watch.plist({ name, node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), args: extra }));
+    fs.writeFileSync(agent, Watch.plist({ name, node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), args: extra }));
     spawnSync('/bin/launchctl', ['bootout', `gui/${uid}/${label}`], { encoding: 'utf8' });
     const r = spawnSync('/bin/launchctl', ['bootstrap', `gui/${uid}`, agent], { encoding: 'utf8' });
     if (r.status !== 0) { say(`✗ launchctl bootstrap failed: ${String(r.stderr).trim()}`); return 1; }
@@ -152,7 +153,7 @@ async function watchKvm(mac) {
 
 async function appleAccount() {
   need(name, 'housesitter apple-account <mac> [--now | --watch | --expect-reboot --why "<reason>" | --install-agent | --uninstall-agent | --status]');
-  const bin = fileURLToPath(import.meta.url);
+  const bin = Deploy.liveBin(fileURLToPath(import.meta.url));
   if (flag('--status')) { const s = Apple.readStatus(); if (json) emit(s); else say(`marker: ${s.marker ? `${new Date(s.marker.at).toISOString()} ${s.marker.why}` : 'none'}\nstate: ${JSON.stringify(s.state)}\n${s.audit.map((a) => `${a.at} ${a.event}${a.why ? `: ${a.why}` : ''}`).join('\n') || 'no audit lines yet'}`); return 0; }
   if (flag('--expect-reboot')) { const r = Apple.expectReboot({ why: val('--why') }); say(`marked: a boot in the next ${Apple.MARKER_MAX_AGE_MS / 3600000} h is one Housesitter coordinated (${r.why}); the prompt after it is filled within ${Apple.WINDOW_MS / 60000} min of that boot`); return 0; }
   if (flag('--uninstall-agent')) { const r = Apple.uninstallAgent(); say(`removed ${r.plist}`); return 0; }
@@ -179,7 +180,7 @@ async function appleAccount() {
 
 async function steerCmd() {
   const deps = Steer.realSteerDeps();
-  const bin = fileURLToPath(import.meta.url);
+  const bin = Deploy.liveBin(fileURLToPath(import.meta.url));
   if (flag('--install') || flag('--uninstall')) {
     const a = Rec.AGENTS.steer;
     const r = flag('--uninstall') ? await Rec.uninstallAgent({ label: a.label }) : await Rec.installAgent({ label: a.label, program: [Watch.stableNode(process.execPath), bin, ...a.args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: a.every, logName: a.logName, dry: flag('--dry-run') });
@@ -199,7 +200,7 @@ async function steerCmd() {
 
 async function laptopArrival() {
   const file = path.resolve(val('--config') || path.join(os.homedir(), '.config', 'housesitter', 'laptop-arrival.json'));
-  const bin = fileURLToPath(import.meta.url);
+  const bin = Deploy.liveBin(fileURLToPath(import.meta.url));
   if (flag('--install') || flag('--uninstall')) {
     const args = ['laptop-arrival', '--config', file, '--quiet'];
     const r = flag('--uninstall') ? await Rec.uninstallAgent({ label: Arrival.LABEL }) : await Rec.installAgent({ label: Arrival.LABEL, program: [Watch.stableNode(process.execPath), bin, ...args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: Arrival.EVERY_SEC, logName: 'housesitter-laptop-arrival.launchd.log', dry: flag('--dry-run') });
@@ -241,7 +242,7 @@ async function restartCopilot() {
   }
   if (flag('--install-recovery') || flag('--uninstall-recovery')) {
     const env = { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() };
-    const node = Watch.stableNode(process.execPath), bin = fileURLToPath(import.meta.url);
+    const node = Watch.stableNode(process.execPath), bin = Deploy.liveBin(fileURLToPath(import.meta.url));
     const rs = [];
     for (const a of Object.values(Rec.AGENTS)) rs.push(flag('--uninstall-recovery') ? await Rec.uninstallAgent({ label: a.label }) : await Rec.installAgent({ label: a.label, program: [node, bin, ...a.args], env, every: a.every, logName: a.logName, dry: flag('--dry-run') }));
     const retired = await Rec.retireAgents({ dry: flag('--dry-run') });
@@ -261,7 +262,7 @@ async function restartCopilot() {
     return 0;
   }
   if (flag('--os-updates')) {
-    const od = OsUp.realOsDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url), mac: val('--mac') || 'mini', listing: val('--listing') ? path.resolve(val('--listing')) : null });
+    const od = OsUp.realOsDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: Deploy.liveBin(fileURLToPath(import.meta.url)), mac: val('--mac') || 'mini', listing: val('--listing') ? path.resolve(val('--listing')) : null });
     od.status = (o) => { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, 'status.json'), JSON.stringify(o)); };
     const w = (val('--window') || '').match(/^(\d+)-(\d+)$/);
     const r = await OsUp.pass({ ...opts, force: flag('--now'), os: w ? { windowStart: Number(w[1]), windowEnd: Number(w[2]) } : {} }, od, (l) => { if (!json) console.log(l); });
@@ -269,7 +270,7 @@ async function restartCopilot() {
     return r.report && !r.report.ok ? 1 : 0;
   }
   if (flag('--heartbeat')) {
-    const hd = Beat.realHeartbeatDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url) });
+    const hd = Beat.realHeartbeatDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: Deploy.liveBin(fileURLToPath(import.meta.url)) });
     const r = await Beat.pass(opts, hd, (l) => { if (!json) console.log(l); });
     if (json) emit({ action: r.action, socket: r.socket, window: r.window, failures: r.failures, evidence: r.evidence || null }); else if (!flag('--quiet')) say(Beat.renderPass(r));
     return ['capped'].includes(r.action) || r.ok === false ? 1 : 0;
@@ -277,12 +278,12 @@ async function restartCopilot() {
   if (flag('--install-plugin-updates') || flag('--uninstall-plugin-updates')) {
     const r = flag('--uninstall-plugin-updates')
       ? await Plugins.uninstallPluginAgent({})
-      : await Plugins.installPluginAgent({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') });
+      : await Plugins.installPluginAgent({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run') });
     if (json) emit(r); else say(flag('--uninstall-plugin-updates') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Plugins.PLUGIN_LABEL}); every ${Plugins.EVERY_SEC / 60} min it restarts the app, with its sessions saved and resumed, when a plugin it loaded has a newer release. Decisions: ${path.join(stateDir, 'plugin-updates.log')}` : `✗ launchctl would not load it: ${r.error}`);
     return r.ok ? 0 : 1;
   }
   if (flag('--plugin-updates')) {
-    const pd = Plugins.realPluginDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: fileURLToPath(import.meta.url) });
+    const pd = Plugins.realPluginDeps({ copilotHome: val('--copilot-home') || undefined, hackamore: val('--hackamore'), state: stateDir, bin: Deploy.liveBin(fileURLToPath(import.meta.url)) });
     const r = await Plugins.pass({ ...opts, cooldown_ms: val('--cooldown-hours') == null ? undefined : Number(val('--cooldown-hours')) * 3600000 }, pd, flag('--quiet') || json || opts.dry_run ? () => {} : (l) => console.log(l));
     if (json) emit(r); else if (opts.dry_run) say(Plugins.renderPass(r));
     return r.decision.action === 'restart' && !r.restarted && !opts.dry_run ? 1 : 0;
@@ -290,7 +291,7 @@ async function restartCopilot() {
   if (flag('--install-keeper')) {
     const d = Copilot.realDeps({ copilotHome: val('--copilot-home') || undefined, state: stateDir });
     const before = async () => { const g = await Copilot.appGeneration(opts, d).catch(() => ({})); if (g.key) d.generation.set(g.key, 'install-keeper'); };
-    const r = await Copilot.installKeeper({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run'), before });
+    const r = await Copilot.installKeeper({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: flag('--dry-run'), before });
     if (json) emit(r); else say(r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Copilot.KEEPER_LABEL}); it resumes sessions after every app start from now on (the app that is up now is not resumed). Log: ${r.log}` : `✗ launchctl would not load it: ${r.error}`);
     return r.ok ? 0 : 1;
   }
@@ -329,7 +330,7 @@ async function restartCopilot() {
   if (flag('--detach')) {
     const keep = args.filter((a, i) => a !== '--detach' && a !== '--json' && a !== 'restart-copilot' && args[i - 1] !== '--hackamore' && a !== '--hackamore');
     const hk = deps.hackamore ? ['--hackamore', deps.hackamore.join(' ')] : [];
-    const r = await Copilot.detach({ node: Watch.stableNode(process.execPath), bin: fileURLToPath(import.meta.url), args: ['restart-copilot', ...keep, ...hk], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() } });
+    const r = await Copilot.detach({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), args: ['restart-copilot', ...keep, ...hk], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() } });
     if (json) emit(r); else say(r.ok ? `started as a launchd job (${Copilot.LABEL}); it does not depend on this session. Log: ${r.log}\nRead the result with: housesitter restart-copilot --status` : `✗ launchctl would not start it: ${r.error}`);
     return r.ok ? 0 : 1;
   }
@@ -456,6 +457,12 @@ async function main() {
     return 0;
   }
 
+  if (cmd === 'deploy') {
+    need(name, 'housesitter deploy <housesitter|shepherd> [--ref <tag|branch|sha>] [--clone <dir>] [--dry-run] [--json] --why "<who asked, and what they said>"');
+    const r = await Deploy.deploy({ name, ref: val('--ref'), clone: val('--clone'), why: val('--why'), dry: flag('--dry-run') });
+    if (json) emit(r); else say(Deploy.renderDeploy(r));
+    return r.ok ? 0 : 1;
+  }
   if (cmd === 'apple-account') return appleAccount();
   if (cmd === 'peer' && ['flush', 'watch'].includes(name)) requireMac(rest[0]);
   if (cmd === 'peer') return peerCmd();

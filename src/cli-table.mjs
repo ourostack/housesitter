@@ -14,7 +14,7 @@ const cmd = (def) => defineCommand(def);
 
 // Every flag the commands read. A flag a command does not read is still unknown to the kit: flags are checked across
 // the tool, not per command, until a command declares its own.
-const VALUE_FLAGS = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--floor-gib', '--window', '--listing', '--peer', '--config', '--grid', '--address'];
+const VALUE_FLAGS = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--floor-gib', '--window', '--listing', '--peer', '--config', '--grid', '--address', '--ref', '--clone'];
 const SWITCH_FLAGS = ['--again', '--all-frames', '--api-open', '--attended', '--attended-test', '--base64', '--detach', '--disk-prune', '--double', '--end', '--expect-reboot', '--fake', '--fast', '--filevault', '--heartbeat', '--hold', '--i-see-the-field', '--install', '--install-agent', '--install-keeper', '--install-plugin-updates', '--install-recovery', '--list', '--no-sessions', '--now', '--once', '--open-at-login', '--os-updates', '--outbox', '--peek', '--plain', '--plugin-updates', '--private', '--quiet', '--repair', '--resume', '--resume-only', '--right', '--sigterm', '--status', '--test', '--this-mac', '--trial', '--uninstall', '--uninstall-agent', '--uninstall-plugin-updates', '--uninstall-recovery', '--version', '--watch', '--yes'];
 
 const FLAGS = Object.fromEntries([
@@ -24,7 +24,7 @@ const FLAGS = Object.fromEntries([
 
 // Commands that act on the Mac or send a message: other people see them, so the kit needs --why, and a --dry-run that
 // does not act is answered with what it would do. adopt, restart-copilot and laptop-arrival keep their own --dry-run.
-const OWN_DRY_RUN = new Set(['adopt', 'restart-copilot', 'laptop-arrival']);
+const OWN_DRY_RUN = new Set(['adopt', 'restart-copilot', 'laptop-arrival', 'deploy']);
 
 // --why is for an action someone asked for. A dry run or a --status look acts on nothing, and a job the person installed
 // on a timer runs as the person set it up, so these run without one. Each list is the flags a command's installed job
@@ -69,6 +69,7 @@ const COMMANDS = [
   cmd({ name: 'peer watch', summary: 'wake the agent with ouro msg when Housesitter writes, and send queued messages when due', effect: 'others', args: [mac('the Mac this link is for, as its name in the config')], examples: ['housesitter peer watch <mac> --once'] }),
   cmd({ name: 'peer drill', summary: 'mark a planned drill: the link labels everything sent meanwhile', effect: 'others', args: [word('label', 'what the drill is', { required: false, rest: true })], examples: ['housesitter peer drill "gist outage" --minutes 60'] }),
   cmd({ name: 'restart-copilot', summary: 'restart the GitHub Copilot app without losing any session\'s work', effect: 'others', flags: { mac: { type: 'string', description: 'with --install-recovery: the Mac whose apple-account agent to install too' } }, examples: ['housesitter restart-copilot --dry-run'] }),
+  cmd({ name: 'deploy', summary: 'make a tool\'s new release live in one atomic swap: housesitter or shepherd, from its clone', effect: 'others', args: [word('name', 'housesitter or shepherd')], examples: ['housesitter deploy housesitter --dry-run', 'housesitter deploy shepherd --ref v0.3.1'] }),
   cmd({ name: 'steer', summary: 'whether another computer can see and drive this Mac\'s agent sessions', effect: 'private', examples: ['housesitter steer --list'] }),
   cmd({ name: 'laptop-arrival', summary: 'when a Mac that was away is back, bring it up to date and tell the agent once', effect: 'others', args: [mac('the Mac that was away, as its name in the config')], examples: ['housesitter laptop-arrival <mac> --dry-run'] }),
   cmd({ name: 'fleet', summary: 'every Mac side by side, from the fleet gist\'s health records', effect: 'private', readOnly: true, examples: ['housesitter fleet --stale-min 15'] }),

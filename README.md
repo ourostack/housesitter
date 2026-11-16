@@ -383,6 +383,10 @@ Without a probe, "up" means a desktop whose clock moves. Give it one in the Mac'
 
 A stale heartbeat only ever counts against the Mac alongside a stopped clock: a moving desktop clock with a stale heartbeat reads as "up, but something is off", never as frozen. If the probe can't fetch or read the document (no internet, an outage), it counts as unknown, not down. The URL may be a secret; `doctor` and `status` show only the heartbeat's age.
 
+## Updating
+
+Deploy with `housesitter deploy housesitter` or `housesitter deploy shepherd`, never with `git pull` in a live clone: a job that starts between a pull and an install runs half-updated code. Deploy builds the release (the newest `v*` tag, or `--ref <tag|branch|sha>`) as a folder under `~/Library/Application Support/housesitter/releases/<name>/`, runs `npm install` there and checks it (every `.mjs` parses, `--version` exits 0). Only then does it point `current` at the release, in one rename. Jobs that ran the clone are rewritten to run `current` and reloaded; KeepAlive jobs on the release are restarted; the rest run the new code on their next run. The three newest releases are kept. A failed check leaves `current` where it was. `--dry-run` prints every step and changes nothing; `--why "<who asked, and what they said>"` is required, as for every acting command. Housesitter has no `v*` tag until a release is cut, so until then `housesitter deploy housesitter --ref main`.
+
 ## What's verified
 
 housesitter is experimental (0.4). Honest status, as of 9 November 2026. "Our watchdog" is the private code in our own setup that housesitter was generalised from; it runs the same rules.
