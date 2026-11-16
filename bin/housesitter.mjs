@@ -29,8 +29,8 @@ import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
 import * as Steer from '../src/steer.mjs';
 import * as Arrival from '../src/laptop-arrival.mjs';
-import { cli, isCommand, previewOf, refusalOf } from '../src/cli-table.mjs';
-import { quietPipes, runCli } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
+import { isCommand, previewOf, refusalOf, runHelp } from '../src/cli-table.mjs';
+import { quietPipes } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
 
 quietPipes(process);
 const kitIo = { stdout: process.stdout, stderr: process.stderr };
@@ -353,7 +353,7 @@ async function main() {
   if (flag('--version')) { console.log(VERSION); return 0; }
   // Help, `help --json`, and an unknown command are the kit's (src/cli-table.mjs); every command word runs below.
   if (!isCommand(args)) {
-    const code = await runCli(cli, args, kitIo);
+    const code = await runHelp(args, kitIo);
     // process.exit below would cut a piped stdout short, so wait for what the kit wrote.
     await new Promise((done) => process.stdout.write('', done));
     return code;
@@ -361,7 +361,7 @@ async function main() {
   // The kit checks the call first: its words, its flags, and the --why an acting command needs.
   const refused = await refusalOf(args, kitIo);
   if (refused) { await new Promise((done) => process.stdout.write('', done)); return refused.exit; }
-  if (cmd === 'version') { console.log(VERSION); return 0; }
+  if (cmd === 'version') { if (json) emit({ version: VERSION }); else console.log(VERSION); return 0; }
   const previewed = previewOf(args);
   if (previewed) {
     if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: previewed }); else console.log(previewed);
@@ -396,7 +396,11 @@ async function main() {
     return rows.every((r) => r.healthy) ? 0 : 1;
   }
 
-  if (cmd === 'tailnet-policy') { console.log(fs.readFileSync(path.join(ROOT, 'docs', 'tailnet-policy.hujson'), 'utf8')); return 0; }
+  if (cmd === 'tailnet-policy') {
+    const policy = fs.readFileSync(path.join(ROOT, 'docs', 'tailnet-policy.hujson'), 'utf8');
+    if (json) emit({ policy }); else console.log(policy);
+    return 0;
+  }
 
   if (cmd === 'look' && val('--picture')) {
     // What the sitter would make of a saved picture: the same code as on the KVM, run here (needs python3 and ffmpeg).
