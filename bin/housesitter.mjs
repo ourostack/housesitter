@@ -363,7 +363,7 @@ async function main() {
   const refused = await refusalOf(args, kitIo);
   if (refused) { await new Promise((done) => process.stdout.write('', done)); return refused.exit; }
   if (cmd === 'version') { if (json) emit({ version: VERSION }); else console.log(VERSION); return 0; }
-  const previewed = previewOf(args);
+  const previewed = cmd === 'deploy' && name ? null : previewOf(args);
   if (previewed) {
     if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: previewed }); else console.log(previewed);
     return 0;

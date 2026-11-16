@@ -220,8 +220,10 @@ export async function deploy({ name, ref = null, clone = null, why = null, home 
 
   const out = { ...base, ok: true, previous, steps, jobs, pruned, kept: kept.map((k) => k.sha) };
   if (!dry) appendLog(home, { at: new Date().toISOString(), ...out });
-  return out;
+  return dry ? { ...out, nothing_done: true, message: DRY_MESSAGE } : out;
 }
+
+const DRY_MESSAGE = 'deploy: dry run; nothing was done. Without --dry-run this acts for the person, and other people see it.';
 
 function readJson(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } }
 
@@ -243,7 +245,7 @@ function appendLog(home, rec) {
 // What the person reads: the outcome in Housesitter's voice, then each step when it is a dry run.
 export function renderDeploy(r) {
   const L = [];
-  if (r.dry_run) L.push(`dry run; nothing changed. Deploying ${r.name} ${r.ref}${r.sha ? ` (${r.sha})` : ''}:`);
+  if (r.dry_run) L.push(r.message, `Deploying ${r.name} ${r.ref}${r.sha ? ` (${r.sha})` : ''}, step by step:`);
   if (!r.ok) {
     L.push(`✗ ${r.name}: ${r.failed} failed (${r.detail}); the live release is unchanged${r.removed ? ', and the new folder is removed' : ''}.`);
     return L.join('\n');
