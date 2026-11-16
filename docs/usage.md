@@ -50,8 +50,8 @@ housesitter peer send <text> [--re <id>] [--now]
                                          sent within 6 minutes (--now: at once; 10 gist writes an hour at most)
 housesitter peer inbox [--peek]          Housesitter's new messages, oldest first, each shown once (--peek: don't mark them read);
                                          also sends queued messages that are due
-housesitter peer flush [--now]           send the queued messages if due (--now: at once, within the hourly cap)
-housesitter peer watch [--agent ouroboros] [--every 30] [--once] [--ouro <path>]
+housesitter peer flush <mac> [--now]   send the queued messages if due (--now: at once, within the hourly cap)
+housesitter peer watch <mac> [--agent ouroboros] [--every 30] [--once] [--ouro <path>]
 housesitter peer drill <label> [--minutes 60] | --end   mark a planned drill: the link labels everything sent meanwhile
                                          wake the agent with ouro msg when Housesitter writes (marks nothing read),
                                          and send its queued messages when due; logs to peer-watch.log beside the config
@@ -98,7 +98,7 @@ housesitter steer [--repair] [--list] [--no-sessions] [--peer <device name>] [--
                                          --repair puts the daemon back under launchd with track-all; --list shows the sessions as Hub reads them;
                                          --peer says whether this Mac can read another Mac's device (the laptop's view of the mini);
                                          --install loads bot.ouro.housesitter.steer (every 2 min, no model turns); exit 1 when something is wrong
-housesitter laptop-arrival [--config <file>] [--dry-run] [--status] [--install|--uninstall]   when a Mac that was away is back online, bring it up to
+housesitter laptop-arrival <mac> [--config <file>] [--dry-run] [--status] [--install|--uninstall]   when a Mac that was away is back online, bring it up to
                                          date and tell the agent once: update and restart its Copilot app (sessions saved and resumed), unload the jobs
                                          this Mac took over, verify its Hub daemon; every step checks first, so a second run changes nothing
 housesitter fleet [--stale-min 15] [--disk-floor-gb 20] [--always-on <mac>,<mac>] [--from <gist.json>]   every Mac side by side from the fleet

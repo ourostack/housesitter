@@ -201,7 +201,7 @@ async function laptopArrival() {
   const file = path.resolve(val('--config') || path.join(os.homedir(), '.config', 'housesitter', 'laptop-arrival.json'));
   const bin = fileURLToPath(import.meta.url);
   if (flag('--install') || flag('--uninstall')) {
-    const args = ['laptop-arrival', '--config', file, '--quiet'];
+    const args = ['laptop-arrival', name, '--config', file, '--quiet'];
     const r = flag('--uninstall') ? await Rec.uninstallAgent({ label: Arrival.LABEL }) : await Rec.installAgent({ label: Arrival.LABEL, program: [Watch.stableNode(process.execPath), bin, ...args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: Arrival.EVERY_SEC, logName: 'housesitter-laptop-arrival.launchd.log', dry: flag('--dry-run') });
     if (json) emit(r); else say(flag('--uninstall') ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${Arrival.LABEL}); every minute it checks whether the laptop is back, with no model turns` : `✗ launchctl would not load it: ${r.error}`);
     return r.ok ? 0 : 1;
@@ -337,6 +337,12 @@ async function restartCopilot() {
 }
 
 function need(n, usage) { if (!n) throw new Refusal('input-invalid', `usage: ${usage}`); }
+// The Mac a peer link or a return names must be one the config knows, so a wrong name never acts for another Mac.
+function requireMac(n) {
+  const known = Object.keys(loadConfig().macs || {});
+  if (known.includes(n)) return n;
+  throw new Refusal('input-invalid', `no Mac called "${n}" in ${configPath()}. Fix: ${known.length ? `name one of the Macs in the config: ${known.join(', ')}` : 'add it first: housesitter adopt <mac> --address <ip>'}.`);
+}
 
 async function main() {
   if (flag('--version')) { console.log(VERSION); return 0; }
@@ -442,10 +448,11 @@ async function main() {
   }
 
   if (cmd === 'apple-account') return appleAccount();
+  if (cmd === 'peer' && ['flush', 'watch'].includes(name)) requireMac(rest[0]);
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
   if (cmd === 'steer') return steerCmd();
-  if (cmd === 'laptop-arrival') return laptopArrival();
+  if (cmd === 'laptop-arrival') { if (!flag('--dry-run')) requireMac(name); return laptopArrival(); }
 
   need(name, `housesitter ${cmd} <mac>`);
   const mac = macConfig(name);

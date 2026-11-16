@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMMAND_WORDS, isCommand } from '../src/cli-table.mjs';
@@ -44,3 +45,16 @@ test('help and a command\'s own help go to the kit; a command word runs the disp
   assert.equal(isCommand(['--address', '10.0.0.5', 'adopt']), true);
 });
 
+
+test('a peer link or a returning Mac names a Mac the config knows; an unknown one is refused with the known names', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-mac-'));
+  const config = path.join(dir, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ macs: { studio: {} } }));
+  const env = { ...process.env, HOUSESITTER_CONFIG: config };
+  const unknown = spawnSync(process.execPath, [BIN, 'peer', 'flush', 'nope', '--why', 'the person asked'], { encoding: 'utf8', env });
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /no Mac called "nope".*studio/);
+  const missing = spawnSync(process.execPath, [BIN, 'laptop-arrival', '--why', 'the person asked'], { encoding: 'utf8', env });
+  assert.equal(missing.status, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
