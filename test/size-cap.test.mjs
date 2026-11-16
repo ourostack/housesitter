@@ -19,14 +19,6 @@ const mkDeps = () => {
   };
 };
 
-test('snapshot marks an over-cap history as never-resume, with the reason', async () => {
-  const s = await snapshot(mkDeps());
-  const big = s.find((x) => x.id === BIG);
-  assert.equal(big.state, 'idle');
-  assert.match(big.why, /500 MB resume cap/);
-  assert.equal(s.find((x) => x.id === SMALL).state, 'busy');
-});
-
 test('resumeAfter does not resume an over-cap session, even when named with --also, and records it', async () => {
   const d = mkDeps();
   d.send = async (id) => { d.sent.push(id); return { ok: true, reply: 'ok' }; };

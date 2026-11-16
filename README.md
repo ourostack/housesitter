@@ -238,6 +238,8 @@ Housesitter and the agent on the Mac (Ouroboros) talk in free text through two s
 
 ## Restart the Copilot app without losing a session
 
+Housesitter keeps the house: the Mac, and the app as a running process. The app's sessions are [Shepherd](https://github.com/ourostack/shepherd)'s, and Housesitter calls Shepherd's library for safe points, progress and resume messages.
+
 A restart of the GitHub Copilot app stops every session in it. `housesitter restart-copilot` does the restart from outside the app, so it survives the app quitting, and brings every session back:
 
 ```sh
