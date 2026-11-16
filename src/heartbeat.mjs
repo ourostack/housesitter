@@ -110,6 +110,11 @@ export function classifyGap({ from, to, facts }) {
   if (f.paused) return { cause: 'paused', mins, text: `The heartbeat job was switched off for ${mins} min (${win}); that is not a hang.` };
   if ((f.sleeps || []).length) return { cause: 'sleep', mins, text: `The Mac slept for ${mins} min (${win}): ${f.sleeps.slice(0, 2).join('; ')}. I have set it to stay awake${f.pmsetSleep ? ` (the system setting is still "sleep ${f.pmsetSleep}"; changing that needs an administrator's password)` : ''}.` };
   if (f.onDemand) return { cause: 'restart-pending', mins, text: `The Mac stopped starting my jobs for ${mins} min (${win}): from ${hhmm(f.onDemand)} the system was preparing a restart or shutdown, and it did not restart in that time.` };
+  // launchd kept running the job but each run exited with an error before it recorded a run (a refused argument): not a hang.
+  if (f.ownErrors) {
+    const e = f.ownErrors;
+    return { cause: 'job-errors', mins, text: `Not a Mac hang: launchd kept running my job, but my own runs exited with an error for ${mins} min (${win}). Evidence: ${e.log ? `${e.log} has ${e.count} refusal line${e.count === 1 ? '' : 's'} in that window, e.g. "${e.sample}"` : ''}${e.log && e.exit != null ? '; ' : ''}${e.exit != null ? `launchd's last exit status for the job is ${e.exit}` : ''}.` };
+  }
   return { cause: 'hang', mins, text: `The Mac stopped running my jobs for ${mins} min (${win}) with no reboot and no sleep in its logs: a hang or heavy stall.${f.load ? ` Load then: ${f.load}.` : ''}${f.memory ? ` Memory: ${f.memory}.` : ''}` };
 }
 
@@ -206,6 +211,16 @@ export function parseHistory(text) {
     .map((m) => ({ name: m[1].trim(), version: m[2], at: new Date(Number(m[5]), Number(m[3]) - 1, Number(m[4]), Number(m[6]), Number(m[7]), Number(m[8])).getTime() }));
 }
 
+// Did the heartbeat job's own runs fail in the window? Its launchd log (stderr and stdout) is untimed, so a refusal line
+// counts when the log was written since the gap began; launchd's last exit status, when it is nonzero, says the same.
+export function jobErrors(from, to, { home, log = path.join(home, 'Library', 'Logs', 'housesitter-heartbeat.launchd.log'), launchctlExit = null } = {}) {
+  let lines = [];
+  try { if (fs.statSync(log).mtimeMs >= from - 60000) lines = fs.readFileSync(log, 'utf8').split('\n').filter((l) => /needs --why|refus|usage:/i.test(l)); } catch { /* no log */ }
+  const exit = launchctlExit != null && launchctlExit !== 0 ? launchctlExit : null;
+  if (!lines.length && exit == null) return null;
+  return { log: lines.length ? log : null, count: lines.length, sample: (lines.at(-1) || '').trim().slice(0, 120), exit };
+}
+
 // What the Mac's own logs say about a gap. Each lookup is best effort and bounded; a missing one is simply absent.
 async function gapFacts(from, to, { state, home }) {
   const ts = (ms) => new Date(ms).toLocaleString('sv-SE').replace('T', ' ');
@@ -228,8 +243,10 @@ async function gapFacts(from, to, { state, home }) {
   // A pause marker ({from,to} in ms; `to` absent while still paused) written by whoever disables the job also counts.
   const mark = readJson(path.join(state, 'heartbeat-paused.json'), null);
   const paused = Boolean(offLog.stdout.split('\n').some((l) => inWin(l) && /disable|bootout|removing/i.test(l)) || (mark && Number(mark.from) <= to && (mark.to == null || Number(mark.to) >= from)));
+  const lc = await run('/bin/launchctl', ['print', `gui/${process.getuid()}/bot.ouro.housesitter.heartbeat`], { timeoutMs: 10000 });
+  const ownErrors = jobErrors(from, to, { home, launchctlExit: (lc.stdout.match(/last exit code = (\d+)/) || [])[1] != null ? Number(lc.stdout.match(/last exit code = (\d+)/)[1]) : null });
   return {
-    paused, boot, installs: parseHistory(hist.stdout), sleeps, onDemand: od?.t || null, panics, planned: readJson(path.join(state, 'os-update.json'), {}).reboot || null,
+    paused, ownErrors, boot, installs: parseHistory(hist.stdout), sleeps, onDemand: od?.t || null, panics, planned: readJson(path.join(state, 'os-update.json'), {}).reboot || null,
     pmsetSleep: pm && Number(pm[1]) > 0 ? pm[1] : null, load: (load.stdout.match(/load averages?: (.*)$/m) || [])[1] || null, memory: free ? `${Math.round(Number(free[1]) * 16384 / 1048576)} MB free` : null,
   };
 }

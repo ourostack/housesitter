@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { classifyGap, crashSummary, failureText, heaviestPath, judge, parseHistory, pass, recoveryMessage, settleStall } from '../src/heartbeat.mjs';
+import { classifyGap, jobErrors, crashSummary, failureText, heaviestPath, judge, parseHistory, pass, recoveryMessage, settleStall } from '../src/heartbeat.mjs';
 import { realHeartbeatDeps } from '../src/heartbeat.mjs';
 import { readIncidents, recordIncident } from '../src/recovery.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
@@ -75,6 +75,25 @@ test('classifyGap: a reboot for an update, a planned update, a sleep and a plain
   const hang = classifyGap({ ...gap, facts: { load: '70.1 60.2 30.3' } });
   assert.equal(hang.cause, 'hang');
   assert.match(hang.text, /no reboot and no sleep.*Load then: 70\.1/);
+});
+
+// 2026-11-16 07:59-08:34: every job ran on schedule but exited 2 ("needs --why"), and the 36 min gap was reported as a Mac hang.
+test('classifyGap: runs that exited with an error are told apart from a hang, with the evidence', () => {
+  const at = (h, m) => new Date(2026, 10, 16, h, m).getTime();
+  const gap = { from: at(7, 58), to: at(8, 34) };
+  const dir = fs.mkdtempSync(path.join(SCRATCH, 'jobs-'));
+  const log = path.join(dir, 'heartbeat.launchd.log');
+  fs.writeFileSync(log, 'error: needs --why: say why\n'.repeat(3));
+  const errs = jobErrors(gap.from, gap.to, { home: dir, log });
+  assert.equal(errs.count, 3);
+  const c = classifyGap({ ...gap, facts: { ownErrors: errs, load: '1 1 1' } });
+  assert.equal(c.cause, 'job-errors');
+  assert.match(c.text, /Not a Mac hang.*exited with an error for 36 min \(07:58 to 08:34\).*has 3 refusal lines.*needs --why/);
+  assert.equal(classifyGap({ ...gap, facts: { ownErrors: { log: null, count: 0, sample: '', exit: 2 } } }).cause, 'job-errors');
+  assert.match(classifyGap({ ...gap, facts: { ownErrors: { log: null, count: 0, sample: '', exit: 2 } } }).text, /last exit status for the job is 2/);
+  assert.equal(jobErrors(gap.from, gap.to, { home: dir, log: path.join(dir, 'none.log') }), null);
+  assert.equal(classifyGap({ ...gap, facts: { ownErrors: null } }).cause, 'hang');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('recoveryMessage: once, after the fact, with the count and the evidence; a repeat names the pattern', () => {
