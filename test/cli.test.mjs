@@ -35,7 +35,7 @@ register('data:text/javascript,' + encodeURIComponent("export async function res
 const bare = (args, config = path.join(scratch, 'config.json')) => spawnSync(process.execPath, ['--import', NO_HACKAMORE, BIN, ...args], { encoding: 'utf8', env: { ...process.env, HOUSESITTER_CONFIG: config } });
 
 test('CLI without hackamore installed: everything but ls and do still runs, and ls and do say what to install', () => {
-  assert.match(bare(['help']).stdout, /housesitter demo/);
+  assert.match(bare(['help']).stdout, /demo +the real evening/);
   assert.equal(JSON.parse(bare(['demo', 'night', '--json']).stdout).rehearsal, true);
   const config = path.join(scratch, 'bare.json');
   fs.writeFileSync(config, JSON.stringify({ macs: { studio: { kvm: { endpoints: [] } } } }));
@@ -45,7 +45,7 @@ test('CLI without hackamore installed: everything but ls and do still runs, and 
 });
 
 test('CLI: help, adopt --fake, and refusal exit codes', () => {
-  assert.match(cli(['help']).stdout, /housesitter demo/);
+  assert.match(cli(['help']).stdout, /demo +the real evening/);
   const a = cli(['adopt', 'studio', '--fake', '--json']);
   assert.equal(a.status, 0, a.stderr);
   assert.equal(JSON.parse(a.stdout).fake, true);
