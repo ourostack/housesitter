@@ -14,6 +14,8 @@
 //   6. full clones agents left under ~/code or in a session's files/ that hold nothing Git does not: clean, no stash, no
 //      second worktree, every branch on a remote, nothing open, untouched for 3 days (a clone is one `git clone` away)
 //   7. the history of a session the app no longer lists, compressed, never deleted
+//   Before all of that, on every pass and above the floor too: the history of an archived session, compressed by
+//   Shepherd's compressHistory, which refuses a live or open one. A finished history loses nothing, so it waits for nothing.
 // Each hour it records free space in a ledger; each day it measures where the bytes are and says which sources grew,
 // so the cause gets fixed and not only the symptom. A pass that finds nothing safe rests an hour before it scans again.
 
@@ -21,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { compressHistory, deps as shepherdDeps } from '@ouro.bot/shepherd';
 import { realDeps, snapshot, stateDir } from './copilot-app.mjs';
 import { iso, readJson, realTell, writeJson } from './recovery.mjs';
 import { withBlock } from './lean-hook.mjs';
@@ -77,11 +80,20 @@ export async function pass(opts, deps, say = () => {}) {
     if (!(now - (st0.ledgerAt || 0) < t.ledgerEvery)) { deps.ledger?.({ at: iso(now), free: before.free, pct: before.pct }); stamp({ ledgerAt: now }); }
     if (!(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) { const b = deps.breakdown?.(st0.breakdown); if (b) stamp({ breakdown: { ...b, at: now } }); }
   }
-  if (before.free >= t.floor && !opts.force) return { action: 'ok', free: before.free };
+  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, sessions: 0, histories: 0, rescued: [] };
+  const rows = (await deps.sessionRows?.()) || null;
+  for (const id of rows?.archived || []) {
+    if (rows.live.has(id)) continue;
+    const r = await deps.compress(id, { dryRun: Boolean(opts.dry_run) });
+    if (!r.ok) continue;
+    const saved = opts.dry_run ? r.before : r.before - r.after;
+    reclaimed.histories += saved; out(`${opts.dry_run ? 'would compress' : 'compressed'} the history of archived session ${id.slice(0, 8)}: ${gib(saved)}`);
+  }
+
+  if (before.free >= t.floor && !opts.force) return { action: 'ok', free: before.free, reclaimed };
   if (!opts.force && !opts.dry_run && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
 
   await deps.load?.();
-  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, sessions: 0, histories: 0, rescued: [] };
   const done = () => deps.usage().free >= t.floor + t.margin;
 
   for (const c of deps.caches()) {
@@ -151,12 +163,15 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.clones.push(dir); reclaimed.cloned += n; out(`removed clone ${dir}: ${gib(n)}`);
   }
 
+  // Only a session the app does not list at all: an archived one was compressed above, and a live one is never touched.
   const hlive = deps.liveSessions();
   for (const h of deps.histories()) {
     if (done()) break;
-    if (hlive.has(h.id) || now - h.mtime < t.quiet || h.size < t.minHistory || deps.open(h.file)) continue;
-    if (!opts.dry_run) deps.gzip(h.file);
-    reclaimed.histories += h.size; out(`compressed history ${h.id.slice(0, 8)}: ${gib(h.size)}`);
+    if (!rows || rows.known.has(h.id) || hlive.has(h.id) || now - h.mtime < t.quiet || h.size < t.minHistory || deps.open(h.file)) continue;
+    const r = await deps.compress(h.id, { dryRun: Boolean(opts.dry_run) });
+    if (!r.ok) continue;
+    const saved = opts.dry_run ? r.before : r.before - r.after;
+    reclaimed.histories += saved; out(`${opts.dry_run ? 'would compress' : 'compressed'} the history of unlisted session ${h.id.slice(0, 8)}: ${gib(saved)}`);
   }
 
   const after = deps.usage();
@@ -186,6 +201,7 @@ const sizeOf = (p) => { const r = sh('/usr/bin/du', ['-sk', p], { timeout: 30000
 
 export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [] } = {}) {
   const base = realDeps({ copilotHome, state });
+  const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
   const wt = path.join(copilotHome, 'copilot-worktrees');
   const sessions = path.join(copilotHome, 'session-state');
   const rescueRoot = path.join(home, 'AgentBundles', 'disk-rescue');
@@ -378,7 +394,14 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       } catch { /* none */ }
       return out.sort((a, b) => b.size - a.size);
     },
-    gzip: (f) => { sh('/usr/bin/gzip', ['-1', f]); },
+    // Shepherd's compressHistory: the one compress path, and the one ledger row (in this same disk-ledger.jsonl).
+    compress: (id, o) => compressHistory(shepherd, id, o),
+    // The app's sessions: archived ones, live ones, and every id it lists. null when the database cannot be read.
+    sessionRows: async () => {
+      const r = await q('SELECT id, archived_at FROM sessions');
+      if (!r) return null;
+      return { archived: r.filter((x) => x.archived_at).map((x) => x.id), live: new Set(r.filter((x) => !x.archived_at).map((x) => x.id)), known: new Set(r.map((x) => x.id)) };
+    },
     tell: realTell({ state, home }),
     readState: () => readJson(path.join(state, 'disk-prune.json'), {}),
     writeState: (o) => writeJson(path.join(state, 'disk-prune.json'), o),
