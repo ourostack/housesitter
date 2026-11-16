@@ -13,7 +13,7 @@ export const KEEP = 3;
 export const SHA_LEN = 12;
 
 export const TARGETS = {
-  housesitter: { bin: 'bin/housesitter.mjs', owns: (label) => label.startsWith('bot.ouro.housesitter.') },
+  housesitter: { bin: 'bin/housesitter.mjs', owns: (label) => label.startsWith('bot.ouro.housesitter') },
   shepherd: { bin: 'bin/shepherd.mjs', owns: (label) => label === 'bot.ouro.shepherd' },
 };
 
@@ -84,18 +84,39 @@ function ownedLabels(agents, name) {
   return fs.readdirSync(agents).filter((f) => f.endsWith('.plist')).map((f) => f.slice(0, -'.plist'.length)).filter(TARGETS[name].owns).sort();
 }
 
-// Decides what each job needs: rewrite its bin path, reload it, kick it, or leave it for its next run.
-function planJob({ label, text, cur, toBin, liveBinPath }) {
+// Decides what one job needs. Any copy of this tool's bin (the clone, an old copy, or the release) in its ProgramArguments is
+// pointed at the live release, in place; a script it runs that names such a copy is pointed there too.
+function planJob({ label, text, cur, bin, liveBinPath }) {
+  const isCopy = (p) => p.endsWith(`/${bin}`) && !p.startsWith(cur + path.sep);
+  const pick = (raw) => (isCopy(raw) ? liveBinPath : raw);
   const args = programArgs(text);
-  const rewrite = args.includes(toBin);
-  const runsLive = args.some((a) => a.startsWith(cur + path.sep));
-  const keepAlive = /<key>KeepAlive<\/key>\s*<true\/>/.test(text);
-  if (!rewrite && !runsLive) return { label, action: 'left', detail: 'does not run this tool from its clone or its release' };
-  const next = rewrite ? text.split(esc(toBin)).join(esc(liveBinPath)) : text;
-  return { label, rewrite, runsLive, keepAlive, next };
+  const next = rewriteArgs(text, pick);
+  const scripts = [];
+  const scriptRe = binRe(bin);
+  for (const a of args) {
+    if (!a.endsWith('.sh') || !fs.existsSync(a)) continue;
+    const body = fs.readFileSync(a, 'utf8');
+    const out = body.replace(scriptRe, (p) => (isCopy(p) ? liveBinPath : p));
+    if (out !== body) scripts.push({ file: a, next: out });
+  }
+  const runsLive = args.some((a) => pick(a).startsWith(cur + path.sep));
+  if (next === text && !scripts.length && !runsLive) return { label, action: 'left' };
+  return { label, rewrite: next !== text, next, scripts, runsLive, keepAlive: /<key>KeepAlive<\/key>\s*<true\/>/.test(text) };
 }
 
-export async function deploy({ name, ref = null, clone = null, why = null, home = os.homedir(), uid = process.getuid(), dry = false, launchctl = defaultLaunchctl } = {}) {
+// Replaces ProgramArguments elements in place, so the argv keeps its length and order.
+export function rewriteArgs(text, pick) {
+  return text.replace(/(<key>ProgramArguments<\/key>\s*<array>)([\s\S]*?)(<\/array>)/, (m, open, body, close) => open + body.replace(/<string>([\s\S]*?)<\/string>/g, (s, v) => {
+    const raw = unesc(v);
+    const next = pick(raw);
+    return next === raw ? s : `<string>${esc(next)}</string>`;
+  }) + close);
+}
+
+const binRe = (bin) => new RegExp(`[^\\s"'\`;|&()<>]*/${bin.replace(/\./g, '\\.')}`, 'g');
+
+
+export async function deploy({ name, ref = null, clone = null, why = null, home = os.homedir(), uid = process.getuid(), dry = false, launchctl = defaultLaunchctl, sleep = sleepSync } = {}) {
   if (!Object.hasOwn(TARGETS, name)) throw new Refusal('input-invalid', `deploy takes housesitter or shepherd, not ${name || 'nothing'}`);
   const t = TARGETS[name];
   const cloneDir = path.resolve(clone || defaultClone(name, home));
@@ -165,7 +186,6 @@ export async function deploy({ name, ref = null, clone = null, why = null, home 
   }
 
   // The swap: a temporary link next to `current`, renamed over it. A rename replaces the old link in one step.
-  const toBin = path.join(cloneDir, t.bin);
   const liveBinPath = path.join(cur, t.bin);
   if (dry) step('swap', true, `would point ${cur} at ${dir ?? 'the new release'}`);
   else {
@@ -176,29 +196,36 @@ export async function deploy({ name, ref = null, clone = null, why = null, home 
     step('swap', true, `${cur} -> ${dir}${previous ? ` (was ${previous})` : ''}`);
   }
 
-  // The jobs: a plist that still runs the clone's bin is rewritten to the live one; a loaded job is reloaded to take it.
-  // A job that runs the live release and is KeepAlive is kicked; interval jobs run the new code on their next run.
+  // The jobs: a plist (or a script it runs) that names a copy of this tool is pointed at the live release; a loaded job is
+  // reloaded to take it, and verified loaded afterwards. A KeepAlive job on the release, or one whose script changed, is kicked.
+  // Interval jobs run the new code on their next run.
+  const unloaded = [];
+  const target = (label) => `gui/${uid}/${label}`;
   for (const label of ownedLabels(agents, name)) {
     const file = path.join(agents, `${label}.plist`);
-    const plan = planJob({ label, text: fs.readFileSync(file, 'utf8'), cur, toBin, liveBinPath });
-    if (plan.action === 'left') { jobs.push({ label, action: 'left', detail: plan.detail }); continue; }
-    const loaded = launchctl(['print', `gui/${uid}/${label}`]).code === 0;
-    if (plan.rewrite && !dry) {
-      const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, plan.next);
-      fs.renameSync(tmp, file);
-    }
-    if (plan.rewrite && !loaded) { jobs.push({ label, action: dry ? 'would-rewrite' : 'rewritten', detail: 'not loaded now: launchd loads the new path at its next load' }); continue; }
-    if (plan.rewrite) {
-      if (dry) { jobs.push({ label, action: 'reload', detail: 'would rewrite its bin path and reload it' }); continue; }
-      launchctl(['bootout', `gui/${uid}/${label}`]);
-      const r = launchctl(['bootstrap', `gui/${uid}`, file]);
-      jobs.push(r.code === 0 ? { label, action: 'reloaded', detail: 'its bin path now runs the live release' } : { label, action: 'reload-failed', detail: r.stderr.trim() || `launchctl bootstrap exited ${r.code}` });
-      continue;
-    }
-    if (plan.keepAlive && loaded) {
-      if (!dry) launchctl(['kickstart', '-k', `gui/${uid}/${label}`]);
-      jobs.push({ label, action: dry ? 'would-kick' : 'kicked', detail: 'KeepAlive: restarted on the live release' });
+    const plan = planJob({ label, text: fs.readFileSync(file, 'utf8'), cur, bin: t.bin, liveBinPath });
+    if (plan.action === 'left') { jobs.push({ label, action: 'left', detail: 'does not run this tool from a clone, a release or an old copy' }); continue; }
+    const loaded = isLoaded(launchctl, uid, label);
+    if (plan.rewrite) writeAtomic(file, plan.next, dry);
+    for (const s of plan.scripts) writeAtomic(s.file, s.next, dry);
+    const reload = plan.rewrite && loaded;
+    const kick = !reload && loaded && (plan.scripts.length > 0 || (plan.keepAlive && plan.runsLive));
+    if (reload) {
+      if (dry) jobs.push({ label, action: 'would-reload', detail: 'its bin path is rewritten, then it is reloaded' });
+      else {
+        const r = reloadJob({ label, file, uid, launchctl, sleep });
+        if (r.ok) jobs.push({ label, action: 'reloaded', detail: `its bin path now runs the live release (${r.attempts} bootstrap ${r.attempts === 1 ? 'try' : 'tries'})` });
+        else { unloaded.push({ label, command: `launchctl bootstrap gui/${uid} ${file}` }); jobs.push({ label, action: 'reload-failed', detail: r.error }); }
+      }
+    } else if (kick) {
+      if (dry) jobs.push({ label, action: 'would-kick', detail: 'restarted on the live release' });
+      else {
+        launchctl(['kickstart', '-k', target(label)]);
+        if (isLoaded(launchctl, uid, label)) jobs.push({ label, action: 'kicked', detail: plan.scripts.length ? 'its script now runs the live release' : 'KeepAlive: restarted on the live release' });
+        else { unloaded.push({ label, command: `launchctl bootstrap gui/${uid} ${file}` }); jobs.push({ label, action: 'kick-failed', detail: 'not loaded after kickstart' }); }
+      }
+    } else if (plan.rewrite || plan.scripts.length) {
+      jobs.push({ label, action: dry ? 'would-rewrite' : 'rewritten', detail: 'not loaded now: launchd runs the new path when it is loaded' });
     } else {
       jobs.push({ label, action: 'next-run', detail: loaded ? 'runs the live release on its next run' : 'not loaded; the live release runs when it is loaded' });
     }
@@ -218,12 +245,39 @@ export async function deploy({ name, ref = null, clone = null, why = null, home 
   if (!dry) fs.writeFileSync(historyFile(name, home), `${JSON.stringify(kept, null, 2)}\n`);
   step('prune', true, `keeping ${kept.length} release${kept.length === 1 ? '' : 's'}; ${pruned.length} older ${pruned.length === 1 ? 'folder' : 'folders'} ${dry ? 'would be' : ''} removed`);
 
-  const out = { ...base, ok: true, previous, steps, jobs, pruned, kept: kept.map((k) => k.sha) };
+  const out = { ...base, ok: unloaded.length === 0, ...(unloaded.length ? { failed: 'reload', unloaded } : {}), previous, steps, jobs, pruned, kept: kept.map((k) => k.sha) };
   if (!dry) appendLog(home, { at: new Date().toISOString(), ...out });
   return dry ? { ...out, nothing_done: true, message: DRY_MESSAGE } : out;
 }
 
 const DRY_MESSAGE = 'deploy: dry run; nothing was done. Without --dry-run this acts for the person, and other people see it.';
+
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const isLoaded = (launchctl, uid, label) => launchctl(['print', `gui/${uid}/${label}`]).code === 0;
+
+// bootout, wait until launchd has let the label go (up to 10 s), then bootstrap; a bootstrap that fails is retried after a
+// pause, up to three tries. The job counts as reloaded only when launchctl print finds it.
+function reloadJob({ label, file, uid, launchctl, sleep }) {
+  launchctl(['bootout', `gui/${uid}/${label}`]);
+  for (let i = 0; i < 20 && isLoaded(launchctl, uid, label); i++) sleep(500);
+  let error = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const r = launchctl(['bootstrap', `gui/${uid}`, file]);
+    if (isLoaded(launchctl, uid, label)) return { ok: true, attempts: attempt };
+    error = r.stderr.trim() || `launchctl bootstrap exited ${r.code}, and launchctl print does not find it`;
+    if (attempt < 3) sleep(2000);
+  }
+  return { ok: false, error, attempts: 3 };
+}
+
+// Writes a file through a temporary, keeping its mode; nothing is written in a dry run.
+function writeAtomic(file, text, dry) {
+  if (dry) return;
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.chmodSync(tmp, fs.statSync(file).mode & 0o7777);
+  fs.renameSync(tmp, file);
+}
 
 function readJson(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } }
 
@@ -246,6 +300,11 @@ function appendLog(home, rec) {
 export function renderDeploy(r) {
   const L = [];
   if (r.dry_run) L.push(r.message, `Deploying ${r.name} ${r.ref}${r.sha ? ` (${r.sha})` : ''}, step by step:`);
+  if (!r.ok && r.failed === 'reload') {
+    L.push(`✗ ${r.name}: the release is live, but ${r.unloaded.length} job${r.unloaded.length === 1 ? ' is' : 's are'} not loaded. Load ${r.unloaded.length === 1 ? 'it' : 'each'} with:`);
+    for (const u of r.unloaded) L.push(`  ${u.command}   (${u.label})`);
+    return L.join('\n');
+  }
   if (!r.ok) {
     L.push(`✗ ${r.name}: ${r.failed} failed (${r.detail}); the live release is unchanged${r.removed ? ', and the new folder is removed' : ''}.`);
     return L.join('\n');
