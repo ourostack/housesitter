@@ -304,7 +304,7 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
     startedAt: async (pid) => Date.parse((await run('/bin/ps', ['-o', 'lstart=', '-p', String(pid)])).stdout.trim()),
     sql: async (q) => {
       const r = await run('/usr/bin/sqlite3', ['-readonly', '-json', '-cmd', '.timeout 3000', path.join(copilotHome, 'data.db'), q]);
-      if (r.code !== 0) throw new Refusal('action-failed', `the app's database would not open (${r.stderr.trim().slice(0, 160)}): is ${copilotHome} this Mac's Copilot folder?`);
+      if (r.code !== 0) throw new Refusal('action-failed', `could not read the Copilot app's database at ${path.join(copilotHome, 'data.db')} (${r.stderr.trim().slice(0, 160)}). Fix: pass --copilot-home <dir> with this Mac's Copilot folder, or open the app once so it creates the database.`);
       return r.stdout.trim() ? JSON.parse(r.stdout) : [];
     },
     historySize: (id) => { try { return fs.statSync(path.join(copilotHome, 'session-state', id, 'events.jsonl')).size; } catch { return 0; } },
