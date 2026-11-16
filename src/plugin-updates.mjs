@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { appGeneration, family, plan, readState, realDeps, runInProgress, stateDir } from './copilot-app.mjs';
 
 export const PLUGIN_LABEL = 'bot.ouro.housesitter.plugin-update-restart';
@@ -144,6 +145,39 @@ export function changedFixed(loadedRoot, newRoot, name) {
   return out;
 }
 
+// Desk (3.2.198+) knows better than this list: a live Desk follows skill text and hook scripts from the newest release on its
+// own, so only the skill list and descriptions, and the hook registration, are fixed per process. Its
+// changesPerProcess(loadedDir, newDir, name, live) answers that, and the newest fetched Desk carries it. `live` is read from a
+// loaded Desk copy the way Desk's own boot reads it; the oldest loaded copy is the one a restart would replace.
+export function deskLive(loaded) {
+  const desks = loaded.filter((l) => l.name === 'desk').sort((a, b) => cmpVersion(a.version, b.version));
+  if (!desks.length) return { skills: false, hooks: false };
+  const root = desks[0].root;
+  const follows = fs.existsSync(path.join(root, 'hooks', 'lib', 'current-release.cjs'));
+  return { skills: follows && fs.existsSync(path.join(root, 'hooks', 'copilot-skill-current.cjs')), hooks: follows };
+}
+
+// The `changes` for findUpdates: Desk's rule (from the newest fetched Desk release) when it exports one, else changedFixed.
+// A rule that throws or answers something other than a boolean falls back to changedFixed for that comparison.
+export async function changesFor(newest, loaded) {
+  const rel = newest.get('desk');
+  if (!rel) return changedFixed;
+  let rule;
+  try {
+    rule = (await import(pathToFileURL(path.join(rel.dir, 'mcp', 'src', 'runtime', 'plugin-update.js')).href)).changesPerProcess;
+  } catch { return changedFixed; }
+  if (typeof rule !== 'function') return changedFixed;
+  const live = deskLive(loaded);
+  return (loadedRoot, newRoot, name) => {
+    let fixed;
+    try { fixed = rule(loadedRoot, newRoot, name, live); } catch { return changedFixed(loadedRoot, newRoot, name); }
+    if (typeof fixed !== 'boolean') return changedFixed(loadedRoot, newRoot, name);
+    if (!fixed) return [];
+    const files = changedFixed(loadedRoot, newRoot, name);
+    return files.length ? files : [`${name}: a change Desk counts as fixed at a process's start`];
+  };
+}
+
 // What is stale: for each plugin the newest release has a higher version than some loaded copy (every loaded plugin, or only
 // those in `watched`) AND changes something fixed per process. { updates, runtime_only }: updates are
 // [{ name, from (the oldest loaded), to, sha, sessions (processes on an older one), loaded: [versions], changed: [paths] }];
@@ -258,7 +292,9 @@ export async function pass(opts, deps, say = () => {}) {
   const procs = g.main ? await deps.ps() : [];
   const mine = new Set(g.main ? family(procs, g.main.pid, g.dir) : []);
   const loaded = g.main ? loadedPlugins(deps.sessionsDir, (pid) => mine.has(pid)) : [];
-  const { updates, runtime_only: runtimeOnly } = findUpdates(loaded, newestReleases(deps.cacheDir), { watched: opts.watched, changes: deps.changes });
+  const newest = newestReleases(deps.cacheDir);
+  const changes = deps.changes ?? await changesFor(newest, loaded);
+  const { updates, runtime_only: runtimeOnly } = findUpdates(loaded, newest, { watched: opts.watched, changes });
   const state = reconcile(deps.readState?.() || {}, deps, now, out, !opts.dry_run);
   // The gate is only read when it could matter.
   const person = g.main && updates.length ? await deps.person() : null;

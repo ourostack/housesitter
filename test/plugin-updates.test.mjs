@@ -7,6 +7,31 @@ import os from 'node:os';
 import path from 'node:path';
 import { changedFixed, cmpVersion, decide, findUpdates, installPluginAgent, loadedPlugins, newestReleases, pass, pluginPlist, PLUGIN_LABEL, reasonFor } from '../src/plugin-updates.mjs';
 
+const DESK_RULE_STUB = path.join(import.meta.dirname, 'fixtures', 'desk-plugin-update.stub.mjs');
+const HELPER = { 'hooks/lib/current-release.cjs': 'x', 'hooks/copilot-skill-current.cjs': 'x' };
+const SKILL = (desc, body = 'body') => `---\ndescription: ${desc}\n---\n${body}\n`;
+
+// A loaded Desk 3.2.154 (with or without the helper files) and a cached 3.2.167 with the given files; `stub` puts Desk's rule
+// (or a given module source) in the cached release.
+function deskCase({ loaded = {}, next = {}, helper = true, module = null }) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-desk-rule-'));
+  const sessionsDir = path.join(home, 'sessions'), cacheDir = path.join(home, 'cache');
+  const base = { 'skills/s/SKILL.md': SKILL('old'), 'hooks/copilot-hooks.json': '{}', 'hooks/lib/helper.cjs': 'h1' };
+  plugin(path.join(sessionsDir, 'agency-plugin-X101.p101', 'root-0', 'desk'), 'desk', '3.2.154', { files: { ...base, ...(helper ? HELPER : {}), ...loaded } });
+  const entry = path.join(cacheDir, 'entries', 'entry-0');
+  plugin(entry, 'desk', '3.2.167', { files: { ...base, ...HELPER, ...next } });
+  if (module === 'stub') { fs.mkdirSync(path.join(entry, 'mcp', 'src', 'runtime'), { recursive: true }); fs.copyFileSync(DESK_RULE_STUB, path.join(entry, 'mcp', 'src', 'runtime', 'plugin-update.js')); }
+  else if (module) { fs.mkdirSync(path.join(entry, 'mcp', 'src', 'runtime'), { recursive: true }); fs.writeFileSync(path.join(entry, 'mcp', 'src', 'runtime', 'plugin-update.js'), module); }
+  fs.writeFileSync(path.join(cacheDir, 'cache_index.json'), JSON.stringify({ entries: { 'copilot:github:org/repo:plugins/desk@release': { spec: 'copilot:github:org/repo:plugins/desk@release', dir_name: 'entry-0', fetched_at: 1, resolved_sha: SHA } } }));
+  return { sessionsDir, cacheDir };
+}
+
+async function verdict(ag) {
+  const m = mac(ag);
+  const r = await pass({ app: 'Fake Copilot' }, m.deps);
+  return { restart: m.started.length === 1, code: r.decision.code };
+}
+
 const BUNDLE = '/Applications/Fake Copilot.app';
 const SHA = 'a'.repeat(40);
 
@@ -213,4 +238,26 @@ test('a newer release that changes nothing fixed per process is runtime-only: no
   assert.deepEqual([m.started, gate], [[], 0]);
   assert.deepEqual(r.runtime_only.map((u) => [u.name, u.from, u.to]), [['desk', '3.2.154', '3.2.167']]);
   assert.match(m.logs[0], /hold \(runtime-only\): a plugin update \(desk 3\.2\.154 → 3\.2\.167\): the newer release changes nothing a process fixes at its start/);
+});
+
+test("Desk's rule decides with the helper files live: body-only skill and hook script changes are runtime-only, descriptions and hook registration restart", async () => {
+  const body = { 'skills/s/SKILL.md': SKILL('old', 'new body') };
+  assert.deepEqual(await verdict(deskCase({ next: body, module: 'stub' })), { restart: false, code: 'runtime-only' });
+  assert.deepEqual(await verdict(deskCase({ next: { 'skills/s/SKILL.md': SKILL('new words') }, module: 'stub' })), { restart: true, code: 'update' });
+  assert.deepEqual(await verdict(deskCase({ next: { 'hooks/lib/helper.cjs': 'h2' }, module: 'stub' })), { restart: false, code: 'runtime-only' });
+  assert.deepEqual(await verdict(deskCase({ next: { 'hooks/copilot-hooks.json': '{"new":1}' }, module: 'stub' })), { restart: true, code: 'update' });
+});
+
+test("without the helper files the loaded Desk still needs a restart for a skill body change, so Desk's rule says so too", async () => {
+  assert.deepEqual(await verdict(deskCase({ helper: false, next: { 'skills/s/SKILL.md': SKILL('old', 'new body') }, module: 'stub' })), { restart: true, code: 'update' });
+});
+
+test("no Desk module, or a module that throws or does not load, falls back to changedFixed", async () => {
+  const body = { 'skills/s/SKILL.md': SKILL('old', 'new body') };
+  assert.deepEqual(await verdict(deskCase({ next: body, module: null })), { restart: true, code: 'update' }, 'changedFixed counts any skill change');
+  const throws = 'export function changesPerProcess() { throw new Error("boom"); }\n';
+  assert.deepEqual(await verdict(deskCase({ next: body, module: throws })), { restart: true, code: 'update' });
+  assert.deepEqual(await verdict(deskCase({ next: body, module: 'export const x = ;\n' })), { restart: true, code: 'update' }, 'a module that does not load');
+  const runtime = { 'mcp/src/new.js': 'runtime' };
+  assert.deepEqual(await verdict(deskCase({ next: runtime, module: throws })), { restart: false, code: 'runtime-only' }, 'the fallback still ignores Desk runtime');
 });
