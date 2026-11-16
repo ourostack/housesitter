@@ -238,7 +238,7 @@ Housesitter and the agent on the Mac (Ouroboros) talk in free text through two s
 
 ## Restart the Copilot app without losing a session
 
-Housesitter keeps the house: the Mac, and the app as a running process. The app's sessions are [Shepherd](https://github.com/ourostack/shepherd)'s, and Housesitter calls Shepherd's library for safe points, progress and resume messages.
+Housesitter keeps the house: the Mac, the app as a running process, and the launchd jobs kept off (`housesitter hold`). The app's sessions are [Shepherd](https://github.com/ourostack/shepherd)'s, and Housesitter calls Shepherd's library for safe points, progress and resume messages.
 
 A restart of the GitHub Copilot app stops every session in it. `housesitter restart-copilot` does the restart from outside the app, so it survives the app quitting, and brings every session back:
 
@@ -293,6 +293,10 @@ On 15 November the app's window froze twice, it crashed once, and a macOS update
   - A managed Mac can also be forced to update by its management's own deadline. Housesitter cannot hold that back, but the heartbeat records it afterwards (the update installed minutes before the restart, and launchd stopped starting jobs while it prepared), and the sessions are resumed like any other reboot.
 
 `--install-recovery` writes and loads the agents (the heartbeat, the OS-update check, the disk prune, the steer repair and the keep-awake; `--mac <mac>` also installs that Mac's `apple-account` agent); `--uninstall-recovery` removes them; `--heartbeat --dry-run` prints what it sees and changes nothing. `node scripts/rehearse-freeze.mjs` rehearses the whole recovery live against a stand-in process that it hangs with `kill -STOP`: the probe times out, a real sample is taken, SIGTERM is ignored (a stopped process cannot handle it), SIGKILL goes to the exact pid, and the stand-in's sessions are resumed ([the transcript](docs/proof/2026-11-15-freeze-and-reboot/rehearsal.txt)).
+
+## Keep chosen launchd jobs off
+
+A `launchctl disable` in your user domain does not survive a restart: the job comes back at the next boot, and one that keeps crashing the Mac comes back with it. List those labels under `launchd_disabled` in `~/.config/housesitter/config.json` (`{"launchd_disabled": ["com.example.job"]}`) and `housesitter hold` keeps them off: each run disables any listed job that came back on and stops a running one by its PID (a SIGTERM to a process this user owns). `housesitter hold --dry-run` says what it would do, and `--quiet` prints only what it changed. `bot.ouro.housesitter.hold` runs it every hour (and at load), with no model turns; `--install-recovery` loads it with the others. Its output goes to its log, and nothing is sent to the agent. A job that cannot be stopped is reported, and the exit code is 1.
 
 ## Reach this Mac's sessions from another computer
 

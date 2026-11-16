@@ -28,6 +28,7 @@ import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
 import * as Apple from '../src/apple-account.mjs';
 import * as Steer from '../src/steer.mjs';
+import * as Hold from '../src/hold.mjs';
 import * as Arrival from '../src/laptop-arrival.mjs';
 import * as Deploy from '../src/deploy.mjs';
 import { isCommand, previewOf, refusalOf, runHelp } from '../src/cli-table.mjs';
@@ -176,6 +177,25 @@ async function appleAccount() {
   const r = await Apple.attempt({ mac: name, explicit: flag('--now') }, deps);
   if (json) emit(r); else say(`${r.status}${r.why ? `: ${r.why}` : ''}`);
   return ['filled', 'no-dialog', 'left-alone', 'waiting'].includes(r.status) ? 0 : 1;
+}
+
+async function holdCmd() {
+  const quiet = flag('--quiet');
+  const labels = loadConfig().launchd_disabled;
+  if (labels == null) {
+    if (json) emit({ ok: true, rows: [], nothing_done: true, message: Hold.NO_LIST });
+    else if (!quiet) say(Hold.NO_LIST);
+    return 0;
+  }
+  if (!Array.isArray(labels)) { if (json) emit({ ok: false, error: 'launchd_disabled must be a list of labels' }); else console.error('launchd_disabled must be a list of labels'); return 1; }
+  const dry = flag('--dry-run');
+  const rows = Hold.holdDisabled(labels, { dry });
+  const acted = Hold.acted(rows);
+  const failed = rows.some((r) => r.error);
+  if (json) emit({ ok: !failed, dry_run: dry, rows });
+  else if (acted.length) say(Hold.renderHold(rows));
+  else if (!quiet) say(Hold.ALL_OFF(rows.length));
+  return failed ? 1 : 0;
 }
 
 async function steerCmd() {
@@ -468,6 +488,7 @@ async function main() {
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
   if (cmd === 'steer') return steerCmd();
+  if (cmd === 'hold') return holdCmd();
   // The returning Mac is the `peer` in laptop-arrival.json; it has no KVM, so config.json need not list it.
   if (cmd === 'laptop-arrival') return laptopArrival();
 
