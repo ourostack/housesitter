@@ -12,7 +12,7 @@
 //      SIGTERM to the exact pid with --sigterm. Wait until every process of the app has exited.
 //   3. Relaunch: open -a, then wait until the app answers on its local socket.
 //   4. After: every session that was working, was interrupted by the quit, or was named with --also (and is not named with --skip) gets one resume
-//      message through the app's socket, unless something already continued it. Each one must then take a turn.
+//      message through the app's socket, unless something already continued it. Each one must then take a turn. Shepherd's resume() sends and checks them and keeps the record its six-hour health watch follows.
 //
 // A session is left out when it is named with --skip or in ~/.config/housesitter/restart-copilot.json ({ "skip": ["<session id or its first 8+ characters>"] }),
 // which the planned restart and the crash resume share; and a session whose last turn was over 24 h before the stop is never resumed.
@@ -27,15 +27,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFER, READY, ShepherdError, appReady, continuedSince, deps as shepherdDeps, lastReply, sendTo, snapshot, tookTurnSince } from '@ouro.bot/shepherd';
+import { DEFER, READY, RESUME_T, ShepherdError, appReady, deps as shepherdDeps, lastReply, pickTargets, resume, resumeText, sendTo, snapshot, stateDir as shepherdStateDir, tookTurnSince } from '@ouro.bot/shepherd';
 import { Refusal } from './hands.mjs';
 import { which } from './peer-watch.mjs';
 
-// The app's sessions (the socket, the database, the histories) are Shepherd's; these are re-exported for the callers here.
-export { MAX_HISTORY_BYTES, appReady, lastReply, sendTo, snapshot, tookTurnSince } from '@ouro.bot/shepherd';
+// The app's sessions (the socket, the database, the histories) and the resume (its messages, its checks, its record) are Shepherd's; these are re-exported for the callers here.
+export { MAX_HISTORY_BYTES, appReady, lastReply, pickTargets, resumeText, sendTo, snapshot, tookTurnSince } from '@ouro.bot/shepherd';
 
 export const DEFAULT_APP = 'GitHub Copilot';
-export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, grace: 25000, delivery: 120000, verify: 180000, retry: 90000, tries: 3, concurrency: 4, backoff: [2000, 6000, 15000] };
+export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, verify: 180000, ...RESUME_T };
 // A session the app no longer has (archived or deleted on purpose) is not a failed resume.
 export const isGone = (o) => /^gone/.test(o || '');
 export const isDone = (o) => o === 'resumed' || o === 'already continued' || isGone(o);
@@ -95,24 +95,9 @@ export function readSkipConfig(file = configPath(), warn = () => {}) {
 // Every id to leave out: --skip and the shared file, read at each call so an edit counts without a reload.
 export const skipOf = (opts, deps) => [...new Set([...(opts.skip || []), ...(deps.skipList?.() || [])])];
 
-// Who gets a resume message. before/after: [{ id, state: 'busy'|'idle', interrupted }]. A flag the app set before the
-// restart (an old crash nobody resumed) is not this restart's doing and is left alone.
-export function pickTargets({ before, after, also = [] }) {
-  const was = new Map(before.map((s) => [s.id, s]));
-  const now = new Map(after.map((s) => [s.id, s]));
-  const out = [];
-  const add = (id, why) => { if (!out.some((t) => t.id === id)) out.push({ id, why }); };
-  for (const s of before) if (s.state === 'busy' && !s.stale) add(s.id, `was working (${s.why})`);
-  for (const s of after) if (s.interrupted && !s.stale && !was.get(s.id)?.interrupted) add(s.id, 'the app marked it interrupted by the restart');
-  for (const id of also) add(id, 'named with --also');
-  return out.map((t) => ({ ...t, known: now.has(t.id), title: (now.get(t.id) || was.get(t.id))?.title || null }));
-}
-
 export const settleText = ({ by, stallSec, why, what = 'the GitHub Copilot app restarts' }) => `Heads up: ${what}${why ? ` for ${why}` : ''}, as soon as every working session is ready and no later than about ${hhmm(by)}. Reach a safe point now: commit and push, or save to your task notes, anything not yet in git or your session, and start nothing long. When you are there, say so: end your turn with a line that is exactly ${READY}. If stopping your background lanes (subagents, shell jobs) now would lose work you cannot redo from pushed state, answer instead with a line of its own, ${DEFER}: <n> lanes running, about <m> min, and the restart waits for you and asks again when your estimate is up. A session that has not deferred and goes ${stallSec < 120 ? `${stallSec} seconds` : `${Math.round(stallSec / 60)} minutes`} without a step is not waited for. You will be sent a message to resume once the app is back.`;
 export const recheckText = ({ by, why }) => `Recheck for the restart${why ? ` for ${why}` : ''}: are you at a safe point yet? Answer with a line of its own: ${READY}, or ${DEFER}: <n> lanes running, about <m> min again. The restart goes ahead at about ${hhmm(by)} whatever the answers.`;
 export const cancelText = ({ why }) => `The restart${why ? ` for ${why}` : ''} was called off: the app did not quit and is still running, so nothing was stopped. Carry on with what you were doing; there is nothing to resume.`;
-const lanesNote = (l) => (l ? ` You had said ${l.lanes ?? 'some'} lane${l.lanes === 1 ? ' was' : 's were'} still running${l.minutes != null ? ` (about ${l.minutes} min from done)` : ''}: the restart went ahead without waiting longer, so those lanes were stopped; restart them from their pushed state.` : '');
-export const resumeText = ({ at, why, lanes = null }) => `The app was restarted at ${hhmm(at)}${why ? ` for ${why}` : ''}; resume where you left off. Anything that was in flight when it stopped (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish. Your background subagents and shell jobs were stopped; restart any unfinished ones from their pushed state.${lanesNote(lanes)}`;
 
 // When to ask a deferring session again: its own estimate, kept between recheckMin and recheckMax.
 export const recheckAfter = (reply, t) => Math.min(t.recheckMax, Math.max(t.recheckMin, reply.minutes == null ? t.recheckMax / 2 : reply.minutes * 60000));
@@ -173,12 +158,14 @@ function bundledHackamore() {
   try { return [process.execPath, path.join(path.dirname(fileURLToPath(import.meta.resolve('@ouro.bot/hackamore'))), '..', 'bin', 'hackamore.mjs')]; } catch { return null; }
 }
 
-export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), hackamore = null, state = stateDir(), config = configPath(), warn = () => {} } = {}) {
+export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), home = os.homedir(), hackamore = null, state = stateDir(), config = configPath(), warn = () => {} } = {}) {
   const given = hackamore || process.env.HOUSESITTER_HACKAMORE || which('hackamore');
   const cmd = given ? given.trim().split(/\s+/) : bundledHackamore();
   const app = shepherdDeps({ copilotHome });
   return {
     home: copilotHome,
+    // Shepherd's record of a resume (the health watch reads it): its own state folder, under this home.
+    shepherdState: shepherdStateDir(home),
     hackamore: cmd,
     skipList: () => readSkipConfig(config, warn),
     now: () => Date.now(),
@@ -222,9 +209,9 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ha
       clear: () => { try { fs.rmSync(path.join(state, 'owed-resume.json'), { force: true }); } catch { /* none */ } },
     },
     restartState: () => { try { return JSON.parse(fs.readFileSync(path.join(state, 'status.json'), 'utf8')); } catch { return null; } },
-    // Every pass is recorded; one that resumed sessions is also kept in resume-last.json, which a later "already resumed" pass must not replace (the health watch follows it).
+    // Every pass is recorded. Shepherd keeps the resume record (resume-last.json) when a resume sent anything, so a later "already resumed" pass never replaces it.
     heldBack: (list) => { try { fs.mkdirSync(state, { recursive: true }); fs.appendFileSync(path.join(state, 'held-back.log'), list.map((x) => `${JSON.stringify({ at: new Date().toISOString(), ...x })}\n`).join('')); } catch { /* a courtesy */ } },
-    recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); if ((o.resumed || []).length) fs.writeFileSync(path.join(state, 'resume-last.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
+    recorded: (o) => { try { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'resume-only.json'), JSON.stringify(o)); } catch { /* a courtesy */ } },
     appDir: (name) => ['/Applications', '/System/Applications', path.join(os.homedir(), 'Applications')].map((d) => path.join(d, `${name}.app`)).find((p) => fs.existsSync(p)) || null,
   };
 }
@@ -538,53 +525,8 @@ export async function resumeAfter({ before, opts, startedAt, restartedAt, t, lan
   const skip = skipOf(opts, deps);
   const after = await snapshot(deps, undefined, skip);
   const targets = pickTargets({ before, after, also: (opts.also || []).filter((id) => !skip.some((p) => id.startsWith(p))).map((id) => after.find((s) => s.id.startsWith(id))?.id || id) });
-  // A history over the cap is logged, never resumed (not even when named with --also or owed from before).
-  const held = targets.filter((tg) => after.find((s) => s.id === tg.id)?.oversize);
-  for (const tg of held) log(`${short(tg.id)}${tg.title ? ` "${tg.title}"` : ''}: NOT resumed: ${after.find((s) => s.id === tg.id).why}; it needs a hand-off to a fresh session`);
-  if (held.length) deps.heldBack?.(held.map((tg) => ({ id: tg.id, title: tg.title, bytes: after.find((s) => s.id === tg.id).oversize })));
-  const results = await pooled(targets.filter((tg) => !held.includes(tg)), Math.max(1, t.concurrency || 1), async (tg) => {
-    const text = resumeText({ at: restartedAt, why: opts.why, lanes: lanes.get(tg.id) || null });
-    const rec = { id: tg.id, title: tg.title, why: tg.why };
-    if (!tg.known) return { ...rec, outcome: 'gone: the app has no such live session (archived or deleted)' };
-    if (continuedSince(deps.history(tg.id).lines, startedAt)) {
-      // Another resumer got there first: only its turn counts. If none starts, we send our own.
-      for (const end = deps.now() + t.retry; deps.now() < end;) {
-        if (tookTurnSince(deps.history(tg.id).lines, startedAt)) return { ...rec, outcome: 'already continued' };
-        await deps.sleep(3000);
-      }
-      log(`${short(tg.id)}: continued by someone else but no turn followed; sending our own`);
-    }
-    for (let tries = 1; tries <= t.tries; tries++) {
-      const at = deps.now();
-      const s = await sendTo(deps, tg.id, text, t.delivery);
-      log(`${short(tg.id)}: send ${tries}: ${s.ok ? s.reply : `refused (${s.error || s.reply})`}`);
-      if (!s.ok) {
-        rec.last = s.error || s.reply;
-        if (/archived|not found|unknown session/i.test(rec.last)) return { ...rec, outcome: `gone: ${rec.last}` };
-        if (tries < t.tries) await deps.sleep((t.backoff || [])[Math.min(tries - 1, (t.backoff || []).length - 1)] ?? 0);
-        continue;
-      }
-      for (const end = deps.now() + t.retry; deps.now() < end;) {
-        if (tookTurnSince(deps.history(tg.id).lines, at)) return { ...rec, outcome: 'resumed', tries };
-        await deps.sleep(3000);
-      }
-      rec.last = 'delivered but no new turn';
-    }
-    return { ...rec, outcome: `NOT RESUMED after ${t.tries} tries (${rec.last || 'no reply'})` };
-  });
-  const failed = results.filter((r) => !/^(resumed|already continued|gone)/.test(r.outcome));
-  if (failed.length) log(`NOT RESUMED: ${failed.length} of ${results.length} session(s): ${failed.map((r) => `${short(r.id)}${r.title ? ` "${r.title}"` : ''}: ${r.outcome}`).join('; ')}`);
-  return results;
-}
-
-// fn over items, at most `limit` at a time; results in the order of items.
-async function pooled(items, limit, fn) {
-  const out = new Array(items.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    for (let i = next++; i < items.length; i = next++) out[i] = await fn(items[i]);
-  }));
-  return out;
+  // Shepherd sends each resume, holds an over-cap history, checks each turn and writes the record its health watch follows.
+  return resume({ ...deps, state: deps.shepherdState }, { targets, startedAt, restartedAt, why: opts.why, lanes, t, log });
 }
 
 export const stateDir = (home = os.homedir()) => path.join(home, 'Library', 'Caches', 'housesitter', 'restart-copilot');

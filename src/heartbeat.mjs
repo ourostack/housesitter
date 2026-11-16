@@ -122,7 +122,7 @@ export function classifyGap({ from, to, facts }) {
 // ---------- the Mac ----------
 
 export function realHeartbeatDeps({ home = os.homedir(), copilotHome, hackamore, state = stateDir(home), bin, node = process.execPath } = {}) {
-  const base = realDeps({ copilotHome, hackamore, state });
+  const base = realDeps({ home, copilotHome, hackamore, state });
   const file = path.join(state, 'heartbeat.json');
   const diag = path.join(home, 'Library', 'Logs', 'DiagnosticReports');
   const tell = realTell({ state, home });
@@ -390,7 +390,7 @@ export async function settleStall({ st, deps, now = deps.now(), t = HB, out = ()
   const done = rec && Date.parse(rec.at) >= Date.parse(p.to) - 60000;
   if (!done && now - Date.parse(p.to) < t.settleAfterBoot) return p;
   const s = done ? sessionsText(rec.resumed || []) : null;
-  const after = s ? ` Everything came back by launchd, and ${s.text}.` : ' The sessions had not finished resuming when I looked; the health watch is following them.';
+  const after = s ? ` Everything came back by launchd, and ${s.text}.` : ' The sessions had not finished resuming when I looked; Shepherd\'s health watch is following them.';
   await deps.tell(`${p.text}${after}`);
   out(`told once about the ${p.mins} min gap (${p.cause})`);
   return null;

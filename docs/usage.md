@@ -69,7 +69,6 @@ housesitter restart-copilot --heartbeat [--dry-run]   one probe of the app with 
                                          quits the app (SIGTERM, then SIGKILL to exact pids), relaunches it, resumes the working
                                          sessions and tells the agent once. A crash report and no app is relaunched the same way;
                                          a gap of 5+ minutes between its own runs is the Mac stopping, recorded with its cause
-housesitter restart-copilot --health-watch [--dry-run]   one pass of the six-hour watch after any restart, recovery or reboot, no model
                                          turns: for each resumed session, did it take a turn, is it erroring, is it stuck busy; asks
                                          again once, and tells the agent by name only about what stays broken; --status shows it
 housesitter restart-copilot --os-updates [--now] [--window 2-5] [--dry-run]   one pass for a pending macOS update, which macOS installs itself (no admin rights here):
@@ -80,7 +79,7 @@ housesitter restart-copilot --os-updates [--now] [--window 2-5] [--dry-run]   on
                                          stands down. Automatic install off: tells the agent once which setting a person must turn on. --now runs the
                                          safe point at once and waits 20 min for a person to restart the Mac
     [--listing <file>]                   with --os-updates: read a saved softwareupdate -l (rehearse with --dry-run)
-housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the health watch every minute, the OS-update check every 5 min) and a
+housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the OS-update check every 5 min, and the rest) and a
                                          caffeinate that keeps the Mac awake; --mac also installs that Mac's apple-account agent; --uninstall-recovery removes them
 housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                          that runs --resume-only --watch --open-at-login at login and keeps it running
