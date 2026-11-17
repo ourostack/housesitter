@@ -258,6 +258,7 @@ test('coordinators: busy top-level sessions only, "coordinator" titles first, ne
 
 test('the report names what really works, not the deleted mac sessions verbs, and says none when unsure', () => {
   const st = { epoch: { started: '2026-11-17T15:00:00Z', steps: { app: { detail: 'app ok' }, verify: { detail: 'Hub ok' }, sessions: { detail: 'archived 2 finished session(s)' } } } };
+  const stHeld = { epoch: { ...st.epoch, info: { sessionsHeld: ['A', 'B', 'C', 'D'] } } };
   const t = reportText({ facts: { app: '1.4.2' }, st, cfg: {}, coordinators: ['A coordinator'] });
   assert.doesNotMatch(t, /mac sessions|aris-mac-mini:<id>/);
   assert.match(t, /Resume remote session/);
@@ -265,6 +266,7 @@ test('the report names what really works, not the deleted mac sessions verbs, an
   assert.doesNotMatch(t, /sidebar/i);
   assert.match(t, /Talk to: A coordinator\./);
   assert.match(t, /Laptop sessions: archived 2/);
+  assert.match(reportText({ facts: {}, st: stHeld, cfg: {} }), /held back, work not on main yet: A, B, C and 1 more\./);
   assert.match(reportText({ facts: {}, st, cfg: {} }), /none I am certain of/);
 });
 
@@ -272,7 +274,7 @@ test('sessions step: archives only what Shepherd\'s plan marks safe, lists the r
   const r = rig({ hs: 'abc1234', app: '1.4.2', desk: '3.2.200', jobs: [], plists: [], plan: { retire: [{ what: 'archive', id: 'a', name: 'Old job', reason: 'finished', why: 'idle' }, { what: 'hold', id: 'b', name: 'Busy parent', why: 'held while sessions it coordinates still work' }], size: [], errors: [] } });
   await r.tick();
   assert.equal(r.state.epoch.steps.sessions.status, 'done');
-  assert.match(r.state.epoch.steps.sessions.detail, /archived 1 finished session\(s\) \(Old job\).*left alone: Busy parent/);
+  assert.match(r.state.epoch.steps.sessions.detail, /archived 1 finished session\(s\) \(Old job\).*held, not archived: Busy parent/);
   assert.equal(r.L.applied.length, 1);
   assert.match(r.told.at(-1), /Talk to: CIT Pages coordinator\./);
   await r.tick(); await r.tick();
@@ -285,16 +287,29 @@ test('sessions step: no-op when nothing is safe, waits when Shepherd cannot read
   let r = rig({ ...base, plan: { retire: [{ what: 'hold', id: 'b', name: 'P', why: 'w' }], size: [], errors: [] } });
   await r.tick();
   assert.equal(r.L.applied.length, 0);
-  assert.match(r.state.epoch.steps.sessions.detail, /nothing Shepherd can confirm.*left alone: P/);
+  assert.match(r.state.epoch.steps.sessions.detail, /nothing Shepherd can confirm.*held, not archived: P/);
   r = rig({ ...base, plan: { retire: [], size: [], errors: ['app not running'] } });
   await r.tick();
   assert.equal(r.state.epoch.steps.sessions.status, 'wait');
   r = rig({ ...base, plan: { retire: [{ what: 'archive', id: 'a', name: 'Old', why: 'idle' }], size: [{ what: 'flag' }], errors: [] } });
   await r.tick();
   assert.equal(r.L.applied.length, 0);
-  assert.match(r.state.epoch.steps.sessions.detail, /none were archived/);
+  assert.match(r.state.epoch.steps.sessions.detail, /nothing was changed/);
   r = rig(base, { cfg: { ...CFG, laptop_sessions_retire: false } });
   await r.tick();
   assert.equal(r.state.epoch.steps.sessions.detail, 'off in the config');
   assert.ok(describePlan(CFG).some((l) => l.startsWith('sessions:')));
+});
+
+test('sessions step: unlanded work is landed by Shepherd and held, never archived, and the held names reach the one report', async () => {
+  const plan = { retire: [{ what: 'land', id: 'a', name: 'Unpushed job', why: '2 unpushed commit(s) on work: would commit, push and open a pull request' }, { what: 'archive', id: 'c', name: 'Clean job', why: 'idle' }, { what: 'hold', id: 'b', name: 'Odd job', why: 'detached HEAD' }], size: [], errors: [] };
+  const r = rig({ hs: 'abc1234', app: '1.4.2', desk: '3.2.200', jobs: [], plists: [], plan });
+  const real = r.L;
+  await r.tick();
+  const d = r.state.epoch.steps.sessions.detail;
+  assert.equal(real.applied.length, 1);
+  assert.match(d, /archived 1 finished session\(s\) \(Clean job\)/);
+  assert.match(d, /held, not archived: Unpushed job .*; Odd job \(detached HEAD\)/);
+  assert.deepEqual(r.state.epoch.info.sessionsHeld, ['Unpushed job', 'Odd job']);
+  assert.match(r.told.at(-1), /held back, work not on main yet: Unpushed job, Odd job\./);
 });
