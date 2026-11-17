@@ -4,11 +4,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { jobUsable, realArrivalDeps, SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, pickCoordinators, renderPass, reportText } from '../src/laptop-arrival.mjs';
 
-const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, step_tries: 6 };
+const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, macd_poll_ms: 0, macd_poll_tries: 3, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, step_tries: 6 };
 
 // A laptop: what is on it, and what the route can ask of it.
 function laptop(over = {}) {
-  const L = { online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 500 s', restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, plan: { retire: [], size: [], errors: [] }, applied: [], shepherdUpdates: 0, ...over };
+  const L = { online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 500 s', macdRun: { pid: 10, dir: '/Users/x/Library/Application Support/mac-fleet/macd-old' }, restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, plan: { retire: [], size: [], errors: [] }, applied: [], shepherdUpdates: 0, ...over };
   const sh = async (cmd) => {
     if (!L.bus) return { ok: false, noRelay: true, out: '', err: 'no-relay', code: 1 };
     if (cmd === SCRIPTS.facts) return { ok: true, out: `boot=${L.boot}\nnow=2000\nuser=microsoft\napp=${L.app}\napp_pid=1\nnode=v22\nhs=${L.hs || ''}\njobs=${L.jobs.join(',')}\nplists=${L.plists.join(',')}\n`, err: '', code: 0 };
@@ -39,7 +39,12 @@ function rig(over = {}, { miniApp = '1.4.2', cfg = CFG } = {}) {
     hubDevice: async () => (L.online ? { listed: true, online: true, lastSeenAt: 'now' } : { listed: false, online: false }),
     sh,
     gate: async () => parseGate(L.gate),
-    mac: async (argv) => { if (argv[0] === 'macd') return { code: 0, stdout: 'updated', stderr: '' }; throw new Error('unexpected mac call'); },
+    mac: async (argv) => {
+      if (argv[0] !== 'macd') throw new Error('unexpected mac call');
+      if (argv[2] === 'ping') return { code: 0, stdout: `${JSON.stringify({ ok: true, data: L.macdRun })}\n`, stderr: '' };
+      if (L.macdTakes !== false) L.macdRun = { pid: L.macdRun.pid + 1, dir: '/Users/x/Library/Application Support/mac-fleet/macd-new' };
+      return { code: 0, stdout: 'updating to tree abc', stderr: '' };
+    },
     miniVersion: async () => miniApp,
     miniJobRunning: async (l) => l === 'bot.ouro.daemon',
     readState: () => state,
@@ -234,7 +239,7 @@ test('the macd update runs while the app step waits for an idle laptop, and is n
   const r = rig({ app: '1.1.35', desk: '3.2.110', hs: 'abc', gate: 'CLOSED: someone used this Mac 7 s ago (need 90 s idle)' }, { cfg });
   let updates = 0;
   const mac = r.deps.mac;
-  r.deps.mac = async (argv, t) => { if (argv[0] === 'macd') updates += 1; return mac(argv, t); };
+  r.deps.mac = async (argv, t) => { if (argv[2] === 'update') updates += 1; return mac(argv, t); };
   const out = await r.tick();
   assert.notEqual(r.state.epoch.steps.app.status, 'done');
   assert.equal(r.state.epoch.steps.macd.status, 'done');
@@ -243,16 +248,16 @@ test('the macd update runs while the app step waits for an idle laptop, and is n
   assert.equal(updates, 1);
 });
 
-test('macd fails, and is retried, when the laptop does not answer after the update', async () => {
+test('macd is done only when the laptop reports another release folder and pid; an acknowledged update that did not take fails with the observed folder', async () => {
   const cfg = { ...CFG, macd_update: true };
-  const r = rig({ app: '1.1.35', desk: '3.2.110', hs: 'abc', gate: 'CLOSED: someone used this Mac 7 s ago (need 90 s idle)' }, { cfg });
-  const sh = r.deps.sh;
-  let calls = 0;
-  r.deps.sh = async (cmd, t) => (cmd === 'echo alive' && calls++ === 0 ? { ok: false, out: '', err: 'no answer', code: 1 } : sh(cmd, t));
+  const r = rig({ app: '1.1.35', desk: '3.2.110', hs: 'abc', macdTakes: false, gate: 'CLOSED: someone used this Mac 7 s ago (need 90 s idle)' }, { cfg });
   await r.tick();
   assert.equal(r.state.epoch.steps.macd.status, 'fail');
+  assert.match(r.state.epoch.steps.macd.detail, /still runs macd-old \(pid 10\)/);
+  r.L.macdTakes = true;
   await r.tick();
   assert.equal(r.state.epoch.steps.macd.status, 'done');
+  assert.match(r.state.epoch.steps.macd.detail, /macd-new, pid 11/);
 });
 
 test('detect asks the bus only when Hub says online, or when Hub cannot be read and a probe is due', async () => {

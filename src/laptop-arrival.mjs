@@ -15,7 +15,7 @@
 //        sessions     Shepherd's retire duty archives the laptop's own stale sessions whose work it can confirm (it plans first and
 //                     applies only what the plan says is safe; anything unconfirmed stays and is listed; nothing is deleted)
 //        report       the agent is told once, so Ari hears "the laptop is up; you can steer the mini from it"
-//        macd         once the checkout and verify are done (not behind the app step), the laptop's Mac bus daemon is updated to the current tools, and must answer afterwards
+//        macd         once the checkout and verify are done (not behind the app step), the laptop's Mac bus daemon is updated to the current tools, and must then run from a new release folder (proved by ping)
 //   3. A step that cannot finish says why; the agent hears once, after 20 minutes, which step is stuck and why.
 // The route to the laptop is whatever `route` names in the config: `<route...> sh <peer> --timeout <s> '<cmd>'` runs a shell
 // command there and hackamore's `gate check`, run on the laptop through the bus shell, says whether a person is using it. State: arrival.json in the state folder.
@@ -40,6 +40,8 @@ export const DEFAULTS = {
   laptop_sessions_retire: true, // the `sessions` step
   shepherd_git: 'https://github.com/ourostack/shepherd.git',
   macd_update: false,
+  macd_poll_ms: 10000, // after an update: how often, and how many times, the laptop's macd is asked which release it runs
+  macd_poll_tries: 12,
   probe_every_ms: 5 * 60000, // route probe when Hub's service cannot be read
   down_gap_ms: 10 * 60000,
   blocked_tell_ms: 20 * 60000,
@@ -123,6 +125,15 @@ brew upgrade --cask --greedy github-copilot-app 2>&1 | tail -3`,
 
 // Loaded and either running or idle after a clean last exit (interval jobs sit idle between runs).
 export const jobUsable = (text) => /state = running/.test(text) || (/state = (waiting|not running)/.test(text) && /last exit code = 0\b/.test(text));
+
+// `mac macd <peer> ping` prints one JSON line whose data names the daemon's pid and the release folder it runs from.
+export async function macdIdentity(deps, cfg) {
+  try {
+    const r = await deps.mac(['macd', cfg.peer, 'ping'], 30000);
+    const j = parseJsonLine(r.stdout);
+    return j?.data?.pid ? { pid: j.data.pid, dir: j.data.dir || null } : null;
+  } catch { return null; }
+}
 
 const parseJsonLine = (t) => { try { return JSON.parse(String(t).trim().split('\n').filter(Boolean).at(-1)); } catch { return null; } };
 
@@ -419,10 +430,22 @@ export async function pass(opts, deps, say = () => {}) {
   if (['housesitter', 'verify'].every((n) => stepNote(st, n).status === 'done') && stepNote(st, 'macd').status !== 'done' && !opts.dry_run) {
     if (!cfg.macd_update) setStep(st, 'macd', 'done', 'not configured', now);
     else {
+      const before = await macdIdentity(deps, cfg);
       const u = await deps.mac(['macd', cfg.peer, 'update'], 280000);
-      await deps.sleep?.(8000);
-      const p = await deps.sh('echo alive', 20);
-      setStep(st, 'macd', u.code === 0 && p.ok ? 'done' : 'fail', u.code === 0 && p.ok ? 'macd updated and answering' : `macd update ${u.code === 0 ? 'ran but the laptop did not answer after' : 'failed'}: ${(u.stderr || u.stdout).trim().split('\n').at(-1) || p.err}`, now);
+      let r;
+      if (u.code !== 0) r = { status: 'fail', detail: `macd update failed: ${(u.stderr || u.stdout).trim().split('\n').at(-1) || 'no output'}` };
+      else {
+        // An update that was only acknowledged proves nothing: wait until the daemon runs from another folder or process.
+        let now2 = null;
+        for (let i = 0; i < cfg.macd_poll_tries; i++) {
+          await deps.sleep?.(cfg.macd_poll_ms);
+          now2 = await macdIdentity(deps, cfg);
+          if (now2 && (!before || now2.dir !== before.dir || now2.pid !== before.pid)) break;
+          now2 = null;
+        }
+        r = now2 ? { status: 'done', detail: `macd updated and answering (${path.basename(now2.dir || '?')}, pid ${now2.pid})` } : { status: 'fail', detail: `macd update was accepted but the laptop's macd still runs ${before ? `${path.basename(before.dir || '?')} (pid ${before.pid})` : 'unseen'} after ${Math.round(cfg.macd_poll_tries * cfg.macd_poll_ms / 1000)} s` };
+      }
+      setStep(st, 'macd', r.status, r.detail, now);
       out(`macd: ${stepNote(st, 'macd').status}: ${stepNote(st, 'macd').detail}`);
     }
   }
