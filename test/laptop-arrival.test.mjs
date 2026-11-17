@@ -229,6 +229,32 @@ test('the macd update comes last and must leave the laptop answering', async () 
   assert.equal(describePlan(cfg).at(-1).startsWith('macd: update'), true);
 });
 
+test('the macd update runs while the app step waits for an idle laptop, and is not repeated once done', async () => {
+  const cfg = { ...CFG, macd_update: true };
+  const r = rig({ app: '1.1.35', desk: '3.2.110', hs: 'abc', gate: 'CLOSED: someone used this Mac 7 s ago (need 90 s idle)' }, { cfg });
+  let updates = 0;
+  const mac = r.deps.mac;
+  r.deps.mac = async (argv, t) => { if (argv[0] === 'macd') updates += 1; return mac(argv, t); };
+  const out = await r.tick();
+  assert.notEqual(r.state.epoch.steps.app.status, 'done');
+  assert.equal(r.state.epoch.steps.macd.status, 'done');
+  assert.notEqual(out.action, 'complete');
+  await r.tick();
+  assert.equal(updates, 1);
+});
+
+test('macd fails, and is retried, when the laptop does not answer after the update', async () => {
+  const cfg = { ...CFG, macd_update: true };
+  const r = rig({ app: '1.1.35', desk: '3.2.110', hs: 'abc', gate: 'CLOSED: someone used this Mac 7 s ago (need 90 s idle)' }, { cfg });
+  const sh = r.deps.sh;
+  let calls = 0;
+  r.deps.sh = async (cmd, t) => (cmd === 'echo alive' && calls++ === 0 ? { ok: false, out: '', err: 'no answer', code: 1 } : sh(cmd, t));
+  await r.tick();
+  assert.equal(r.state.epoch.steps.macd.status, 'fail');
+  await r.tick();
+  assert.equal(r.state.epoch.steps.macd.status, 'done');
+});
+
 test('detect asks the bus only when Hub says online, or when Hub cannot be read and a probe is due', async () => {
   let probes = 0;
   const deps = { hubDevice: async () => ({ listed: true, online: false, lastSeenAt: 'x' }), sh: async () => { probes += 1; return { ok: true, out: 'boot=1\n' }; } };

@@ -15,7 +15,7 @@
 //        sessions     Shepherd's retire duty archives the laptop's own stale sessions whose work it can confirm (it plans first and
 //                     applies only what the plan says is safe; anything unconfirmed stays and is listed; nothing is deleted)
 //        report       the agent is told once, so Ari hears "the laptop is up; you can steer the mini from it"
-//        macd         last, the laptop's Mac bus daemon is updated to the current tools, and must answer afterwards
+//        macd         once the checkout and verify are done (not behind the app step), the laptop's Mac bus daemon is updated to the current tools, and must answer afterwards
 //   3. A step that cannot finish says why; the agent hears once, after 20 minutes, which step is stuck and why.
 // The route to the laptop is whatever `route` names in the config: `<route...> sh <peer> --timeout <s> '<cmd>'` runs a shell
 // command there and hackamore's `gate check`, run on the laptop through the bus shell, says whether a person is using it. State: arrival.json in the state folder.
@@ -415,6 +415,17 @@ export async function pass(opts, deps, say = () => {}) {
     out(`${name}: ${r.status}: ${r.detail}`);
   }
 
+  // Independent of the app step, which waits for an idle laptop: the bus daemon must not drift meanwhile.
+  if (['housesitter', 'verify'].every((n) => stepNote(st, n).status === 'done') && stepNote(st, 'macd').status !== 'done' && !opts.dry_run) {
+    if (!cfg.macd_update) setStep(st, 'macd', 'done', 'not configured', now);
+    else {
+      const u = await deps.mac(['macd', cfg.peer, 'update'], 280000);
+      await deps.sleep?.(8000);
+      const p = await deps.sh('echo alive', 20);
+      setStep(st, 'macd', u.code === 0 && p.ok ? 'done' : 'fail', u.code === 0 && p.ok ? 'macd updated and answering' : `macd update ${u.code === 0 ? 'ran but the laptop did not answer after' : 'failed'}: ${(u.stderr || u.stdout).trim().split('\n').at(-1) || p.err}`, now);
+      out(`macd: ${stepNote(st, 'macd').status}: ${stepNote(st, 'macd').detail}`);
+    }
+  }
   const core = ['housesitter', 'app', 'retire', 'verify'];
   const allDone = core.every((n) => stepNote(st, n).status === 'done');
   if (allDone && !st.epoch.told.report && !opts.dry_run) {
@@ -425,16 +436,6 @@ export async function pass(opts, deps, say = () => {}) {
     setStep(st, 'report', t.ok ? 'done' : 'fail', t.ok ? 'the agent was told' : `the agent could not be told: ${t.error}`, now);
     out(`report: ${t.ok ? 'told the agent once' : `not delivered (${t.error})`}`);
   } else if (allDone && opts.dry_run) setStep(st, 'report', 'would', 'would tell the agent once', now);
-  if (st.epoch.told.report && stepNote(st, 'macd').status !== 'done' && !opts.dry_run) {
-    if (!cfg.macd_update) setStep(st, 'macd', 'done', 'not configured', now);
-    else {
-      const u = await deps.mac(['macd', cfg.peer, 'update'], 280000);
-      await deps.sleep?.(8000);
-      const p = await deps.sh('echo alive', 20);
-      setStep(st, 'macd', u.code === 0 && p.ok ? 'done' : 'fail', u.code === 0 && p.ok ? 'macd updated and answering' : `macd update ${u.code === 0 ? 'ran but the laptop did not answer after' : 'failed'}: ${(u.stderr || u.stdout).trim().split('\n').at(-1) || p.err}`, now);
-      out(`macd: ${stepNote(st, 'macd').status}: ${stepNote(st, 'macd').detail}`);
-    }
-  }
   if (stepNote(st, 'macd').status === 'done' && st.epoch.told.report) { st.epoch.complete = iso(now); out('every step is done for this arrival'); }
 
   // One message per stuck step, after the grace period.
