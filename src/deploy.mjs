@@ -71,7 +71,10 @@ export function checkRelease(dir, bin) {
     const d = spawnSync(process.execPath, [path.join(dir, bin), 'restart-copilot', '--dry-run'], { cwd: dir, encoding: 'utf8', timeout: 120000 });
     const text = `${d.stdout || ''}\n${d.stderr || ''}`;
     const m = text.match(/ERR_[A-Z_]+|Cannot find module/);
-    if (d.status !== 0 || m) return { ok: false, detail: `restart-copilot --dry-run failed (${m ? m[0] : `exit ${d.status}`}): ${text.trim().slice(0, 200)}` };
+    // Exit 1 with "cannot quit:" and no load error means this process can't reach the app's menu (a launchd job such as
+    // macd's fleet sync has no UI access), which says nothing about the build.
+    const noMenuHere = d.status === 1 && /^\s*\d+\. cannot quit: /m.test(text);
+    if ((d.status !== 0 && !noMenuHere) || m) return { ok: false, detail: `restart-copilot --dry-run failed (${m ? m[0] : `exit ${d.status}`}): ${text.trim().slice(0, 200)}` };
   }
   return { ok: true, version: String(v.stdout).trim() };
 }
