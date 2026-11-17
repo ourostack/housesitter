@@ -59,13 +59,20 @@ const defaultLaunchctl = (a) => {
   return { code: r.status ?? 1, stderr: String(r.stderr || '') };
 };
 
-// Checks the built release: every tracked .mjs parses, and the bin answers --version with exit 0.
+// Checks the built release: every tracked .mjs parses, the bin answers --version with exit 0, and Housesitter's restart-copilot --dry-run plans without a load error.
 export function checkRelease(dir, bin) {
   const files = git(dir, ['ls-files', '--', '*.mjs']).out.split('\n').filter(Boolean);
   const bad = files.filter((f) => spawnSync(process.execPath, ['--check', f], { cwd: dir, encoding: 'utf8' }).status !== 0);
   if (bad.length) return { ok: false, detail: `node --check failed on ${bad.join(', ')}` };
   const v = spawnSync(process.execPath, [path.join(dir, bin), '--version'], { cwd: dir, encoding: 'utf8', timeout: 60000 });
   if (v.status !== 0) return { ok: false, detail: `${bin} --version exited ${v.status}: ${String(v.stderr || '').trim().slice(0, 200)}` };
+  if (path.basename(bin) === 'housesitter.mjs') {
+    // The dry run exits 0 even when hackamore fails to load, so the plan text is checked too.
+    const d = spawnSync(process.execPath, [path.join(dir, bin), 'restart-copilot', '--dry-run'], { cwd: dir, encoding: 'utf8', timeout: 120000 });
+    const text = `${d.stdout || ''}\n${d.stderr || ''}`;
+    const m = text.match(/ERR_[A-Z_]+|Cannot find module/);
+    if (d.status !== 0 || m) return { ok: false, detail: `restart-copilot --dry-run failed (${m ? m[0] : `exit ${d.status}`}): ${text.trim().slice(0, 200)}` };
+  }
   return { ok: true, version: String(v.stdout).trim() };
 }
 

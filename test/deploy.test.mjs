@@ -18,7 +18,7 @@ const git = (cwd, args) => {
 };
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-const binSource = (version, broken = false) => (broken ? 'const x = ;\n' : `if (process.argv.includes('--version')) { console.log('${version}'); process.exit(0); }\n`);
+const binSource = (version, broken = false, dryBroken = false) => (broken ? 'const x = ;\n' : `if (process.argv.includes('--version')) { console.log('${version}'); process.exit(0); }\n${dryBroken ? "if (process.argv.includes('--dry-run')) console.log('cannot quit: hackamore failed: ERR_MODULE_NOT_FOUND');\n" : ''}`);
 
 // A remote that publishes releases as tags, and a clone of it where the Mac's job used to run from.
 function fixture() {
@@ -29,9 +29,9 @@ function fixture() {
   fs.mkdirSync(remote);
   git(remote, ['init', '-q', '-b', 'main']);
   const f = { base, remote, home, clone, agents: path.join(home, 'Library', 'LaunchAgents'), root: path.join(releasesRoot(home), 'housesitter') };
-  f.publish = (version, { broken = false } = {}) => {
+  f.publish = (version, { broken = false, dryBroken = false } = {}) => {
     fs.mkdirSync(path.join(remote, 'bin'), { recursive: true });
-    fs.writeFileSync(path.join(remote, 'bin', 'housesitter.mjs'), binSource(version, broken));
+    fs.writeFileSync(path.join(remote, 'bin', 'housesitter.mjs'), binSource(version, broken, dryBroken));
     fs.writeFileSync(path.join(remote, 'bin', 'shepherd.mjs'), binSource(version));
     fs.writeFileSync(path.join(remote, 'package.json'), `${JSON.stringify({ name: 'fixture', version, private: true, type: 'module' })}\n`);
     git(remote, ['add', '-A']);
@@ -117,6 +117,21 @@ test('a failed check leaves current on the old release, and removes only the fol
   assert.equal(liveTarget(f), before, 'current still points at the old release');
   assert.deepEqual(folders(f), [path.basename(before)], 'only the new folder was removed');
   assert.ok(lc.calls.every((c) => c.startsWith('print')), 'launchd was not touched');
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('a release whose restart-copilot --dry-run fails is refused and not swapped', async () => {
+  const f = fixture();
+  await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const before = liveTarget(f);
+  f.publish('0.11.0', { dryBroken: true });
+  const lc = fakeLaunchctl();
+  const r = await deploy({ name: 'housesitter', ref: 'v0.11.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc.fn });
+  assert.equal(r.ok, false);
+  assert.equal(r.failed, 'check');
+  assert.match(JSON.stringify(r), /restart-copilot --dry-run failed/);
+  assert.equal(liveTarget(f), before);
+  assert.ok(lc.calls.every((c) => c.startsWith('print')));
   fs.rmSync(f.base, { recursive: true, force: true });
 });
 
