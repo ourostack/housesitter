@@ -158,9 +158,20 @@ function bundledHackamore() {
   try { return [process.execPath, path.join(path.dirname(fileURLToPath(import.meta.resolve('@ouro.bot/hackamore'))), '..', 'bin', 'hackamore.mjs')]; } catch { return null; }
 }
 
+// A hackamore command as an argv. An array or a JSON array is taken as is; a string naming a file is one program (its
+// path may hold spaces); any other string is a command line ("npx hackamore") split on whitespace.
+export function hackamoreArgv(given) {
+  if (!given) return null;
+  if (Array.isArray(given)) return given.length ? given.map(String) : null;
+  const s = String(given).trim();
+  if (s.startsWith('[')) { try { const a = JSON.parse(s); if (Array.isArray(a) && a.length && a.every((x) => typeof x === 'string')) return a; } catch { /* a plain string */ } }
+  if (fs.existsSync(s)) return [s];
+  return s.split(/\s+/);
+}
+
 export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), home = os.homedir(), hackamore = null, state = stateDir(), config = configPath(), warn = () => {} } = {}) {
   const given = hackamore || process.env.HOUSESITTER_HACKAMORE || which('hackamore');
-  const cmd = given ? given.trim().split(/\s+/) : bundledHackamore();
+  const cmd = hackamoreArgv(given) || bundledHackamore();
   const app = shepherdDeps({ copilotHome });
   return {
     home: copilotHome,
