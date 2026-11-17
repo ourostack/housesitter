@@ -12,6 +12,8 @@
 //        retire       the jobs the mini has taken over are unloaded and their plists moved aside (never deleted)
 //        verify       the laptop's Hub daemon is connected, tracks every session and is under launchd; it can read this
 //                     Mac's device and sessions in Hub's service; the app and Desk are at their floor
+//        sessions     Shepherd's retire duty archives the laptop's own stale sessions whose work it can confirm (it plans first and
+//                     applies only what the plan says is safe; anything unconfirmed stays and is listed; nothing is deleted)
 //        report       the agent is told once, so Ari hears "the laptop is up; you can steer the mini from it"
 //        macd         last, the laptop's Mac bus daemon is updated to the current tools, and must answer afterwards
 //   3. A step that cannot finish says why; the agent hears once, after 20 minutes, which step is stuck and why.
@@ -35,6 +37,8 @@ export const DEFAULTS = {
   min_desk: '3.2.154',
   housesitter_git: 'https://github.com/ourostack/housesitter.git',
   retire: [], // [{ label, requires_local_job? }]
+  laptop_sessions_retire: true, // the `sessions` step
+  shepherd_git: 'https://github.com/ourostack/shepherd.git',
   macd_update: false,
   probe_every_ms: 5 * 60000, // route probe when Hub's service cannot be read
   down_gap_ms: 10 * 60000,
@@ -64,6 +68,8 @@ export function parseGate(text) {
 const PATH_PREFIX = 'export PATH="$(ls -d "$HOME"/.nvm/versions/node/v22* 2>/dev/null | sort -V | tail -1)/bin:$HOME/.config/agency/CurrentVersion:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"';
 const APP = '/Applications/GitHub Copilot.app';
 const HS = '$HOME/code/housesitter';
+const SH = '$HOME/code/shepherd';
+const RETIRE_CFG = '$HOME/.config/housesitter/laptop-retire.json';
 
 export const SCRIPTS = {
   facts: `${PATH_PREFIX}
@@ -95,13 +101,26 @@ if [ -f "$HOME/Library/LaunchAgents/${label}.plist" ]; then mkdir -p "$HOME/Libr
 echo "retired=${label}"`,
   verify: (peer) => `${PATH_PREFIX}
 cd ${HS} && node bin/housesitter.mjs steer --repair --no-sessions ${peer ? `--peer '${peer.replace(/'/g, '')}' ` : ''}--json 2>/dev/null | tail -1`,
+  shepherd: (git) => `${PATH_PREFIX}
+set -e
+mkdir -p "$HOME/code"
+if [ -d ${SH}/.git ]; then before=$(git -C ${SH} rev-parse HEAD); git -C ${SH} fetch -q origin && git -C ${SH} merge --ff-only -q origin/main; else before=none; git clone -q ${git} ${SH}; fi
+cd ${SH}
+if [ ! -d node_modules ] || [ "$before" != "$(git rev-parse HEAD)" ]; then npm install --omit=dev --no-audit --no-fund --silent; fi
+echo "sh=$(git rev-parse --short HEAD)"`,
+  // The retire config is housesitter's own file, so Shepherd's own retire.json on the laptop is never touched.
+  retirePlan: `${PATH_PREFIX}
+mkdir -p "$HOME/.config/housesitter" && [ -f "${RETIRE_CFG}" ] || printf '{"enabled":true}\n' > "${RETIRE_CFG}"
+cd ${SH} && SHEPHERD_RETIRE_CONFIG="${RETIRE_CFG}" node bin/shepherd.mjs retire plan --json 2>/dev/null | tail -1`,
+  retireApply: `${PATH_PREFIX}
+cd ${SH} && SHEPHERD_RETIRE_CONFIG="${RETIRE_CFG}" node bin/shepherd.mjs retire apply --json 2>/dev/null | tail -1`,
   appUpgrade: `${PATH_PREFIX}
 brew upgrade --cask --greedy github-copilot-app 2>&1 | tail -3`,
 };
 
 const parseJsonLine = (t) => { try { return JSON.parse(String(t).trim().split('\n').filter(Boolean).at(-1)); } catch { return null; } };
 
-export const STEPS = ['housesitter', 'app', 'retire', 'verify', 'report', 'macd'];
+export const STEPS = ['housesitter', 'app', 'retire', 'verify', 'sessions', 'report', 'macd'];
 
 export function describePlan(cfg) {
   return [
@@ -110,6 +129,7 @@ export function describePlan(cfg) {
     `app: the Copilot app at least ${cfg.target_app === 'mini' ? "this Mac's version" : cfg.target_app} and Desk at least ${cfg.min_desk}; otherwise restart it with its sessions saved and resumed (waits while someone uses the laptop)`,
     `retire: ${cfg.retire.length ? `unload and move aside ${cfg.retire.map((r) => r.label).join(', ')}` : 'nothing configured'}`,
     `verify: the laptop's Hub daemon connected, tracking every session, under launchd; it can read this Mac's device in Hub`,
+    `sessions: ${cfg.laptop_sessions_retire === false ? 'off' : "run Shepherd on the laptop and archive its stale local sessions only where it confirms the work is done (plan first; the rest stay and are listed; nothing deleted)"}`,
     `report: tell the agent once that the laptop is up and the Mac can be steered from it`,
     `macd: ${cfg.macd_update ? "update the laptop's Mac bus daemon, then require it to answer" : 'not configured'}`,
   ];
@@ -165,6 +185,11 @@ export function realArrivalDeps(cfg, { home = os.homedir(), state = stateDir(), 
     readState: () => readJson(path.join(state, 'arrival.json'), null),
     writeState: (o) => writeJson(path.join(state, 'arrival.json'), o),
     log: (line) => { try { fs.mkdirSync(state, { recursive: true }); const f = path.join(state, 'arrival.log'); if (fs.existsSync(f) && fs.statSync(f).size > 1 << 20) fs.renameSync(f, `${f}.1`); fs.appendFileSync(f, `${line}\n`); } catch { /* a courtesy */ } },
+    liveSessions: async () => {
+      const bin = path.join(home, 'Library', 'Application Support', 'housesitter', 'releases', 'shepherd', 'current', 'bin', 'shepherd.mjs');
+      const r = await exec(process.execPath, [bin, 'sessions', '--json'], 60000, env);
+      return r.code === 0 ? JSON.parse(r.stdout).sessions : [];
+    },
     tell: realTell({ state, home }),
   };
 }
@@ -278,12 +303,49 @@ async function stepVerify({ cfg, deps, facts }) {
   return { status: 'done', detail: `${hub}; ${seen}; ${remote}`, info: { remote, peer: j.peer || null } };
 }
 
-export function reportText({ facts, st, cfg }) {
+async function stepSessions({ cfg, deps, opts }) {
+  if (cfg.laptop_sessions_retire === false) return { status: 'done', detail: 'off in the config' };
+  if (opts.dry_run) return { status: 'would', detail: 'would bring Shepherd up to date on the laptop, plan its retire duty, and apply only what the plan marks safe (the rest stays, listed)' };
+  const e = await deps.sh(SCRIPTS.shepherd(cfg.shepherd_git), 280);
+  if (!e.ok) return { status: 'fail', detail: `Shepherd's checkout on the laptop did not update: ${e.err || e.out.trim().split('\n').at(-1)}` };
+  const plan = parseJsonLine((await deps.sh(SCRIPTS.retirePlan, 120)).out);
+  if (!plan || !Array.isArray(plan.retire)) return { status: 'fail', detail: "Shepherd's retire plan gave no answer on the laptop" };
+  if (plan.errors?.length) return { status: 'wait', detail: `Shepherd could not read the laptop's sessions yet (${plan.errors[0]})` };
+  const safe = plan.retire.filter((x) => x.what === 'archive');
+  const left = plan.retire.filter((x) => x.what !== 'archive').map((x) => `${x.name || x.id} (${x.why})`);
+  const note = `${left.length ? `; left alone: ${left.join('; ')}` : ''}${plan.size?.length ? `; ${plan.size.length} oversized-history action(s) belong to Shepherd's size watch, not run here` : ''}`;
+  if (!safe.length) return { status: 'done', detail: `nothing Shepherd can confirm as finished${note}` };
+  // Applying also runs the size watch, which can message and archive; with anything pending there, only the plan is reported.
+  if (plan.size?.length) return { status: 'done', detail: `${safe.length} session(s) are safe to archive but Shepherd's size watch also has actions pending, so none were archived${note}` };
+  const applied = parseJsonLine((await deps.sh(SCRIPTS.retireApply, 120)).out);
+  if (!applied || !Array.isArray(applied.retire)) return { status: 'fail', detail: "Shepherd's retire apply gave no answer on the laptop" };
+  const planned = new Set(safe.map((x) => x.id));
+  const did = applied.retire.filter((x) => x.what === 'archive' && x.done);
+  const extra = did.filter((x) => !planned.has(x.id)).length;
+  if (applied.errors?.length) return { status: 'wait', detail: `archived ${did.length}; Shepherd reported: ${applied.errors[0]}` };
+  return { status: 'done', detail: `archived ${did.length} finished session(s) (${did.map((x) => x.name || x.id).slice(0, 5).join(', ')})${extra ? `; ${extra} were not in the earlier plan` : ''}${note}` };
+}
+
+const EXCLUDED_TITLE = /drain|helper|caretaker|audit|session title/i;
+
+// The mini's live coordinators, from `shepherd sessions --json`: top-level (nothing coordinates or created it), busy right now,
+// and not a drain or helper by title. A title with "coordinator" in it wins; otherwise the busy ones. At most three, newest first.
+export function pickCoordinators(sessions, max = 3) {
+  const live = (Array.isArray(sessions) ? sessions : [])
+    .filter((x) => x && x.name && x.activity?.status === 'busy' && !x.coordinator_session_id && !x.creator_session_id && !EXCLUDED_TITLE.test(x.name))
+    .sort((a, b) => String(b.activity.last_activity || '').localeCompare(String(a.activity.last_activity || '')));
+  const named = live.filter((x) => /coordinator/i.test(x.name));
+  return (named.length ? named : live).slice(0, max).map((x) => x.name.trim());
+}
+
+export function reportText({ facts, st, cfg, coordinators = [] }) {
   const s = st.epoch.steps;
   const lines = [`Housesitter: the laptop is up (arrived ${hhmm(Date.parse(st.epoch.started))}); you can steer the mini from it.`];
   lines.push(`Laptop: Copilot app ${facts.app || '?'}, ${s.app?.detail || 'app checked'}. ${s.verify?.detail || ''}`);
   if (s.retire?.detail && !/nothing|already/.test(s.retire.detail)) lines.push(`On the laptop: ${s.retire.detail}.`);
-  lines.push('From the laptop Ari can: read and answer the mini\'s sessions in Agency Hub and, for sessions with Remote control on, the Copilot app (Resume remote session); `mac sessions send|tail aris-mac-mini:<id>` steers any session; `mac session aris-mac-mini open <cwd> <prompt>` starts one; Ouroboros on Teams works from anywhere.');
+  if (s.sessions?.detail && !/^(off|nothing)/.test(s.sessions.detail)) lines.push(`Laptop sessions: ${s.sessions.detail}.`);
+  lines.push('All your sessions live on the mini. On the laptop, open them in the Copilot app under Quick Open > "Resume remote session" (Remote control, default github.com account arimendelow), or read and steer them through Agency Hub (`housesitter steer --peer Aris-Mac-Mini`); Ouroboros on Teams works from anywhere.');
+  lines.push(coordinators.length ? `Talk to: ${coordinators.join('; ')}.` : 'Live coordinators to talk to: none I am certain of right now.');
   return lines.join('\n');
 }
 
@@ -326,7 +388,7 @@ export async function pass(opts, deps, say = () => {}) {
   if (st.epoch.complete) { if (!opts.dry_run) deps.writeState(st); return { action: 'idle', state: st }; }
 
   const ctx = { cfg, deps, st, now, facts, opts };
-  const run = { housesitter: stepHousesitter, app: stepApp, retire: stepRetire, verify: stepVerify };
+  const run = { housesitter: stepHousesitter, app: stepApp, retire: stepRetire, verify: stepVerify, sessions: stepSessions };
   for (const name of STEPS) {
     const prev = stepNote(st, name);
     if (prev.status === 'done') continue;
@@ -343,7 +405,9 @@ export async function pass(opts, deps, say = () => {}) {
   const core = ['housesitter', 'app', 'retire', 'verify'];
   const allDone = core.every((n) => stepNote(st, n).status === 'done');
   if (allDone && !st.epoch.told.report && !opts.dry_run) {
-    const t = await deps.tell(reportText({ facts, st, cfg }));
+    let coordinators = [];
+    try { coordinators = pickCoordinators(await deps.liveSessions?.()); } catch { /* the line then says none */ }
+    const t = await deps.tell(reportText({ facts, st, cfg, coordinators }));
     st.epoch.told.report = t.ok ? iso(now) : null;
     setStep(st, 'report', t.ok ? 'done' : 'fail', t.ok ? 'the agent was told' : `the agent could not be told: ${t.error}`, now);
     out(`report: ${t.ok ? 'told the agent once' : `not delivered (${t.error})`}`);

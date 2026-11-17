@@ -2,23 +2,26 @@
 // nothing. The laptop here is a small simulation behind the route's `sh` and `gate`; the always-on Mac's own parts are fakes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, renderPass } from '../src/laptop-arrival.mjs';
+import { SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, pickCoordinators, renderPass, reportText } from '../src/laptop-arrival.mjs';
 
 const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, step_tries: 6 };
 
 // A laptop: what is on it, and what the route can ask of it.
 function laptop(over = {}) {
-  const L = { online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 500 s', restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, ...over };
+  const L = { online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 500 s', restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, plan: { retire: [], size: [], errors: [] }, applied: [], shepherdUpdates: 0, ...over };
   const sh = async (cmd) => {
     if (!L.bus) return { ok: false, noRelay: true, out: '', err: 'no-relay', code: 1 };
     if (cmd === SCRIPTS.facts) return { ok: true, out: `boot=${L.boot}\nnow=2000\nuser=microsoft\napp=${L.app}\napp_pid=1\nnode=v22\nhs=${L.hs || ''}\njobs=${L.jobs.join(',')}\nplists=${L.plists.join(',')}\n`, err: '', code: 0 };
     if (cmd.includes('rev-parse --short HEAD 2>/dev/null; true')) return { ok: true, out: `${L.hs || ''}\n`, err: '', code: 0 };
+    if (cmd.includes('git clone -q') && cmd.includes('/code/shepherd')) { L.shepherdUpdates += 1; return { ok: true, out: 'sh=def5678\n', err: '', code: 0 }; }
     if (cmd.includes('git clone')) { L.hs = 'abc1234'; return { ok: true, out: 'hs=abc1234\n', err: '', code: 0 }; }
     if (cmd === SCRIPTS.restartStatus) return { ok: true, out: JSON.stringify(L.restart || { state: 'none' }), err: '', code: 0 };
     if (cmd === SCRIPTS.plugins) return { ok: true, out: JSON.stringify({ decision: { action: 'hold' }, updates: [], loaded: [{ name: 'desk', version: L.desk }] }), err: '', code: 0 };
     if (cmd.includes('restart-copilot --resume --detach')) { L.restarts.push(cmd.includes('--sigterm') ? 'sigterm' : 'menu'); L.restart = { state: 'running', step: 'quit sent' }; return { ok: true, out: 'started', err: '', code: 0 }; }
     if (cmd.includes('launchctl bootout')) { const lab = cmd.match(/retired=([^"\n]+)/)[1]; L.jobs = L.jobs.filter((j) => j !== lab); L.plists = L.plists.filter((j) => j !== lab); L.retired.push(lab); return { ok: true, out: `retired=${lab}\n`, err: '', code: 0 }; }
     if (cmd.includes('steer --repair')) return { ok: true, out: JSON.stringify({ ok: L.hubOk, problems: L.hubOk ? [] : ['hub-disconnected'], remote: { default: 'on' }, peer: { name: 'Aris-Mac-Mini', online: L.peerOnline, activeSessionCount: 120 } }), err: '', code: 0 };
+    if (cmd === SCRIPTS.retirePlan) return { ok: true, out: `noise\n${JSON.stringify(L.plan)}\n`, err: '', code: 0 };
+    if (cmd === SCRIPTS.retireApply) { L.applied.push(1); return { ok: true, out: JSON.stringify({ retire: L.plan.retire.map((x) => ({ ...x, done: x.what === 'archive' })), size: [], errors: [] }), err: '', code: 0 }; }
     if (cmd.includes('brew upgrade')) { L.upgrades += 1; return { ok: true, out: 'upgraded', err: '', code: 0 }; }
     if (cmd === 'echo alive') return { ok: true, out: 'alive\n', err: '', code: 0 };
     throw new Error(`unexpected command: ${cmd.slice(0, 80)}`);
@@ -42,6 +45,7 @@ function rig(over = {}, { miniApp = '1.4.2', cfg = CFG } = {}) {
     readState: () => state,
     writeState: (s) => { state = JSON.parse(JSON.stringify(s)); },
     sleep: async () => {},
+    liveSessions: async () => [{ name: 'CIT Pages coordinator', activity: { status: 'busy', last_activity: '2026-11-17T10:00:00Z' } }],
     tell: async (t) => { told.push(t); return { ok: true }; },
   };
   const tick = (ms = 60000, opts = {}) => { now += ms; return pass({ cfg, ...opts }, deps); };
@@ -69,7 +73,7 @@ test('offline: nothing is touched, and the plan names every step it would run on
   const r = rig({ online: false });
   const out = await r.tick();
   assert.equal(out.action, 'down');
-  assert.equal(out.plan.length, 7);
+  assert.equal(out.plan.length, 8);
   assert.match(renderPass(out), /when it arrives, in order/);
   assert.deepEqual(r.told, []);
   assert.deepEqual(r.L.restarts, []);
@@ -239,4 +243,58 @@ test('detect asks the bus only when Hub says online, or when Hub cannot be read 
 
 test('a missing config names the fields it needs and where to read how', () => {
   assert.throws(() => loadConfig('/nonexistent/laptop-arrival.json'), (e) => /no config at \/nonexistent\/laptop-arrival\.json/.test(e.message) && /"peer"/.test(e.message) && /"route"/.test(e.message) && /housesitter laptop-arrival --help/.test(e.message));
+});
+
+const S = (name, over = {}) => ({ name, activity: { status: 'busy', last_activity: '2026-11-17T10:00:00Z' }, ...over });
+
+test('coordinators: busy top-level sessions only, "coordinator" titles first, never drains or children, none when unsure', () => {
+  const list = [S('Tandem coordinator', { activity: { status: 'busy', last_activity: '2026-11-17T10:05:00Z' } }), S('CIT Pages coordinator'), S('Ouro UI issue drain 2'), S('Moody\'s next steps query'), S('Child coordinator', { coordinator_session_id: 'x' }), S('Idle coordinator', { activity: { status: 'idle' } })];
+  assert.deepEqual(pickCoordinators(list), ['Tandem coordinator', 'CIT Pages coordinator']);
+  assert.deepEqual(pickCoordinators([S('Moody\'s next steps query'), S('Helper: lint'), S('Ouro UI issue drain 2')]), ["Moody's next steps query"]);
+  assert.deepEqual(pickCoordinators([S('a coordinator 1'), S('b coordinator 2'), S('c coordinator 3'), S('d coordinator 4')]).length, 3);
+  assert.deepEqual(pickCoordinators([S('x drain'), S('y', { activity: { status: 'idle' } })]), []);
+  assert.deepEqual(pickCoordinators(undefined), []);
+});
+
+test('the report names what really works, not the deleted mac sessions verbs, and says none when unsure', () => {
+  const st = { epoch: { started: '2026-11-17T15:00:00Z', steps: { app: { detail: 'app ok' }, verify: { detail: 'Hub ok' }, sessions: { detail: 'archived 2 finished session(s)' } } } };
+  const t = reportText({ facts: { app: '1.4.2' }, st, cfg: {}, coordinators: ['A coordinator'] });
+  assert.doesNotMatch(t, /mac sessions|aris-mac-mini:<id>/);
+  assert.match(t, /Resume remote session/);
+  assert.match(t, /housesitter steer --peer Aris-Mac-Mini/);
+  assert.doesNotMatch(t, /sidebar/i);
+  assert.match(t, /Talk to: A coordinator\./);
+  assert.match(t, /Laptop sessions: archived 2/);
+  assert.match(reportText({ facts: {}, st, cfg: {} }), /none I am certain of/);
+});
+
+test('sessions step: archives only what Shepherd\'s plan marks safe, lists the rest, is not repeated, and the report names coordinators', async () => {
+  const r = rig({ hs: 'abc1234', app: '1.4.2', desk: '3.2.200', jobs: [], plists: [], plan: { retire: [{ what: 'archive', id: 'a', name: 'Old job', reason: 'finished', why: 'idle' }, { what: 'hold', id: 'b', name: 'Busy parent', why: 'held while sessions it coordinates still work' }], size: [], errors: [] } });
+  await r.tick();
+  assert.equal(r.state.epoch.steps.sessions.status, 'done');
+  assert.match(r.state.epoch.steps.sessions.detail, /archived 1 finished session\(s\) \(Old job\).*left alone: Busy parent/);
+  assert.equal(r.L.applied.length, 1);
+  assert.match(r.told.at(-1), /Talk to: CIT Pages coordinator\./);
+  await r.tick(); await r.tick();
+  assert.equal(r.L.applied.length, 1);
+  assert.equal(r.L.shepherdUpdates, 1);
+});
+
+test('sessions step: no-op when nothing is safe, waits when Shepherd cannot read, holds back with size actions, off by config', async () => {
+  const base = { hs: 'abc1234', app: '1.4.2', desk: '3.2.200', jobs: [], plists: [] };
+  let r = rig({ ...base, plan: { retire: [{ what: 'hold', id: 'b', name: 'P', why: 'w' }], size: [], errors: [] } });
+  await r.tick();
+  assert.equal(r.L.applied.length, 0);
+  assert.match(r.state.epoch.steps.sessions.detail, /nothing Shepherd can confirm.*left alone: P/);
+  r = rig({ ...base, plan: { retire: [], size: [], errors: ['app not running'] } });
+  await r.tick();
+  assert.equal(r.state.epoch.steps.sessions.status, 'wait');
+  r = rig({ ...base, plan: { retire: [{ what: 'archive', id: 'a', name: 'Old', why: 'idle' }], size: [{ what: 'flag' }], errors: [] } });
+  await r.tick();
+  assert.equal(r.L.applied.length, 0);
+  assert.match(r.state.epoch.steps.sessions.detail, /none were archived/);
+  r = rig(base, { cfg: { ...CFG, laptop_sessions_retire: false } });
+  await r.tick();
+  assert.equal(r.state.epoch.steps.sessions.detail, 'off in the config');
+  assert.ok(describePlan(CFG).some((l) => l.startsWith('sessions:')));
 });
