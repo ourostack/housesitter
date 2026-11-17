@@ -1,8 +1,7 @@
 // Housesitter's command table, declared with Ouro AX's kit. The kit checks every call against it: the words and flags a
-// command takes, the --why an action other people see needs, and the one-line refusals. bin/housesitter.mjs still runs
-// each command through its own switch, after the kit has checked the call; a handler moves to returning data one at a
-// time. `effect` says who sees a command: "others" when it acts on the Mac or sends a message, "private" when only the
-// person sees it.
+// command takes, the --why an action other people see needs, and the one-line refusals. bin/housesitter.mjs runs each
+// command through its own switch, reading the flags and words the kit parsed. `effect` says who sees a command:
+// "others" when it acts on the Mac or sends a message, "private" when only the person sees it.
 import { defineCli, defineCommand, parse } from '../lib/ouro-ui/registry/ouro/ax/command.ts';
 import { BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE } from '../lib/ouro-ui/registry/ouro/ax/exit-codes.ts';
 import { runCli } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
@@ -14,10 +13,13 @@ const cmd = (def) => defineCommand(def);
 
 // Every flag the commands read. A flag a command does not read is still unknown to the kit: flags are checked across
 // the tool, not per command, until a command declares its own.
-const VALUE_FLAGS = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--also', '--skip', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--floor-gib', '--window', '--listing', '--peer', '--config', '--grid', '--address', '--ref', '--clone'];
-const SWITCH_FLAGS = ['--again', '--all-frames', '--api-open', '--attended', '--attended-test', '--base64', '--detach', '--disk-prune', '--double', '--end', '--expect-reboot', '--fake', '--fast', '--filevault', '--heartbeat', '--hold', '--i-see-the-field', '--install', '--install-agent', '--install-keeper', '--install-plugin-updates', '--install-recovery', '--list', '--no-sessions', '--now', '--once', '--open-at-login', '--os-updates', '--outbox', '--peek', '--plain', '--plugin-updates', '--private', '--quiet', '--repair', '--resume', '--resume-only', '--right', '--sigterm', '--status', '--test', '--this-mac', '--trial', '--uninstall', '--uninstall-agent', '--uninstall-plugin-updates', '--uninstall-recovery', '--version', '--watch', '--yes'];
+const VALUE_FLAGS = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--floor-gib', '--window', '--listing', '--peer', '--config', '--ref', '--clone'];
+const SWITCH_FLAGS = ['--again', '--all-frames', '--api-open', '--attended', '--attended-test', '--base64', '--detach', '--disk-prune', '--double', '--end', '--expect-reboot', '--fake', '--fast', '--filevault', '--grid', '--heartbeat', '--hold', '--i-see-the-field', '--install', '--install-agent', '--install-keeper', '--install-plugin-updates', '--install-recovery', '--list', '--no-sessions', '--now', '--once', '--open-at-login', '--os-updates', '--outbox', '--peek', '--plain', '--plugin-updates', '--private', '--quiet', '--repair', '--resume', '--resume-only', '--right', '--sigterm', '--status', '--test', '--this-mac', '--trial', '--uninstall', '--uninstall-agent', '--uninstall-plugin-updates', '--uninstall-recovery', '--version', '--watch', '--yes'];
+
+const REPEAT_FLAGS = ['also', 'skip'];
 
 const FLAGS = Object.fromEntries([
+  ...REPEAT_FLAGS.map((f) => [f, { type: 'string', repeat: true, description: 'a value the Mac commands read, given once per item; see docs/usage.md' }]),
   ...VALUE_FLAGS.map((f) => [f.slice(2), { type: 'string', description: 'a value the Mac commands read; see docs/usage.md' }]),
   ...SWITCH_FLAGS.map((f) => [f.slice(2), { type: 'boolean', description: 'a switch the Mac commands read; see docs/usage.md' }]),
 ]);
@@ -40,7 +42,7 @@ const WHY = { type: 'string', required: true, placeholder: '"who asked you, and 
 
 const COMMANDS = [
   cmd({ name: 'demo', summary: 'the real evening it was built for, replayed (no hardware)', effect: 'private', readOnly: true, args: [word('name', 'night, for one bad night, rehearsed', { required: false })], examples: ['housesitter demo', 'housesitter demo night'] }),
-  cmd({ name: 'adopt', summary: 'set up a new KVM next to a Mac: three cables in, then this', effect: 'private', args: [mac()], examples: ['housesitter adopt <mac> --address <ip>'] }),
+  cmd({ name: 'adopt', summary: 'set up a new KVM next to a Mac: three cables in, then this', effect: 'private', args: [mac()], flags: { heartbeat: { type: 'string', description: 'the heartbeat gist to watch, as its URL' }, 'dry-run': { type: 'boolean', description: 'say what would be set up; change nothing' } }, examples: ['housesitter adopt <mac> --address <ip>'] }),
   cmd({ name: 'secret', summary: 'store a secret for a Mac (read from stdin, no echo)', effect: 'private', args: [mac(), word('kind', 'mac-password, kvm-admin, outbox-token, ntfy-token or apple-account')], examples: ['housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account>'] }),
   cmd({ name: 'apple-account', summary: 'the Apple Account password prompt after an update reboot', effect: 'others', args: [mac()], examples: ['housesitter apple-account <mac> --status'] }),
   cmd({ name: 'proof', summary: 'record what the KVM sees while you restart the Mac', effect: 'private', args: [mac()], examples: ['housesitter proof <mac> --record <dir>'] }),
@@ -147,6 +149,9 @@ export async function refusalOf(argv, io) {
     return { exit: await runCli(cli, argv, io) };
   }
 }
+
+/** The kit's parse of a call that `refusalOf` has passed: its command, its input and whether it asked for `--json`. */
+export const parseCall = (argv) => parse(cli, argv);
 
 /**
  * What a `--dry-run` of an acting command would do, without doing it: null when the command is not previewed here

@@ -111,3 +111,57 @@ test('installed jobs, read-only looks and dry runs run without --why; an agent\'
   for (const argv of [['restart-copilot', '--status'], ['restart-copilot', '--dry-run'], ['restart-copilot', '--dry-run', '--list'], ['apple-account', 'mini', '--status'], ['laptop-arrival', 'mini', '--dry-run'], ['deploy', 'shepherd', '--dry-run']]) assert.equal(needsWhy(argv), false, argv.join(' '));
   for (const argv of [['restart-copilot', '--resume'], ['restart-copilot'], ['apple-account', 'mini', '--now'], ['peer', 'send', 'hi'], ['click', 'mini', '1', '2'], ['deploy', 'housesitter']]) assert.equal(needsWhy(argv), true, argv.join(' '));
 });
+
+// One call per verb, written the way a launchd plist, Shepherd, peer-watch or Ouroboros writes it: the kit must still
+// read its words and flags as the verb's code expects (bin/housesitter.mjs reads `opt`, then the words in order).
+const WHY = ['--why', 'Riley-asked'];
+const VERBS = [
+  ['demo night', 'demo', { name: 'night' }],
+  ['adopt mini --address 10.0.0.5 --heartbeat https://gist.github.com/x --notify ntfy --dry-run', 'adopt', { mac: 'mini', address: '10.0.0.5', heartbeat: 'https://gist.github.com/x', notify: 'ntfy', 'dry-run': true }],
+  ['secret mini kvm-admin', 'secret', { mac: 'mini', kind: 'kvm-admin' }],
+  ['apple-account mini --watch', 'apple-account', { mac: 'mini', watch: true }],
+  ['proof mini --record /tmp/proof --minutes 5 --all-frames', 'proof', { mac: 'mini', record: '/tmp/proof', minutes: '5', 'all-frames': true }],
+  [`plug mini adopt 10.0.0.9 ${WHY.join(' ')}`, 'plug', { mac: 'mini', action: 'adopt', ip: '10.0.0.9' }],
+  ['doctor mini --private --json', 'doctor', { mac: 'mini', private: true }],
+  ['status mini', 'status', { mac: 'mini' }],
+  ['look mini --plain', 'look', { mac: 'mini', plain: true }],
+  ['screenshot mini --out shot.jpg --max-width 800', 'screenshot', { mac: 'mini', out: 'shot.jpg', 'max-width': '800' }],
+  [`click mini 10 20 --right --double ${WHY.join(' ')}`, 'click', { mac: 'mini', x: '10', y: '20', right: true, double: true }],
+  [`type mini hello world ${WHY.join(' ')}`, 'type', { mac: 'mini', text: 'hello world' }],
+  [`key mini cmd+space ${WHY.join(' ')}`, 'key', { mac: 'mini', combo: 'cmd+space' }],
+  [`scroll mini down 5 ${WHY.join(' ')}`, 'scroll', { mac: 'mini', direction: 'down', amount: '5' }],
+  [`computer mini {"action":"screenshot"} ${WHY.join(' ')}`, 'computer', { mac: 'mini', computer_action: '{"action":"screenshot"}' }],
+  [`unlock mini ${WHY.join(' ')}`, 'unlock', { mac: 'mini' }],
+  [`power-cycle mini --attended ${WHY.join(' ')}`, 'power-cycle', { mac: 'mini', attended: true }],
+  [`power-on mini ${WHY.join(' ')}`, 'power-on', { mac: 'mini' }],
+  [`want-desktop mini --minutes 10 ${WHY.join(' ')}`, 'want-desktop', { mac: 'mini', minutes: '10' }],
+  ['watch-kvm mini --install --silent-min 20', 'watch-kvm', { mac: 'mini', install: true, 'silent-min': '20' }],
+  [`alert-test mini ${WHY.join(' ')}`, 'alert-test', { mac: 'mini' }],
+  ['learn-prompt mini --i-see-the-field --grid 0.48 0.87', 'learn-prompt', { mac: 'mini', 'i-see-the-field': true, grid: true, x: '0.48', y: '0.87' }],
+  ['forget mini --yes', 'forget', { mac: 'mini', yes: true }],
+  ['ls mini', 'ls', { mac: 'mini' }],
+  [`do mini press_key {"key":"a"} ${WHY.join(' ')}`, 'do', { mac: 'mini', action: 'press_key', input: '{"key":"a"}' }],
+  [`peer send hello there ${WHY.join(' ')}`, 'peer send', { text: 'hello there' }],
+  ['peer inbox', 'peer inbox', {}],
+  [`peer flush mini --now ${WHY.join(' ')}`, 'peer flush', { mac: 'mini', now: true }],
+  ['peer watch mini --agent ouroboros --every 60 --ouro /tmp/ouro', 'peer watch', { mac: 'mini', agent: 'ouroboros', every: '60', ouro: '/tmp/ouro' }],
+  [`peer drill gist outage --minutes 60 ${WHY.join(' ')}`, 'peer drill', { label: 'gist outage', minutes: '60' }],
+  ['restart-copilot --resume-only --watch --also Foo --also Bar --skip Baz --heartbeat --mac mini --hackamore {"a":1}', 'restart-copilot', { 'resume-only': true, watch: true, also: ['Foo', 'Bar'], skip: ['Baz'], heartbeat: true, mac: 'mini', hackamore: '{"a":1}' }],
+  [`deploy shepherd --ref v0.3.1 --clone /tmp/c ${WHY.join(' ')}`, 'deploy', { name: 'shepherd', ref: 'v0.3.1', clone: '/tmp/c' }],
+  ['hold --quiet', 'hold', { quiet: true }],
+  ['steer --list', 'steer', { list: true }],
+  ['laptop-arrival laptop --config /tmp/l.json --quiet', 'laptop-arrival', { mac: 'laptop', config: '/tmp/l.json', quiet: true }],
+  ['fleet --stale-min 15 --disk-floor-gb 20 --always-on mini,studio', 'fleet', { 'stale-min': '15', 'disk-floor-gb': '20', 'always-on': 'mini,studio' }],
+  ['tailnet-policy', 'tailnet-policy', {}],
+  ['version', 'version', {}],
+];
+
+test('every verb\'s arguments still parse into the words and flags its code reads', async () => {
+  const { parseCall, COMMAND_WORDS } = await import('../src/cli-table.mjs');
+  assert.deepEqual(VERBS.map((v) => v[1]).sort(), [...COMMAND_WORDS].sort());
+  for (const [line, command, want] of VERBS) {
+    const call = parseCall(line.split(' '));
+    assert.equal(call.command.name, command, line);
+    assert.deepEqual(call.input, { ...call.input, ...want }, line);
+  }
+});

@@ -382,30 +382,53 @@ def _read_inbox(gist_id, mark):
     return {"ok": True, "messages": fresh}
 
 
+FLAGS = {"send": {"--re": True, "--to": True, "--now": False}, "inbox": {"--peek": False}, "flush": {"--now": False}}
+
+
+def refuse(thing, problem, fix):
+    """One line on stderr in Ouro AX's shape: `<tool>: <thing>: <problem>. Fix: <exact command>.`, exit 2."""
+    sys.stderr.write("peer.py: %s: %s. Fix: %s.\n" % (thing, problem, fix))
+    return 2
+
+
+def parse(argv):
+    """The words and flags of one call, or (None, None, error line) the way the kit refuses it."""
+    sub, flags, words, i = argv[0], FLAGS[argv[0]], [], 1
+    given = {}
+    while i < len(argv):
+        a = argv[i]
+        if a in flags:
+            if flags[a]:
+                if i + 1 >= len(argv):
+                    return None, None, ("%s %s" % (sub, a), "%s needs a value" % a, "python3 peer.py %s %s <value>" % (sub, a))
+                given[a] = argv[i + 1]
+                i += 2
+            else:
+                given[a] = True
+                i += 1
+        elif a.startswith("--"):
+            return None, None, ("%s" % sub, "there is no %s; its flags are %s" % (a, ", ".join(flags) or "none"), "python3 peer.py %s%s" % (sub, "".join(" " + f for f in flags)))
+        else:
+            words.append(a)
+            i += 1
+    return words, given, None
+
+
 def main(argv):
-    if not argv or argv[0] not in ("send", "inbox", "flush"):
-        print(__doc__.strip())
-        return 2
+    if not argv or argv[0] not in FLAGS:
+        return refuse("command", "needs send, inbox or flush", "python3 peer.py send <text> [--re <id>] [--to <name>] [--now]")
+    words, given, bad = parse(argv)
+    if bad:
+        return refuse(*bad)
+    if argv[0] != "send" and words:
+        return refuse(argv[0], '"%s" is one word too many: it takes no words after its name' % words[0], "python3 peer.py %s" % argv[0])
     try:
         if argv[0] == "send":
-            words, re_id, to, i = [], None, "ouroboros", 1
-            while i < len(argv):
-                if argv[i] in ("--re", "--to") and i + 1 < len(argv):
-                    if argv[i] == "--re":
-                        re_id = argv[i + 1]
-                    else:
-                        to = argv[i + 1]
-                    i += 2
-                elif argv[i] == "--now":
-                    i += 1
-                else:
-                    words.append(argv[i])
-                    i += 1
-            out = send(" ".join(words), to=to, re_id=re_id, now="--now" in argv)
+            out = send(" ".join(words), to=given.get("--to", "ouroboros"), re_id=given.get("--re"), now="--now" in given)
         elif argv[0] == "inbox":
-            out = inbox(mark="--peek" not in argv)
+            out = inbox(mark="--peek" not in given)
         else:
-            out = flush(now="--now" in argv)
+            out = flush(now="--now" in given)
     except (RuntimeError, ValueError, OSError) as e:
         print(json.dumps({"ok": False, "error": str(e)}))
         return 1

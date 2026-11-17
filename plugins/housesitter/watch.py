@@ -223,6 +223,10 @@ class Watcher:
 
 
 def main(argv):
+    extra = [a for a in argv if a != "--once"]
+    if extra:
+        sys.stderr.write("watch.py: %s: there is no %s; its only flag is --once. Fix: python3 watch.py [--once].\n" % ("flags", extra[0]))
+        return 2
     w = Watcher()
     w.say(event="start", every_sec=int(env("HOUSESITTER_WATCH_SEC", "30")), agent=env("HOUSESITTER_AGENT", "housesitter"))
     while True:

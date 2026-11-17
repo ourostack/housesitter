@@ -243,6 +243,13 @@ class PeerTest(PluginCase):
         i = json.loads(run("inbox").stdout)
         self.assertEqual([m["id"] for m in i["messages"]], ["q"])
         self.assertEqual(run().returncode, 2)
+        for argv in (["send", "hi", "--bogus"], ["inbox", "extra"], ["send", "--re"], []):
+            r = run(*argv)
+            self.assertEqual(r.returncode, 2, argv)
+            self.assertEqual(r.stdout, b"", argv)
+            lines = r.stderr.decode().strip().splitlines()
+            self.assertEqual(len(lines), 1, argv)
+            self.assertRegex(lines[0], r"^peer\.py: .*\. Fix: .*\.$")
 
 
 if __name__ == "__main__":

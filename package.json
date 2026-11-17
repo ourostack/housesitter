@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/housesitter",
-  "version": "0.6.16",
+  "version": "0.6.17",
   "description": "Your agents' Mac, looked after while you're away: a cheap IP-KVM unlocks FileVault after a panic, power-cycles a hang, gives agents eyes and hands before login, and tells you only when it can't.",
   "type": "module",
   "bin": {
@@ -28,7 +28,7 @@
     "llms.txt"
   ],
   "dependencies": {
-    "@ouro.bot/hackamore": "github:ourostack/hackamore#v0.1.5",
+    "@ouro.bot/hackamore": "github:ourostack/hackamore#v0.1.36",
     "@ouro.bot/shepherd": "github:ourostack/shepherd#v0.8.1"
   },
   "engines": {
