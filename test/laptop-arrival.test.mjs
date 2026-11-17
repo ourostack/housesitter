@@ -2,7 +2,7 @@
 // nothing. The laptop here is a small simulation behind the route's `sh` and `gate`; the always-on Mac's own parts are fakes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, pickCoordinators, renderPass, reportText } from '../src/laptop-arrival.mjs';
+import { jobUsable, realArrivalDeps, SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, pickCoordinators, renderPass, reportText } from '../src/laptop-arrival.mjs';
 
 const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, step_tries: 6 };
 
@@ -312,4 +312,22 @@ test('sessions step: unlanded work is landed by Shepherd and held, never archive
   assert.match(d, /held, not archived: Unpushed job .*; Odd job \(detached HEAD\)/);
   assert.deepEqual(r.state.epoch.info.sessionsHeld, ['Unpushed job', 'Odd job']);
   assert.match(r.told.at(-1), /held back, work not on main yet: Unpushed job, Odd job\./);
+});
+
+test('an interval job that is loaded, idle and last exited 0 counts as usable; a failed or unloaded one does not', () => {
+  assert.equal(jobUsable('\tstate = running\n'), true);
+  assert.equal(jobUsable('\tstate = not running\n\tlast exit code = 0\n'), true);
+  assert.equal(jobUsable('\tstate = waiting\n\tlast exit code = 0\n'), true);
+  assert.equal(jobUsable('\tstate = not running\n\tlast exit code = 1\n'), false);
+  assert.equal(jobUsable('\tstate = not running\n\tlast exit code = 78\n'), false);
+  assert.equal(jobUsable(''), false);
+});
+
+test("the gate runs hackamore's gate check on the laptop through the bus shell and reads its first line", async () => {
+  const cfg = { route: ['/bin/sh', '-c', 'printf "CLOSED: screen locked\\n"; exit 1', 'x'], peer: 'laptop' };
+  const d = realArrivalDeps(cfg, { state: '.', env: process.env });
+  assert.match(SCRIPTS.gate, /node_modules\/@ouro\.bot\/hackamore\/bin\/hackamore\.mjs gate check/);
+  assert.doesNotMatch(SCRIPTS.gate, /mac gate/);
+  const g = await d.gate();
+  assert.equal(g.state, 'locked');
 });
