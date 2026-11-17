@@ -262,7 +262,9 @@ test('peer watch wakes the agent once per new message, marks nothing read and ne
   await w.tick();
   assert.equal(x.calls.length, 1);
   assert.deepEqual(x.calls[0].slice(0, 4), ['/bin/ouro', 'msg', '--to', 'ouroboros']);
-  assert.match(x.calls[0][4], /^1 new message from Housesitter on the peer link \(latest: the Mac is at the login window\)\. Read it with: node \/h\/bin\/housesitter\.mjs peer inbox — then answer with peer send/);
+  assert.match(x.calls[0][6], /^1 new message from Housesitter on the peer link \(latest: the Mac is at the login window\)\. Read it with: node \/h\/bin\/housesitter\.mjs peer inbox — then answer with peer send/);
+  assert.equal(x.calls[0][4], '--why');
+  assert.match(x.calls[0][5], /relays what Housesitter/, 'the reason says why the wake comes');
   await w.tick();
   assert.equal(gh.requests.at(-1).etag !== undefined, true);
   assert.equal(x.calls.length, 1);
@@ -270,8 +272,8 @@ test('peer watch wakes the agent once per new message, marks nothing read and ne
   gists[H_TO_O][f2] = c2;
   await w.tick();
   assert.equal(x.calls.length, 2);
-  assert.match(x.calls[1][4], /^1 new message .*latest: tell-ari: z+…\)/);
-  assert.ok(x.calls[1][4].length < 500);
+  assert.match(x.calls[1][6], /^1 new message .*latest: tell-ari: z+…\)/);
+  assert.ok(x.calls[1][6].length < 500);
   assert.equal(fs.existsSync(path.join(dir, 'peer-seen.json')), false);
   assert.deepEqual((await p.inbox()).messages.map((m) => m.id), ['a1', 'a2']);
   await w.tick();
@@ -314,7 +316,7 @@ test('peer watch: a failed ouro msg backs off and retries; a rate-limited read w
   time.now += 301e3;
   await w.tick();
   assert.equal(x.calls.length, 3);
-  assert.match(x.calls[2][4], /latest: again/);
+  assert.match(x.calls[2][6], /latest: again/);
   const nowhere = peerWatch({ p, dir: fs.mkdtempSync(path.join(scratchRoot, 'peer-')), ouro: null, bin: 'hs', exec: x.exec, clock: () => time.now, probe: async () => true });
   await nowhere.tick();
   assert.equal(x.calls.length, 3);
@@ -348,7 +350,7 @@ test('housesitter peer watch --once from the shell', async () => {
   const r = await cli(['peer', 'watch', 'studio', '--once', '--agent', 'ouroboros', '--ouro', ouro, '--why', 'the person asked'], { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /woke ouroboros for c9/);
-  assert.match(fs.readFileSync(calls, 'utf8'), /^msg\|--to\|ouroboros\|1 new message from Housesitter .*bin\/housesitter\.mjs peer inbox/);
+  assert.match(fs.readFileSync(calls, 'utf8'), /^msg\|--to\|ouroboros\|--why\|Housesitter's peer watch on this Mac relays what Housesitter.*\|1 new message from Housesitter .*bin\/housesitter\.mjs peer inbox/);
   await gh.close();
 });
 
@@ -438,7 +440,7 @@ test('a planned drill: `peer drill` labels everything sent until it ends, and th
   const [f1, c1] = hmsg('d1', '2026-11-10T12:51:50Z', 'please run ouro up');
   gists[H_TO_O][f1] = c1;
   await w.tick();
-  assert.match(x.calls.at(-1)[4], /This is a planned drill \(battle test row 9\): handle it for real, but say "planned drill \(battle test row 9\)" in anything you report, and don't relay it to Ari as an incident\.$/);
+  assert.match(x.calls.at(-1)[6], /This is a planned drill \(battle test row 9\): handle it for real, but say "planned drill \(battle test row 9\)" in anything you report, and don't relay it to Ari as an incident\.$/);
 
   assert.equal((await cli(['peer', 'drill', '--end', '--why', 'the person asked'], e)).status, 0);
   time.now = Date.now() + 1000;
@@ -447,12 +449,12 @@ test('a planned drill: `peer drill` labels everything sent until it ends, and th
   const [f2, c2] = hmsg('d2', '2026-11-10T13:10:00Z', '[planned drill: row 9] a message labelled on the Comet');
   gists[H_TO_O][f2] = c2;
   await w.tick();
-  assert.match(x.calls.at(-1)[4], /This is a planned drill \(row 9\)/, 'a label from the other side carries into the wake');
+  assert.match(x.calls.at(-1)[6], /This is a planned drill \(row 9\)/, 'a label from the other side carries into the wake');
   const [f3, c3] = hmsg('d3', '2026-11-10T13:11:00Z', 'a real one');
   delete gists[H_TO_O][f2];
   gists[H_TO_O][f3] = c3;
   await w.tick();
-  assert.doesNotMatch(x.calls.at(-1)[4], /planned drill/);
+  assert.doesNotMatch(x.calls.at(-1)[6], /planned drill/);
   await gh.close();
 });
 
@@ -470,7 +472,9 @@ test('peer watch tells Housesitter and the agent, once, when a Copilot app resta
   await w.tick();
   assert.equal(sent().length, 1);
   assert.match(sent()[0], /stopped updating at step "quit sent" \(the job may have died\)/);
-  assert.match(x.calls.at(-1)[4], /restart-copilot --status; then check each session with app_sessions_list/);
+  assert.match(x.calls.at(-1)[6], /restart-copilot --status; then check each session with app_sessions_list/);
+  assert.equal(x.calls.at(-1)[4], '--why');
+  assert.match(x.calls.at(-1)[5], /restart problem/);
   await w.tick();
   assert.equal(sent().length, 1, 'told once');
   status({ started: '2026-11-09T13:00:00Z', updated: new Date(time.now).toISOString(), state: 'failed', failed: { stage: 'quit', why: 'someone is using this Mac' }, not_resumed: ['abc'] });

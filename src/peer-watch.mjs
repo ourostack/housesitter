@@ -49,6 +49,9 @@ export const socketAnswers = (sock) => new Promise((res) => {
 
 // p: a peer() from src/peer.mjs. ouro: the ouro executable (null: not found). bin: the housesitter CLI the wake names.
 // exec, clock and print are for tests.
+export const WHY_RELAY = 'Housesitter\'s peer watch on this Mac relays what Housesitter (the agent on the KVM) sent on the peer link';
+export const WHY_RESTART = 'Housesitter\'s peer watch on this Mac reports a Copilot app restart problem on this Mac';
+
 export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, exec = runFile, clock = Date.now, print = () => {},
   socket = '/tmp/ouroboros-daemon.sock', probe = socketAnswers, host = os.hostname().replace(/\.local$/, ''),
   restartDir = path.join(os.homedir(), 'Library', 'Caches', 'housesitter', 'restart-copilot') }) {
@@ -99,7 +102,7 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     if (!fresh.length) { st.etag = r.etag; log(`tick: ${r.messages.length} unread, none new`); return; }
     if (now < (st.wake_until || 0)) return; // the etag stays old, so the next read sees them again
     if (!ouro) { backoff(st, now, 'ouro is not on PATH (use --ouro <path>)'); return; }
-    const res = await exec(ouro, ['msg', '--to', agent, wakeText(fresh)]);
+    const res = await exec(ouro, ['msg', '--to', agent, '--why', WHY_RELAY, wakeText(fresh)]);
     if (res.code !== 0) { backoff(st, now, `ouro msg exited ${res.code}: ${oneLine(res.stderr || res.stdout, 300)}`); return; }
     st.woken = [...(st.woken || []), ...fresh.map((m) => m.id)].slice(-SEEN_MAX);
     st.etag = r.etag;
@@ -154,7 +157,7 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     log(`the Copilot app restart from ${s.started} ${what}; telling Housesitter and ${agent}`);
     await tell(`peer-watch on ${host}: the Copilot app restart that started ${s.started} ${what}.${not} If the app is not on the Mac's screen, look with sitter_look and say so.`);
     if (!ouro) return;
-    const res = await exec(ouro, ['msg', '--to', agent, `The Copilot app restart that started ${s.started} on ${host} ${what}.${not} Read the report with: node ${bin} restart-copilot --status; then check each session with app_sessions_list and send app_sessions_resume to any that is not running.`]);
+    const res = await exec(ouro, ['msg', '--to', agent, '--why', WHY_RESTART, `The Copilot app restart that started ${s.started} on ${host} ${what}.${not} Read the report with: node ${bin} restart-copilot --status; then check each session with app_sessions_list and send app_sessions_resume to any that is not running.`]);
     if (res.code !== 0) log(`wake about the restart failed: ouro msg exited ${res.code}`);
   }
 

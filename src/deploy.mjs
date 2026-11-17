@@ -92,11 +92,15 @@ function planJob({ label, text, cur, bin, liveBinPath }) {
   const args = programArgs(text);
   const next = rewriteArgs(text, pick);
   const scripts = [];
-  const scriptRe = binRe(bin);
+  const scriptRe = toolPathRe(bin);
   for (const a of args) {
     if (!a.endsWith('.sh') || !fs.existsSync(a)) continue;
     const body = fs.readFileSync(a, 'utf8');
-    const out = body.replace(scriptRe, (p) => (isCopy(p) ? liveBinPath : p));
+    // The whole tool path is replaced, quoted or bare, so a path with a space is never half-replaced.
+    const out = body.replace(scriptRe, (m) => {
+      const p = m.replace(/^["']|["']$/g, '');
+      return isCopy(p) || p.startsWith(cur + path.sep) ? `"${liveBinPath}"` : m;
+    });
     if (out !== body) scripts.push({ file: a, next: out });
   }
   const runsLive = args.some((a) => pick(a).startsWith(cur + path.sep));
@@ -113,7 +117,11 @@ export function rewriteArgs(text, pick) {
   }) + close);
 }
 
-const binRe = (bin) => new RegExp(`[^\\s"'\`;|&()<>]*/${bin.replace(/\./g, '\\.')}`, 'g');
+// A tool path in a script: double- or single-quoted (it may hold a space, as `Application Support` does), or bare.
+const toolPathRe = (bin) => {
+  const b = bin.replace(/\./g, '\\.');
+  return new RegExp(`"[^"\\n]*/${b}"|'[^'\\n]*/${b}'|[^\\s"'\`;|&()<>]*/${b}(?![^\\s"'\`;|&()<>])`, 'g');
+};
 
 
 export async function deploy({ name, ref = null, clone = null, why = null, home = os.homedir(), uid = process.getuid(), dry = false, launchctl = defaultLaunchctl, sleep = sleepSync } = {}) {

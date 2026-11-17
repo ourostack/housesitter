@@ -239,6 +239,46 @@ test('an old copy of the tool in a job is pointed at the live release in place, 
   assert.equal(now[1], path.join(currentLink('housesitter', f.home), 'bin', 'housesitter.mjs'));
   fs.rmSync(f.base, { recursive: true, force: true });
 });
+test('a script whose tool path has a space is repointed to the quoted live release, and three deploys leave the line as it is', async () => {
+  const f = fixture();
+  await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const old = path.join(f.home, 'Library', 'Application Support', 'housesitter', 'app', 'bin', 'housesitter.mjs');
+  const script = path.join(f.home, '.config', 'housesitter', 'peer-watch.sh');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, `#!/bin/sh\nexec /usr/local/bin/node "${old}" peer watch mini --once\n`, { mode: 0o755 });
+  writePlist(f, 'bot.ouro.housesitter-peer-watch', plist('bot.ouro.housesitter-peer-watch', ['/bin/sh', script], { interval: 60 }));
+  f.publish('0.10.0');
+  const live = path.join(currentLink('housesitter', f.home), 'bin', 'housesitter.mjs');
+  const want = `#!/bin/sh\nexec /usr/local/bin/node "${live}" peer watch mini --once\n`;
+  const lc = statefulLaunchctl(new Set(['bot.ouro.housesitter-peer-watch']));
+  for (let i = 1; i <= 3; i++) {
+    const r = await deploy({ name: 'housesitter', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc.fn, sleep: () => {} });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(fs.readFileSync(script, 'utf8'), want, `after deploy ${i}`);
+  }
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('an unquoted clone path in a script becomes the quoted live release, keeps the arguments after it, and a second deploy changes nothing', async () => {
+  const f = fixture();
+  await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const cloneBin = path.join(f.clone, 'bin', 'housesitter.mjs');
+  const script = path.join(f.home, '.config', 'housesitter', 'peer-watch.sh');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, `#!/bin/sh\nexec /usr/local/bin/node ${cloneBin} peer watch mini --once --every 60\n`, { mode: 0o755 });
+  writePlist(f, 'bot.ouro.housesitter-peer-watch', plist('bot.ouro.housesitter-peer-watch', ['/bin/sh', script], { interval: 60 }));
+  f.publish('0.10.0');
+  const live = path.join(currentLink('housesitter', f.home), 'bin', 'housesitter.mjs');
+  const want = `#!/bin/sh\nexec /usr/local/bin/node "${live}" peer watch mini --once --every 60\n`;
+  const lc = statefulLaunchctl(new Set(['bot.ouro.housesitter-peer-watch']));
+  for (const i of [1, 2]) {
+    const r = await deploy({ name: 'housesitter', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc.fn, sleep: () => {} });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(fs.readFileSync(script, 'utf8'), want, `after deploy ${i}`);
+  }
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
 test('shepherd gets the same swap: its clone-pointing plist is rewritten and reloaded, and housesitter\'s jobs are not its', async () => {
   const f = fixture();
   const cloneBin = path.join(f.clone, 'bin', 'shepherd.mjs');
