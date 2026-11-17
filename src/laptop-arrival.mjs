@@ -312,18 +312,22 @@ async function stepSessions({ cfg, deps, opts }) {
   if (!plan || !Array.isArray(plan.retire)) return { status: 'fail', detail: "Shepherd's retire plan gave no answer on the laptop" };
   if (plan.errors?.length) return { status: 'wait', detail: `Shepherd could not read the laptop's sessions yet (${plan.errors[0]})` };
   const safe = plan.retire.filter((x) => x.what === 'archive');
-  const left = plan.retire.filter((x) => x.what !== 'archive').map((x) => `${x.name || x.id} (${x.why})`);
-  const note = `${left.length ? `; left alone: ${left.join('; ')}` : ''}${plan.size?.length ? `; ${plan.size.length} oversized-history action(s) belong to Shepherd's size watch, not run here` : ''}`;
-  if (!safe.length) return { status: 'done', detail: `nothing Shepherd can confirm as finished${note}` };
+  const toLand = plan.retire.filter((x) => x.what === 'land');
+  const heldOf = (entries) => entries.filter((x) => x.what === 'hold' || x.what === 'land').map((x) => ({ name: x.name || x.id, why: x.why }));
+  const describe = (held, plan2) => `${held.length ? `; held, not archived: ${held.map((h) => `${h.name} (${h.why})`).join('; ')}` : ''}${plan2.size?.length ? `; ${plan2.size.length} oversized-history action(s) belong to Shepherd's size watch, not run here` : ''}`;
+  const info = (held) => ({ sessionsHeld: held.map((h) => h.name) });
+  if (!safe.length && !toLand.length) { const held = heldOf(plan.retire); return { status: 'done', detail: `nothing Shepherd can confirm as finished${describe(held, plan)}`, info: info(held) }; }
   // Applying also runs the size watch, which can message and archive; with anything pending there, only the plan is reported.
-  if (plan.size?.length) return { status: 'done', detail: `${safe.length} session(s) are safe to archive but Shepherd's size watch also has actions pending, so none were archived${note}` };
+  if (plan.size?.length) { const held = heldOf(plan.retire); return { status: 'done', detail: `${safe.length + toLand.length} session(s) could be archived or landed but Shepherd's size watch also has actions pending, so nothing was changed${describe(held, plan)}`, info: info(held) }; }
   const applied = parseJsonLine((await deps.sh(SCRIPTS.retireApply, 120)).out);
   if (!applied || !Array.isArray(applied.retire)) return { status: 'fail', detail: "Shepherd's retire apply gave no answer on the laptop" };
   const planned = new Set(safe.map((x) => x.id));
   const did = applied.retire.filter((x) => x.what === 'archive' && x.done);
   const extra = did.filter((x) => !planned.has(x.id)).length;
-  if (applied.errors?.length) return { status: 'wait', detail: `archived ${did.length}; Shepherd reported: ${applied.errors[0]}` };
-  return { status: 'done', detail: `archived ${did.length} finished session(s) (${did.map((x) => x.name || x.id).slice(0, 5).join(', ')})${extra ? `; ${extra} were not in the earlier plan` : ''}${note}` };
+  const held = heldOf(applied.retire);
+  const tail = `${extra ? `; ${extra} were not in the earlier plan` : ''}${describe(held, { size: [] })}`;
+  if (applied.errors?.length) return { status: 'wait', detail: `archived ${did.length}; Shepherd reported: ${applied.errors[0]}${tail}`, info: info(held) };
+  return { status: 'done', detail: `archived ${did.length} finished session(s)${did.length ? ` (${did.map((x) => x.name || x.id).slice(0, 5).join(', ')})` : ''}${tail}`, info: info(held) };
 }
 
 const EXCLUDED_TITLE = /drain|helper|caretaker|audit|session title/i;
@@ -343,7 +347,9 @@ export function reportText({ facts, st, cfg, coordinators = [] }) {
   const lines = [`Housesitter: the laptop is up (arrived ${hhmm(Date.parse(st.epoch.started))}); you can steer the mini from it.`];
   lines.push(`Laptop: Copilot app ${facts.app || '?'}, ${s.app?.detail || 'app checked'}. ${s.verify?.detail || ''}`);
   if (s.retire?.detail && !/nothing|already/.test(s.retire.detail)) lines.push(`On the laptop: ${s.retire.detail}.`);
-  if (s.sessions?.detail && !/^(off|nothing)/.test(s.sessions.detail)) lines.push(`Laptop sessions: ${s.sessions.detail}.`);
+  const held = st.epoch.info?.sessionsHeld || [];
+  if (held.length) lines.push(`Laptop sessions held back, work not on main yet: ${held.slice(0, 3).join(', ')}${held.length > 3 ? ` and ${held.length - 3} more` : ''}.`);
+  else if (/^archived [1-9]/.test(s.sessions?.detail || '')) lines.push(`Laptop sessions: ${s.sessions.detail.split(';')[0]}.`);
   lines.push('All your sessions live on the mini. On the laptop, open them in the Copilot app under Quick Open > "Resume remote session" (Remote control, default github.com account arimendelow), or read and steer them through Agency Hub (`housesitter steer --peer Aris-Mac-Mini`); Ouroboros on Teams works from anywhere.');
   lines.push(coordinators.length ? `Talk to: ${coordinators.join('; ')}.` : 'Live coordinators to talk to: none I am certain of right now.');
   return lines.join('\n');

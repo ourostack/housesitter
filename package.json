@@ -29,7 +29,7 @@
   ],
   "dependencies": {
     "@ouro.bot/hackamore": "github:ourostack/hackamore#v0.1.36",
-    "@ouro.bot/shepherd": "github:ourostack/shepherd#v0.8.1"
+    "@ouro.bot/shepherd": "github:ourostack/shepherd#v0.12.0"
   },
   "engines": {
     "node": ">=22.18"
