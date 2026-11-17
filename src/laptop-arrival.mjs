@@ -18,7 +18,7 @@
 //        macd         last, the laptop's Mac bus daemon is updated to the current tools, and must answer afterwards
 //   3. A step that cannot finish says why; the agent hears once, after 20 minutes, which step is stuck and why.
 // The route to the laptop is whatever `route` names in the config: `<route...> sh <peer> --timeout <s> '<cmd>'` runs a shell
-// command there and `<route...> gate <peer> check` says whether a person is using it. State: arrival.json in the state folder.
+// command there and hackamore's `gate check`, run on the laptop through the bus shell, says whether a person is using it. State: arrival.json in the state folder.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -89,6 +89,9 @@ if [ -d ${HS}/.git ]; then git -C ${HS} fetch -q origin && git -C ${HS} merge --
 cd ${HS}
 [ -d node_modules/@ouro.bot/hackamore ] || npm install --omit=dev --no-audit --no-fund --silent
 echo "hs=$(git rev-parse --short HEAD)"`,
+  // hackamore's gate check judges the Mac it runs on; the checkout's pinned copy is the one the mini uses.
+  gate: `${PATH_PREFIX}
+cd ${HS} 2>/dev/null && [ -f node_modules/@ouro.bot/hackamore/bin/hackamore.mjs ] && node --no-warnings node_modules/@ouro.bot/hackamore/bin/hackamore.mjs gate check 2>&1 | head -3; true`,
   plugins: `${PATH_PREFIX}
 cd ${HS} && node bin/housesitter.mjs restart-copilot --plugin-updates --dry-run --json 2>/dev/null | tail -1`,
   restartStatus: `${PATH_PREFIX}
@@ -117,6 +120,9 @@ cd ${SH} && SHEPHERD_RETIRE_CONFIG="${RETIRE_CFG}" node bin/shepherd.mjs retire 
   appUpgrade: `${PATH_PREFIX}
 brew upgrade --cask --greedy github-copilot-app 2>&1 | tail -3`,
 };
+
+// Loaded and either running or idle after a clean last exit (interval jobs sit idle between runs).
+export const jobUsable = (text) => /state = running/.test(text) || (/state = (waiting|not running)/.test(text) && /last exit code = 0\b/.test(text));
 
 const parseJsonLine = (t) => { try { return JSON.parse(String(t).trim().split('\n').filter(Boolean).at(-1)); } catch { return null; } };
 
@@ -164,6 +170,13 @@ export function realArrivalDeps(cfg, { home = os.homedir(), state = stateDir(), 
     return r.json();
   };
   const mac = (argv, timeoutMs = 60000) => exec(cfg.route[0], [...cfg.route.slice(1), ...argv], timeoutMs, env);
+  const sh = async (cmd, timeoutS = 20) => {
+    const r = await mac(['sh', cfg.peer, '--timeout', String(timeoutS), cmd], (timeoutS + 25) * 1000);
+    const text = `${r.stdout}\n${r.stderr}`;
+    // A route that answers through a model session is not a watcher's route: refuse it.
+    if (/via relay/.test(text)) return { ok: false, noRelay: true, out: '', err: 'the route answered through a model-backed relay, which a watcher must not use', code: 1 };
+    return { ok: r.code === 0, noRelay: /no-relay/.test(text), out: r.stdout, err: r.stderr.trim().slice(0, 300), code: r.code };
+  };
   return {
     now: () => Date.now(),
     hubDevice: async (id) => {
@@ -172,16 +185,10 @@ export function realArrivalDeps(cfg, { home = os.homedir(), state = stateDir(), 
       return d ? { listed: true, online: Boolean(d.online), lastSeenAt: d.lastSeenAt } : { listed: false, online: false };
     },
     mac,
-    sh: async (cmd, timeoutS = 20) => {
-      const r = await mac(['sh', cfg.peer, '--timeout', String(timeoutS), cmd], (timeoutS + 25) * 1000);
-      const text = `${r.stdout}\n${r.stderr}`;
-      // A route that answers through a model session is not a watcher's route: refuse it.
-      if (/via relay/.test(text)) return { ok: false, noRelay: true, out: '', err: 'the route answered through a model-backed relay, which a watcher must not use', code: 1 };
-      return { ok: r.code === 0, noRelay: /no-relay/.test(text), out: r.stdout, err: r.stderr.trim().slice(0, 300), code: r.code };
-    },
-    gate: async () => parseGate((await mac(['gate', cfg.peer, 'check'], 45000)).stdout),
+    sh,
+    gate: async () => { const r = await sh(SCRIPTS.gate, 40); return parseGate(r.ok || r.out ? r.out : r.err); },
     miniVersion: async () => (await exec('/usr/bin/defaults', ['read', `${APP}/Contents/Info`, 'CFBundleShortVersionString'], 10000)).stdout.trim() || null,
-    miniJobRunning: async (label) => /state = running/.test((await exec('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`], 10000)).stdout),
+    miniJobRunning: async (label) => jobUsable((await exec('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`], 10000)).stdout),
     readState: () => readJson(path.join(state, 'arrival.json'), null),
     writeState: (o) => writeJson(path.join(state, 'arrival.json'), o),
     log: (line) => { try { fs.mkdirSync(state, { recursive: true }); const f = path.join(state, 'arrival.log'); if (fs.existsSync(f) && fs.statSync(f).size > 1 << 20) fs.renameSync(f, `${f}.1`); fs.appendFileSync(f, `${line}\n`); } catch { /* a courtesy */ } },
