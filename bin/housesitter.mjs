@@ -351,7 +351,7 @@ async function restartCopilot() {
   if (busy) throw new Refusal('action-unavailable', `a restart is already running (step "${busy.step}", started ${busy.started}); read it with housesitter restart-copilot --status, and start another when it has finished`);
   if (flag('--detach')) {
     const keep = args.filter((a, i) => a !== '--detach' && a !== '--json' && a !== 'restart-copilot' && args[i - 1] !== '--hackamore' && a !== '--hackamore');
-    const hk = deps.hackamore ? ['--hackamore', deps.hackamore.join(' ')] : [];
+    const hk = deps.hackamore ? ['--hackamore', JSON.stringify(deps.hackamore)] : [];
     const r = await Copilot.detach({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), args: ['restart-copilot', ...keep, ...hk], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() } });
     if (json) emit(r); else say(r.ok ? `started as a launchd job (${Copilot.LABEL}); it does not depend on this session. Log: ${r.log}\nRead the result with: housesitter restart-copilot --status` : `✗ launchctl would not start it: ${r.error}`);
     return r.ok ? 0 : 1;

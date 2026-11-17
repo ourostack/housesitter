@@ -619,3 +619,23 @@ test('resumeOnly dry run reports what the real run would do: oversized sessions 
   assert.ok(!w.app.received.some((m) => m.id === A || m.id === D || m.id === ghost));
   await w.done();
 });
+
+// A release lives under ~/Library/Application Support, so every path the restart runs holds a space.
+test('hackamore: a path with a space is one program, as a path, an array, or the JSON the detached job gets', async () => {
+  const { hackamoreArgv, realDeps } = await import('../src/copilot-app.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs space '));
+  const tool = path.join(dir, 'hackamore.mjs');
+  fs.writeFileSync(tool, '#!/usr/bin/env node\nconsole.log(JSON.stringify({ args: process.argv.slice(2) }));\n', { mode: 0o755 });
+  assert.deepEqual(hackamoreArgv(tool), [tool]);
+  assert.deepEqual(hackamoreArgv(JSON.stringify([process.execPath, tool])), [process.execPath, tool]);
+  assert.deepEqual(hackamoreArgv('npx hackamore'), ['npx', 'hackamore']);
+  for (const given of [tool, [process.execPath, tool], JSON.stringify([process.execPath, tool])]) {
+    const deps = realDeps({ hackamore: given, state: dir });
+    const r = await deps.hk(['ls', 'GitHub Copilot']);
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(r.json.args, ['ls', 'GitHub Copilot']);
+    // the detached job is handed JSON, which reads back to the same argv
+    assert.deepEqual(hackamoreArgv(JSON.stringify(deps.hackamore)), deps.hackamore);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
