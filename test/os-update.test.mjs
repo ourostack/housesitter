@@ -1,7 +1,7 @@
 // housesitter restart-copilot --os-updates: macOS installs its own updates; housesitter reads what is pending and what macOS
 // will do (no admin rights), and shortly before it acts gets every session to a safe point, arms the Apple Account prompt and
 // writes the sessions owed a resume; it stands down if the Mac does not restart, and says once what to turn on if nothing will.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -90,6 +90,9 @@ test('decide: at the enforced deadline less the lead, in the quiet hours with no
   assert.match(nativeOffText({ update: UPDATE }), /administrator's password.*Install macOS updates/);
 });
 
+const worlds = [];
+after(async () => { for (const w of worlds) await w.done(); });
+
 async function world({ hour = 12, idle = 3600000, native = { install: true, download: true, critical: true }, enforced = null, imminent = false } = {}) {
   const home = fs.mkdtempSync(path.join(SCRATCH, 'os-'));
   const root = fs.mkdtempSync(path.join(SCRATCH, 'os-root-'));
@@ -114,7 +117,7 @@ async function world({ hour = 12, idle = 3600000, native = { install: true, down
     tell: async (t) => { w.told.push(t); return { ok: true }; },
     listUpdates: async () => ({ ok: true, text: w.listing }),
     native: async () => native,
-    enforced: async () => enforced,
+    enforced: async () => { if (typeof enforced === 'function') enforced = enforced(); return enforced; },
     imminent: async () => imminent,
     idleMs: async () => idle,
     hour: () => hour,
@@ -126,12 +129,21 @@ async function world({ hour = 12, idle = 3600000, native = { install: true, down
   });
   w.deps = d;
   w.opts = { app: 'Fake Copilot', resume: true, t: { settle: 200, grace: 0, quit: 400, up: 2000, delivery: 3000, retry: 400, tries: 2 }, os: { manualWait: 100 } };
-  w.done = async () => { await new Promise((r) => setTimeout(r, 120)); await app.close(); fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(root, { recursive: true, force: true }); };
+  let closed = false;
+  w.done = async () => {
+    if (closed) return;
+    closed = true;
+    await new Promise((r) => setTimeout(r, 120));
+    await app.close();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  };
+  worlds.push(w);
   return w;
 }
 
 test('at the enforced deadline: sessions reach a safe point with the app left running, the prompt is armed and the resume owed; when the Mac does not restart it stands down', { skip }, async () => {
-  const w = await world({ enforced: { at: Date.now() + 30, version: '27.2.2', date: '2026-11-21T00:00:00' } });
+  const w = await world({ enforced: () => ({ at: Date.now() + 30, version: '27.2.2', date: '2026-11-21T00:00:00' }) });
   const r = await pass({ ...w.opts, os: { lead: 60000, afterDeadline: 300 } }, w.deps);
   assert.equal(r.decision.code, 'deadline');
   const asked = w.app.received.filter((m) => /Heads up/.test(m.prompt));
