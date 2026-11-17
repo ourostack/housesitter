@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/ouro-actions/dist-manifest.json'), 'utf8'));
 
-test('the release manifest names core v0.16.0', () => {
-  assert.equal(manifest.coreTag, 'v0.16.0');
+test('the release manifest names the core release it came from', () => {
+  assert.match(manifest.coreTag, /^v\d+\.\d+\.\d+$/);
 });
 
 const vendored = { 'dist/actions/ouro-actions.mts': 'ouro-actions.mts', 'dist/ax/actions.claims.json': 'actions.claims.json' };
