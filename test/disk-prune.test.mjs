@@ -22,6 +22,8 @@ function fake(over = {}) {
     worktrees: () => Object.keys(over.wts || {}),
     linked: (x) => over.wts[x].linked !== false,
     branchDone: (x) => (over.done || []).includes(x),
+    sessionPin: (x) => (over.pins || {})[x] || null,
+    archiveSessions: async (x) => { log.archived = [...(log.archived || []), x]; return over.archiveFail ? { ok: false, error: 'refused' } : { ok: true }; },
     open: (x) => (over.wts?.[x]?.open) || (over.openFiles || []).includes(x),
     changedAt: (x) => NOW - (over.wts?.[x]?.ageMs ?? over.cloneAge?.[x] ?? 9 * DAY),
     git: (x) => ({ dirty: Boolean((over.wts?.[x] || over.gits?.[x] || {}).dirty), unpushed: Boolean((over.wts?.[x] || over.gits?.[x] || {}).unpushed) }),
@@ -400,6 +402,31 @@ test('a worktree an unarchived session still lists goes once its branch is merge
   const r = await pass({}, f.d);
   assert.deepEqual(f.log.removed, ['/w/done']);
   assert.deepEqual(r.reclaimed.worktrees, ['/w/done']);
+});
+
+test('a finished worktree whose session runs, has an automation, coordinates or is a drain target is kept; others are archived first, then removed', async () => {
+  const wts = Object.fromEntries(['/w/drain', '/w/auto', '/w/run', '/w/plain'].map((k) => [k, { ageMs: 2 * DAY }]));
+  const f = fake({ wts, used: Object.keys(wts), done: Object.keys(wts), pins: { '/w/drain': 'session is a drain target', '/w/auto': 'automation', '/w/run': 'running' } });
+  await pass({}, f.d);
+  assert.deepEqual(f.log.removed, ['/w/plain']);
+  assert.deepEqual(f.log.archived, ['/w/plain']);
+});
+
+test('a finished worktree stays when its session cannot be archived', async () => {
+  const wts = { '/w/a': { ageMs: 2 * DAY } };
+  const f = fake({ wts, used: ['/w/a'], done: ['/w/a'], archiveFail: true });
+  await pass({}, f.d);
+  assert.deepEqual(f.log.removed, []);
+});
+
+test('drainTargets reads every session id the drain configs name', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { drainTargets } = await import('../src/disk-prune.mjs');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-dr-'));
+  const dir = path.join(home, '.local/state/ouroboros-skills/desk/drains'); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config.json'), '{"drains":[{"repo":"a/b","session":"3abdecbe-465a-4d40-870d-58c36ec65013"}]}');
+  assert.deepEqual([...drainTargets(home)], ['3abdecbe-465a-4d40-870d-58c36ec65013']);
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('real branchDone: merged or remote-deleted branches are done; a branch with its own commits, or still at the tip, is not', async () => {
