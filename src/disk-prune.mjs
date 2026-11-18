@@ -112,7 +112,7 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   if (before.free >= t.floor && !opts.force) return { action: 'ok', free: before.free, reclaimed };
-  if (!opts.force && !opts.dry_run && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
+  if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
 
   await deps.load?.();
   const done = () => deps.usage().free >= t.floor + t.margin;
@@ -126,7 +126,6 @@ export async function pass(opts, deps, say = () => {}) {
     const why = whyKeepCache({ open: deps.open(c), removedAt: rec.removedAt }, now, t);
     if (why) {
       if (!rec.said) { out(`kept cache ${c} (${gib(n)}): ${why}`); kept.push(c); }
-      if (!opts.dry_run && !rec.said) stamp({ caches: { ...(deps.readState() || {}).caches, [c]: { ...rec, said: true } } });
       continue;
     }
     // A cache another process is writing can refuse to go (ENOTEMPTY); that must not end the pass.
@@ -247,10 +246,12 @@ export async function pass(opts, deps, say = () => {}) {
   if (res.action === 'pruned') {
     await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
-  } else if (now - (st.toldAt || 0) >= t.nag) {
+  } else if (now - (st.toldAt || 0) >= t.nag || kept.length) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
     st.toldAt = now;
   }
+  // Told, so not again: launchd runs with --quiet, so this message is the only place a keep is said.
+  if (kept.length) st.caches = { ...st.caches, ...Object.fromEntries(kept.map((c) => [c, { ...st.caches?.[c], said: true }])) };
   // A pass that ends still under the floor rests too: the next one, ten minutes later, would scan the same disk (lsof,
   // du, find on a loaded Mac) to find the same nothing. Only when space is critically low does every pass run.
   if (res.action === 'nothing-safe' || (after.free < t.floor && after.free >= t.urgent)) st.restUntil = now + t.rest; else delete st.restUntil;

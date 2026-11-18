@@ -350,11 +350,14 @@ test('a cache removed on one pass and back on the next is kept, and that is said
   assert.equal(r.reclaimed.caches, 0);
   assert.equal(said.filter((l) => l.includes(`kept cache ${pw}`)).length, 1);
   assert.match(said.find((l) => l.includes('kept cache')), /came back/);
+  assert.equal(f.log.told.length, 2, 'the keep reaches the agent even within a day of the last message');
+  assert.match(f.log.told[1], /Kept 1 cache\(s\) in use \(ms-playwright\)/);
   f.d.now = () => NOW + 4 * 3600000;
   const again = [];
   await pass({}, f.d, (l) => again.push(l));
   assert.deepEqual(f.log.cache, [pw]);
   assert.equal(again.filter((l) => l.includes('kept cache')).length, 0, 'said once, not every pass');
+  assert.equal(f.log.told.length, 2);
 });
 
 test('a cache a running process has open is kept', async () => {
@@ -385,4 +388,7 @@ test('a pass that ends still under the floor rests an hour, unless free space is
   const g = fake({ freeGib: 5, wts: { '/w/r/a': { ageMs: 2 * DAY } } });
   assert.equal((await pass({}, g.d)).after, 25 * GIB);
   assert.notEqual((await pass({}, g.d)).action, 'resting', 'below the urgent level every pass runs');
+  const h = fake({ freeGib: 5 });
+  h.log.state = { restUntil: NOW + 3600000 };
+  assert.notEqual((await pass({}, h.d)).action, 'resting', 'a rest set when space was higher does not hold once it is critically low');
 });
