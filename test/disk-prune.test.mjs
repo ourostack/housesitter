@@ -262,3 +262,36 @@ test('scratch in /private/tmp goes only when quiet for a day, not open and not s
   assert.deepEqual(f.log.cache, ['/private/tmp/old']);
   assert.equal(r.reclaimed.scratch, 2 * GIB);
 });
+
+test('loose work under ~/code goes only when quiet for three days, not open, not in use and not launchd\'s', async () => {
+  const junk = ['/h/code/old', '/h/code/busy', '/h/code/open', '/h/code/agent'];
+  const f = fake({ cloneAge: { '/h/code/busy': 2 * DAY }, openFiles: ['/h/code/open'], protect: ['/h/code/agent'] });
+  f.d.junk = () => junk;
+  const r = await pass({}, f.d);
+  assert.deepEqual(f.log.cache, ['/h/code/old']);
+  assert.deepEqual(r.reclaimed.junk, ['/h/code/old']);
+});
+
+test('a cache that refuses to go (ENOTEMPTY) does not end the pass: the next categories still run', async () => {
+  const f = fake({ caches: ['/h/.npm/_cacache'], scratchList: ['/private/tmp/old'] });
+  const real = f.d.remove;
+  f.d.remove = (p) => { if (p.includes('_cacache')) throw new Error('ENOTEMPTY'); real(p); };
+  const r = await pass({}, f.d);
+  assert.equal(r.reclaimed.caches, 0);
+  assert.deepEqual(f.log.cache, ['/private/tmp/old']);
+});
+
+test('real temp folders and loose ~/code work: Apple\'s entries and git checkouts stay, old plain folders are listed', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-junk-'));
+  const code = path.join(home, 'code');
+  for (const d of ['repo/.git', 'plain/a', 'mixed/hunt1', 'mixed/withgit/.git']) fs.mkdirSync(path.join(code, d), { recursive: true });
+  fs.writeFileSync(path.join(code, 'afile'), 'x');
+  const got = realDiskDeps({ home }).junk().map((p) => path.relative(code, p)).sort();
+  assert.ok(got.includes('plain') && got.includes('plain/a'));
+  assert.ok(!got.some((p) => p === 'repo' || p.startsWith('repo/')), 'a checkout is not loose work');
+  assert.ok(!got.some((p) => p === 'mixed' || p.startsWith('mixed/')), 'a folder holding a checkout is left to the checkout stages');
+  assert.ok(!got.includes('afile'));
+  fs.rmSync(home, { recursive: true, force: true });
+});

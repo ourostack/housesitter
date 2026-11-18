@@ -10,7 +10,10 @@
 //   4. linked git worktrees (the app's own, and the ones agents keep under ~/code): a worktree goes only if no unarchived
 //      app session has it, no running process has a file open under it, nothing in it changed in 24 hours, and it is not
 //      something launchd runs from. A name never qualifies one. Unsaved work is saved to a bundle first.
-//   5. agents' scratch under /private/tmp: an entry I own that nothing has changed or opened for 24 hours
+//   5. agents' scratch under /private/tmp and in the per-user temp folder ($TMPDIR, /private/var/folders/*/*/T): an entry
+//      I own that nothing has changed or opened for 24 hours (Apple's own com.apple.* entries are not ours)
+//   5b. loose agent work under ~/code that is not a git checkout (art hunts, scratch folders, downloads): a folder with no
+//      .git inside it that nothing has changed or opened for 3 days; a busy folder is looked into one level down
 //   6. full clones agents left under ~/code or in a session's files/ that hold nothing Git does not: clean, no stash, no
 //      second worktree, every branch on a remote, nothing open, untouched for 3 days (a clone is one `git clone` away)
 //   7. the history of a session the app no longer lists, compressed, never deleted
@@ -35,6 +38,7 @@ export const DP = {
   deadQuiet: 2 * 24 * 3600000, // the heavy parts of an unlisted session go only after this long untouched
   minHistory: 20 * 1048576, // smaller histories are not worth compressing
   nag: 24 * 3600000, // how often "still under the floor" may be said
+  junkQuiet: 3 * 24 * 3600000, // loose non-git work under ~/code goes only after this long untouched
   cloneQuiet: 3 * 24 * 3600000, // a full clone is removed only after this long untouched
   rest: 3600000, // after a pass that found nothing safe, the next scan waits this long
   ledgerEvery: 55 * 60000, // free space is recorded about hourly
@@ -80,7 +84,7 @@ export async function pass(opts, deps, say = () => {}) {
     if (!(now - (st0.ledgerAt || 0) < t.ledgerEvery)) { deps.ledger?.({ at: iso(now), free: before.free, pct: before.pct }); stamp({ ledgerAt: now }); }
     if (!(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) { const b = deps.breakdown?.(st0.breakdown); if (b) stamp({ breakdown: { ...b, at: now } }); }
   }
-  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, sessions: 0, histories: 0, rescued: [] };
+  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, junk: [], junked: 0, sessions: 0, histories: 0, rescued: [] };
   const rows = (await deps.sessionRows?.()) || null;
   for (const id of rows?.archived || []) {
     if (rows.live.has(id)) continue;
@@ -95,12 +99,31 @@ export async function pass(opts, deps, say = () => {}) {
 
   await deps.load?.();
   const done = () => deps.usage().free >= t.floor + t.margin;
+  const used = deps.appWorktrees();
 
   for (const c of deps.caches()) {
     if (done()) break;
     const n = deps.size(c); if (!n) continue;
-    if (!opts.dry_run) deps.remove(c);
+    // A cache another process is writing can refuse to go (ENOTEMPTY); that must not end the pass.
+    if (!opts.dry_run) { try { deps.remove(c); } catch (e) { out(`could not remove cache ${c}: ${e.message}`); continue; } }
     reclaimed.caches += n; out(`cache ${c}: ${gib(n)}`);
+  }
+
+  // Scratch is cheap to judge and often the biggest yield, so it goes before the slow per-worktree stages.
+  for (const dir of deps.scratch?.() || []) {
+    if (done()) break;
+    if (deps.protectedBy?.(dir) || deps.open(dir) || !(now - deps.changedAt(dir) >= t.quiet)) continue;
+    const n = deps.size(dir);
+    if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove scratch ${dir}: ${e.message}`); continue; } }
+    reclaimed.scratch += n; out(`removed scratch ${dir}: ${gib(n)}`);
+  }
+
+  for (const dir of deps.junk?.() || []) {
+    if (done()) break;
+    if (deps.protectedBy?.(dir) || used.has(dir) || deps.open(dir) || !(now - deps.changedAt(dir, 3) >= t.junkQuiet)) continue;
+    const n = deps.size(dir);
+    if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove ${dir}: ${e.message}`); continue; } }
+    reclaimed.junk.push(dir); reclaimed.junked += n; out(`removed loose work ${dir}: ${gib(n)}`);
   }
 
   const idle = deps.idleSessions?.() || new Set();
@@ -130,7 +153,6 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.sessions += n; out(`dropped the files of unlisted session ${sdir.id.slice(0, 8)}: ${gib(n)}`);
   }
 
-  const used = deps.appWorktrees();
   for (const dir of deps.worktrees()) {
     if (done()) break;
     const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir), open: false, changedAt: 0, protectedBy: deps.protectedBy?.(dir) || null };
@@ -146,13 +168,6 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.worktrees.push(dir); out(`removed worktree ${dir}: ${gib(n)}`);
   }
 
-  for (const dir of deps.scratch?.() || []) {
-    if (done()) break;
-    if (deps.protectedBy?.(dir) || deps.open(dir) || !(now - deps.changedAt(dir) >= t.quiet)) continue;
-    const n = deps.size(dir);
-    if (!opts.dry_run) deps.remove(dir);
-    reclaimed.scratch += n; out(`removed scratch ${dir}: ${gib(n)}`);
-  }
 
   for (const dir of deps.clones?.() || []) {
     if (done()) break;
@@ -175,14 +190,14 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   const after = deps.usage();
-  const total = reclaimed.scratch + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const total = reclaimed.scratch + reclaimed.junked + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
   const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
   const tail = `${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in /private/tmp ${gib(reclaimed.scratch)}, compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
@@ -243,7 +258,13 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     usage: () => { const r = sh('/bin/df', ['-k', volume]).stdout.trim().split('\n').pop().split(/\s+/); const size = Number(r[1]), used = Number(r[2]), free = Number(r[3]) * 1024; return { pct: Math.round((used / size) * 100), free }; },
     caches: () => CACHES.map((c) => path.join(home, c)).filter((p) => fs.existsSync(p)),
     size: sizeOf,
-    remove: (p) => fs.rmSync(p, { recursive: true, force: true }),
+    // rmSync can lose a race with a process still writing into the folder (ENOTEMPTY); retry, then let rm have a go.
+    remove: (p) => {
+      try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) {
+        const r = sh('/bin/rm', ['-rf', p], { timeout: 600000 });
+        if (r.status !== 0 && fs.existsSync(p)) throw e;
+      }
+    },
     // Without the app's database nothing is known to be unused, so nothing is removed.
     appWorktrees: () => appPaths || new Set(),
     liveSessions: () => liveIds || new Set(),
@@ -265,10 +286,26 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       for (const d of sessionWorktrees()) if (!out.includes(d)) out.push(d);
       return out;
     },
-    // Top-level entries of /private/tmp that belong to this user (agents' scratch; the system's own are not ours).
+    // Entries I own in /private/tmp and in the per-user temp folder (/private/var/folders/*/*/T): agents' scratch. Apple's
+    // own com.apple.* entries are not ours.
     scratch: () => {
-      const me = process.getuid?.(), root = '/private/tmp', out = [];
-      try { for (const n of fs.readdirSync(root)) { const p = path.join(root, n); const st = fs.lstatSync(p); if (st.uid === me && !st.isSymbolicLink()) out.push(p); } } catch { /* none */ }
+      const me = process.getuid?.(), out = [];
+      const roots = ['/private/tmp'];
+      const u = sh('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR']).stdout.trim();
+      if (u) roots.push(fs.realpathSync(u));
+      for (const root of roots) {
+        try { for (const n of fs.readdirSync(root)) { if (/^com\.apple\./.test(n)) continue; const p = path.join(root, n); const st = fs.lstatSync(p); if (st.uid === me && !st.isSymbolicLink()) out.push(p); } } catch { /* none */ }
+      }
+      return out;
+    },
+    // Loose agent work under ~/code that is not a git checkout: folders with no .git within four levels, the folder and
+    // then what is in it (down to three levels), so a busy art or scratch folder still gives up its old parts.
+    junk: () => {
+      const root = path.join(home, 'code'), out = [];
+      const plain = (d) => { const r = sh('/usr/bin/find', [d, '-maxdepth', '4', '-name', '.git', '-print', '-quit'], { timeout: 120000 }); return !r.error && !r.stdout.trim(); };
+      const kids = (d) => { try { return fs.readdirSync(d).map((n) => path.join(d, n)).filter((p) => { const st = fs.lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); }); } catch { return []; } };
+      const walk = (d, depth) => { if (!plain(d)) return; out.push(d); if (depth < 3) for (const k of kids(d)) walk(k, depth + 1); };
+      for (const d of kids(root)) walk(d, 1);
       return out;
     },
     // Full clones (a .git folder) under ~/code and in sessions' files/: only those with nothing Git does not hold.
@@ -358,11 +395,11 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       const sessionSizes = Object.fromEntries(Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 50));
       return { roots: sizes, sessionSizes, top: list.sort((a, b) => (b.grew > 0 ? b.grew : 0) - (a.grew > 0 ? a.grew : 0) || b.size - a.size) };
     },
-    changedAt: (d) => {
-      const rec = sh('/usr/bin/find', [d, '-mtime', '-1', '-print', '-quit'], { timeout: 300000 });
+    changedAt: (d, days = 1) => {
+      const rec = sh('/usr/bin/find', [d, '-mtime', `-${days}`, '-print', '-quit'], { timeout: 300000 });
       if (rec.error || rec.stdout.trim()) return Date.now();
       const c = Number(sh('/usr/bin/git', ['-C', d, 'log', '-1', '--format=%ct']).stdout.trim());
-      return Math.max(fs.statSync(d).mtimeMs, (Number.isFinite(c) ? c : 0) * 1000);
+      try { return Math.max(fs.statSync(d).mtimeMs, (Number.isFinite(c) ? c : 0) * 1000); } catch { return Date.now(); }
     },
     git: (d) => ({
       dirty: sh('/usr/bin/git', ['-C', d, 'status', '--porcelain']).stdout.trim() !== '',
