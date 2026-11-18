@@ -25,6 +25,7 @@ import * as Beat from '../src/heartbeat.mjs';
 import * as Disk from '../src/disk-prune.mjs';
 import * as Load from '../src/load-shed.mjs';
 import * as Reap from '../src/orphan-reap.mjs';
+import * as Bloat from '../src/app-bloat.mjs';
 import * as OsUp from '../src/os-update.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
@@ -283,6 +284,13 @@ async function restartCopilot() {
     const r = await Load.pass(opts, Load.realLoadDeps({ state: stateDir, cfgLoad: () => loadConfig() }), (l) => { if (!json && !opt.quiet) console.log(l); });
     const reap = await Reap.pass(opts, Reap.realReapDeps({ state: stateDir, cfgLoad: () => loadConfig() }), (l) => { if (!json && !opt.quiet) console.log(l); });
     r.orphans = reap.reaped;
+    const cdeps = Copilot.realDeps({ copilotHome: opt['copilot-home'] || undefined, hackamore: opt.hackamore });
+    const bloat = await Bloat.pass(opts, Bloat.realBloatDeps({
+      state: stateDir, cfgLoad: () => loadConfig(), copilot: { runInProgress: Copilot.runInProgress, stateDir: () => stateDir },
+      busy: async () => (await Copilot.snapshot(cdeps, undefined, Copilot.skipOf({}, cdeps))).filter((x) => x.state === 'busy').length,
+      detach: (why) => Copilot.detach({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), args: ['restart-copilot', '--resume', '--why', why], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() } }),
+    }), (l) => { if (!json && !opt.quiet) console.log(l); });
+    r.app_bloat = bloat;
     if (json) emit(r); else if (!opt.quiet && opts.dry_run) say(`load shed: ${r.action} (load ${r.load1} on ${r.cores} cores, limit ${r.limit}; ${r.reniced.length} would be reniced)`);
     return 0;
   }

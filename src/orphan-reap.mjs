@@ -14,10 +14,14 @@ import { iso, readJson, writeJson } from './recovery.mjs';
 
 export const OR = { browserHours: 2, serverHours: 3 };
 
-// Browsers a lane drives: a throwaway profile, or the test browsers Playwright installs.
+// Browsers a lane drives: a throwaway profile, or the test browsers Playwright installs (Chromium, Firefox and WebKit, which
+// carries its own WebKit.framework, so its helper processes match by path). The system WebKit services
+// (/System/Library/Frameworks/WebKit.framework/.../com.apple.WebKit.WebContent) belong to an app such as Safari, Mail or the
+// Copilot app, are adopted by launchd from birth and are never matched here.
 export const BROWSER_PATTERNS = [
   '--user-data-dir=\\S*(github-browser-|playwright[^/ ]*profile|puppeteer_dev)',
   '/ms-playwright/',
+  '/webkit-[0-9]+/(pw_run\\.sh|Playwright\\.app|minibrowser-)',
   'chrome-headless-shell',
 ];
 

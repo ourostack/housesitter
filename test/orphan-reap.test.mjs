@@ -62,3 +62,17 @@ test('orphan_reap.enabled false turns it off', async () => {
   const r = await pass({}, { now: () => 0, cfg: () => ({ orphan_reap: { enabled: false } }) }, () => {});
   assert.equal(r.action, 'disabled');
 });
+
+test('an orphaned Playwright WebKit and its helpers are picked, but the system WebKit services of an app never are', () => {
+  const pw = '/Users/a/Library/Caches/ms-playwright/webkit-2158/';
+  const procs = [
+    P(40, 1, `${pw}pw_run.sh --inspector-pipe`),
+    P(41, 1, `${pw}Playwright.app/Contents/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent`),
+    P(42, 1, '/custom/browsers/webkit-2158/Playwright.app/Contents/MacOS/Playwright --headless'),
+    P(50, 1, '/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent', 24, 9_000_000),
+    P(51, 1, '/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking'),
+  ];
+  const picked = pickOrphans(procs, s);
+  assert.deepEqual(picked.map((r) => r.root.pid).sort(), [40, 41, 42]);
+  assert.ok(picked.every((r) => r.kind === 'browser'));
+});
