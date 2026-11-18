@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { currentLink, deploy, liveBin, programArgs, releasesRoot, renderDeploy } from '../src/deploy.mjs';
+import { currentLink, deploy, liveBin, programArgs, releasesRoot, renderDeploy, shimPath } from '../src/deploy.mjs';
 
 const UID = 501;
 const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
@@ -315,5 +315,35 @@ test('shepherd gets the same swap: its clone-pointing plist is rewritten and rel
   assert.ok(lc.calls.includes(`bootout gui/${UID}/bot.ouro.shepherd`));
   assert.ok(!lc.calls.some((c) => c.includes('heartbeat') && !c.startsWith('print')), 'housesitter\'s jobs are not shepherd\'s to reload');
   assert.ok(readPlist(f, 'bot.ouro.housesitter.heartbeat').includes(path.join(f.clone, 'bin', 'housesitter.mjs')));
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('deploy writes the ~/.local/bin command for the tool, refreshes it, runs the live release, and leaves a file that is not its own', async () => {
+  const f = fixture();
+  const lc = fakeLaunchctl().fn;
+  const shim = shimPath('shepherd', f.home);
+  const dry = await deploy({ name: 'shepherd', ref: 'v0.9.0', clone: f.clone, why: 'test', dry: true, home: f.home, uid: UID, launchctl: lc });
+  assert.match(dry.steps.find((s) => s.step === 'shim').detail, /would write/);
+  assert.equal(fs.existsSync(shim), false, 'a dry run writes nothing');
+
+  const r = await deploy({ name: 'shepherd', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.steps.find((s) => s.step === 'shim').detail, /written/);
+  assert.ok(fs.statSync(shim).mode & 0o100, 'it is executable');
+  const run = (extra = {}) => spawnSync(shim, ['--version'], { encoding: 'utf8', env: { HOME: f.home, PATH: '/usr/bin:/bin', ...extra } });
+  assert.equal(run().stdout.trim(), '0.9.0', 'it runs the live release from a bare environment');
+
+  f.publish('0.10.0');
+  fs.rmSync(shim);
+  const again = await deploy({ name: 'shepherd', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc });
+  assert.match(again.steps.find((s) => s.step === 'shim').detail, /written/, 'a deleted shim is regenerated');
+  assert.equal(run().stdout.trim(), '0.10.0', 'and it follows the new release');
+  const third = await deploy({ name: 'shepherd', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc });
+  assert.match(third.steps.find((s) => s.step === 'shim').detail, /is current/);
+
+  fs.writeFileSync(shim, '#!/bin/sh\necho mine\n');
+  const kept = await deploy({ name: 'shepherd', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: lc });
+  assert.match(kept.steps.find((s) => s.step === 'shim').detail, /left alone/);
+  assert.match(fs.readFileSync(shim, 'utf8'), /echo mine/);
   fs.rmSync(f.base, { recursive: true, force: true });
 });
