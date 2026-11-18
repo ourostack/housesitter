@@ -275,6 +275,25 @@ const sizeOf = (p) => { const r = sh('/usr/bin/du', ['-sk', p], { timeout: 30000
 // A listed session is a candidate for losing regenerable files only when nothing runs it and no automation will wake it.
 export const mayThinSession = (id, { live, running, automated }) => live.has(id) && !running.has(id) && !automated.has(id);
 
+// The common git directory of the repository holding d, read from the files git keeps (a `.git` directory, or a `.git` file
+// saying `gitdir:` plus the `commondir` file), so no process is started; null when d is in no repository.
+export function gitCommonDir(d) {
+  for (let cur = path.resolve(d); ; cur = path.dirname(cur)) {
+    const g = path.join(cur, '.git');
+    try {
+      const st = fs.statSync(g);
+      let dir = g;
+      if (st.isFile()) {
+        const m = fs.readFileSync(g, 'utf8').match(/^gitdir:\s*(.+)$/m); if (!m) return null;
+        dir = path.resolve(cur, m[1].trim());
+        try { dir = path.resolve(dir, fs.readFileSync(path.join(dir, 'commondir'), 'utf8').trim()); } catch { /* not a linked worktree */ }
+      }
+      return fs.realpathSync(dir);
+    } catch { /* keep climbing */ }
+    if (cur === path.dirname(cur)) return null;
+  }
+}
+
 // Sessions that Desk's issue drains wake: every session id named in its drain config (generated or by hand).
 export function drainTargets(home) {
   const ids = new Set();
@@ -304,7 +323,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     return null;
   };
   let protectedPaths = null;
-  const gitCommon = (d) => { const r = sh('/usr/bin/git', ['-C', d, 'rev-parse', '--git-common-dir']); return r.status === 0 ? path.resolve(d, r.stdout.trim()) : null; };
+  const commons = new Map();
+  const gitCommon = (d) => { if (!commons.has(d)) commons.set(d, gitCommonDir(d)); return commons.get(d); };
   const load_protected = () => {
     if (protectedPaths) return;
     protectedPaths = [path.join(home, 'code', 'housesitter'), ...(extraProtected || [])];
@@ -578,7 +598,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     writeState: (o) => writeJson(path.join(state, 'disk-prune.json'), o),
     // Reads the app's database once per pass; the pass calls this first.
     load: async () => {
-      openList = undefined; protectedPaths = null; fetched.clear();
+      openList = undefined; protectedPaths = null; fetched.clear(); commons.clear();
       const w = await q('SELECT w.path AS p FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL');
       const s = await q('SELECT id FROM sessions WHERE archived_at IS NULL');
       const wr = await q('SELECT w.path AS p, k.session_id AS sid FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL AND k.session_id IS NOT NULL');
