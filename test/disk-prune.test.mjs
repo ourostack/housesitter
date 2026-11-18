@@ -21,6 +21,7 @@ function fake(over = {}) {
     liveSessions: () => new Set(over.live || []),
     worktrees: () => Object.keys(over.wts || {}),
     linked: (x) => over.wts[x].linked !== false,
+    branchDone: (x) => (over.done || []).includes(x),
     open: (x) => (over.wts?.[x]?.open) || (over.openFiles || []).includes(x),
     changedAt: (x) => NOW - (over.wts?.[x]?.ageMs ?? over.cloneAge?.[x] ?? 9 * DAY),
     git: (x) => ({ dirty: Boolean((over.wts?.[x] || over.gits?.[x] || {}).dirty), unpushed: Boolean((over.wts?.[x] || over.gits?.[x] || {}).unpushed) }),
@@ -391,4 +392,35 @@ test('a pass that ends still under the floor rests an hour, unless free space is
   const h = fake({ freeGib: 5 });
   h.log.state = { restUntil: NOW + 3600000 };
   assert.notEqual((await pass({}, h.d)).action, 'resting', 'a rest set when space was higher does not hold once it is critically low');
+});
+
+test('a worktree an unarchived session still lists goes once its branch is merged or gone, but only if idle and not open', async () => {
+  const wts = { '/w/done': { ageMs: 2 * DAY }, '/w/active': { ageMs: 2 * DAY }, '/w/fresh': { ageMs: 2 * 3600000 }, '/w/openone': { ageMs: 2 * DAY, open: true } };
+  const f = fake({ wts, used: Object.keys(wts), done: ['/w/done', '/w/fresh', '/w/openone'] });
+  const r = await pass({}, f.d);
+  assert.deepEqual(f.log.removed, ['/w/done']);
+  assert.deepEqual(r.reclaimed.worktrees, ['/w/done']);
+});
+
+test('real branchDone: merged or remote-deleted branches are done; a branch with its own commits, or still at the tip, is not', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path'), { execFileSync } = await import('node:child_process');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-bd-'));
+  const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-C', cwd, ...a], { encoding: 'utf8' });
+  const origin = path.join(root, 'origin.git'), main = path.join(root, 'main');
+  git(root, 'init', '-q', '--bare', '-b', 'main', origin); git(root, 'clone', '-q', origin, main);
+  fs.writeFileSync(path.join(main, 'a'), '1'); git(main, 'add', 'a'); git(main, 'commit', '-qm', 'a'); git(main, 'push', '-q', 'origin', 'main');
+  git(main, 'remote', 'set-head', 'origin', 'main');
+  const wt = (n, commit) => { const d = path.join(root, n); git(main, 'worktree', 'add', '-q', '-b', n, d); if (commit) { fs.writeFileSync(path.join(d, n), n); git(d, 'add', n); git(d, 'commit', '-qm', n); } return d; };
+  const tip = wt('tip', false), work = wt('work', true), merged = wt('merged', true), gone = wt('gone', true);
+  const d = realDiskDeps({ home: root });
+  assert.equal(d.branchDone(tip), false);
+  git(merged, 'push', '-q', 'origin', 'merged:main');
+  fs.writeFileSync(path.join(main, 'b'), '2'); git(main, 'pull', '-q', 'origin', 'main'); git(main, 'add', 'b'); git(main, 'commit', '-qm', 'b'); git(main, 'push', '-q', 'origin', 'main');
+  git(gone, 'push', '-q', '-u', 'origin', 'gone'); git(main, 'push', '-q', 'origin', '--delete', 'gone');
+  const d2 = realDiskDeps({ home: root });
+  assert.equal(d2.branchDone(work), false);
+  assert.equal(d2.branchDone(merged), true);
+  assert.equal(d2.branchDone(gone), true);
+  fs.rmSync(root, { recursive: true, force: true });
 });

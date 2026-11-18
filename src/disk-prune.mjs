@@ -36,6 +36,7 @@ import { withBlock } from './lean-hook.mjs';
 export const DP = {
   floor: 500 * 1073741824, // free bytes below which a pass starts reclaiming
   margin: 50 * 1073741824, // it stops once free space is floor + margin
+  scratchQuiet: 3 * 3600000, // temp scratch is churned all day, so a full day of quiet would never come
   quiet: 24 * 3600000, // a worktree or history changed within this is never touched
   deadQuiet: 2 * 24 * 3600000, // the heavy parts of an unlisted session go only after this long untouched
   minHistory: 20 * 1048576, // smaller histories are not worth compressing
@@ -139,7 +140,7 @@ export async function pass(opts, deps, say = () => {}) {
   // Scratch is cheap to judge and often the biggest yield, so it goes before the slow per-worktree stages.
   for (const dir of deps.scratch?.() || []) {
     if (done()) break;
-    if (deps.protectedBy?.(dir) || deps.open(dir) || !(now - deps.changedAt(dir) >= t.quiet)) continue;
+    if (deps.protectedBy?.(dir) || deps.open(dir) || !(now - deps.changedAt(dir) >= t.scratchQuiet)) continue;
     const n = deps.size(dir);
     if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove scratch ${dir}: ${e.message}`); continue; } }
     reclaimed.scratch += n; out(`removed scratch ${dir}: ${gib(n)}`);
@@ -202,7 +203,9 @@ export async function pass(opts, deps, say = () => {}) {
 
   for (const dir of deps.worktrees()) {
     if (done()) break;
-    const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir), open: false, changedAt: 0, protectedBy: deps.protectedBy?.(dir) || null };
+    // A session still lists the worktree, but its branch is merged or gone: the work is on the remote, so only the quiet and open rules remain.
+    const finished = used.has(dir) && !deps.protectedBy?.(dir) && Boolean(deps.branchDone?.(dir));
+    const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir) && !finished, open: false, changedAt: 0, protectedBy: deps.protectedBy?.(dir) || null };
     if (w.linked && !w.usedByApp && !w.protectedBy) { w.open = deps.open(dir); if (!w.open) w.changedAt = deps.changedAt(dir); }
     const why = whyKeep(w, now, t);
     if (why) { out(`kept ${dir}: ${why}`); continue; }
@@ -275,6 +278,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   const sessions = path.join(copilotHome, 'session-state');
   const rescueRoot = path.join(home, 'AgentBundles', 'disk-rescue');
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
+  const fetched = new Set();
   let idleKnown = false, runningIds = new Set(), autoIds = new Set(), appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
   const LEAN = '.github/scripts/lean-worktree.sh';
   // Linked worktrees agents make inside a session's files/ (a worktree's .git is a file).
@@ -385,6 +389,20 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     protectedBy: (d) => {
       load_protected();
       return protectedPaths.find((p) => d === p || d.startsWith(`${p}/`)) || protectedPaths.find((p) => gitCommon(d) === gitCommon(p)) || null;
+    },
+    // True when the worktree's branch is merged into the default branch or deleted on the remote (fetched once per repository per pass).
+    branchDone: (d) => {
+      const common = gitCommon(d); if (!common) return false;
+      if (!fetched.has(common)) { fetched.add(common); sh('/usr/bin/git', ['-C', d, 'fetch', '--prune', '--quiet', 'origin'], { timeout: 90000 }); }
+      const g = (...a) => sh('/usr/bin/git', ['-C', d, ...a]);
+      const br = g('symbolic-ref', '--quiet', '--short', 'HEAD').stdout.trim();
+      if (br) {
+        const up = g('for-each-ref', '--format=%(upstream:track)', `refs/heads/${br}`).stdout;
+        if (/gone/.test(up)) return true;
+      }
+      const head = g('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD').stdout.trim() || 'refs/remotes/origin/main';
+      // A branch still at the default branch's tip has done no work yet; that is a new session, not a finished one.
+      return g('rev-parse', 'HEAD').stdout.trim() !== g('rev-parse', head).stdout.trim() && g('merge-base', '--is-ancestor', 'HEAD', head).status === 0;
     },
     linked: (d) => { try { return fs.statSync(path.join(d, '.git')).isFile(); } catch { return false; } },
     // One lsof snapshot per pass; when it cannot be read, everything counts as open.
@@ -524,7 +542,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     writeState: (o) => writeJson(path.join(state, 'disk-prune.json'), o),
     // Reads the app's database once per pass; the pass calls this first.
     load: async () => {
-      openList = undefined; protectedPaths = null;
+      openList = undefined; protectedPaths = null; fetched.clear();
       const w = await q('SELECT w.path AS p FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL');
       const s = await q('SELECT id FROM sessions WHERE archived_at IS NULL');
       const wr = await q('SELECT w.path AS p, k.session_id AS sid FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL AND k.session_id IS NOT NULL');
