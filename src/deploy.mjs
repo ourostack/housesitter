@@ -29,6 +29,30 @@ export function liveBin(fallback, { home = os.homedir(), name = 'housesitter' } 
   return fs.existsSync(live) ? live : fallback;
 }
 
+// The command on PATH: ~/.local/bin/<tool>, a two-line script that runs the live release, so a deploy never changes it and
+// a fresh shell finds the tool. Deploy writes it every time; a file there that deploy did not write is left alone.
+export const SHIM_MARK = '# written by housesitter deploy';
+export const shimPath = (name, home = os.homedir()) => path.join(home, '.local', 'bin', name);
+export function shimText(name, { home = os.homedir(), node = process.execPath } = {}) {
+  const bin = path.join(currentLink(name, home), TARGETS[name].bin);
+  return `#!/bin/sh\n${SHIM_MARK}: runs the live ${name} release\nN=${JSON.stringify(node)}; [ -x "$N" ] || N=node\nexec "$N" ${JSON.stringify(bin)} "$@"\n`;
+}
+function writeShim(name, { home, dry }) {
+  const file = shimPath(name, home);
+  const text = shimText(name, { home });
+  let have = null;
+  try { have = fs.readFileSync(file, 'utf8'); } catch { /* none yet */ }
+  if (have !== null && !have.includes(SHIM_MARK)) return { ok: true, detail: `${file} is not Housesitter's, so it is left alone` };
+  if (have === text) return { ok: true, detail: `${file} is current` };
+  if (dry) return { ok: true, detail: `would write ${file}, the command that runs the live ${name}` };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text, { mode: 0o755 });
+  fs.chmodSync(tmp, 0o755);
+  fs.renameSync(tmp, file);
+  return { ok: true, detail: `${file} ${have === null ? 'written' : 'refreshed'}: ${name} runs the live release from any shell` };
+}
+
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const unesc = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
@@ -213,6 +237,9 @@ export async function deploy({ name, ref = null, clone = null, why = null, home 
     fs.renameSync(tmp, cur);
     step('swap', true, `${cur} -> ${dir}${previous ? ` (was ${previous})` : ''}`);
   }
+
+  const shim = writeShim(name, { home, dry });
+  step('shim', shim.ok, shim.detail);
 
   // The jobs: a plist (or a script it runs) that names a copy of this tool is pointed at the live release; a loaded job is
   // reloaded to take it, and verified loaded afterwards. A KeepAlive job on the release, or one whose script changed, is kicked.
