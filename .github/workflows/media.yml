@@ -4,7 +4,7 @@ name: media
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['docs/tapes/**', 'src/**', 'bin/**', 'assets/evening.json', 'device/sitter.py']
+    paths: ['.github/workflows/media.yml', 'docs/tapes/**', 'src/**', 'bin/**', 'assets/evening.json', 'device/sitter.py']
 permissions:
   contents: read
 jobs:
@@ -16,9 +16,16 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - uses: charmbracelet/vhs-action@v2
-        with:
-          path: docs/tapes/demo.tape
+      # vhs-action downloads the latest ffmpeg on every run and fails when that host returns 504 (#20), so install
+      # vhs's dependencies from the runner's apt cache and the vhs release from GitHub instead.
+      - run: sudo apt-get install -y ffmpeg ttyd
+      - run: |
+          gh release download "$VHS_VERSION" -R charmbracelet/vhs -p 'vhs_*_amd64.deb' -D "$RUNNER_TEMP"
+          sudo dpkg -i "$RUNNER_TEMP"/vhs_*_amd64.deb
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VHS_VERSION: v0.12.1
+      - run: vhs docs/tapes/demo.tape
       - run: vhs docs/tapes/night.tape
       - uses: actions/upload-artifact@v4
         with:
