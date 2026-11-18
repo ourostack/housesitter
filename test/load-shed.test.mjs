@@ -62,6 +62,17 @@ test('config adds patterns and excludes, or replaces the defaults', () => {
   assert.deepEqual(pick(t, settings({ load_shed: { patterns: ['weird-batch'], replace_patterns: true } })).matched.map((p) => p.pid), [2]);
 });
 
+test('test runners match: Go test binaries, go/cargo test, pytest, vitest, jest, npm/pnpm test and their children', () => {
+  const t = [
+    P(2, 1, '/var/folders/ab/xyz/T/go-build123456/b001/cli.test -test.v'),
+    P(3, 1, 'go test ./...'), P(4, 1, 'cargo test --all'), P(5, 1, 'python -m pytest -x'),
+    P(6, 1, 'node /w/node_modules/.bin/vitest run'), P(7, 1, 'node /w/node_modules/.bin/jest'),
+    P(8, 1, 'npm test'), P(9, 8, 'sh -c tsc'), P(10, 1, 'pnpm run test'),
+    P(11, 1, 'go build ./...'), P(12, 1, 'node server.js'), P(13, 3, '/usr/bin/git diff'),
+  ];
+  assert.deepEqual(pick(t, settings()).matched.map((p) => p.pid), [2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
 function fake({ load, cores = 18, procs = TABLE, cfg = {}, fail = [] } = {}) {
   const log = { renice: [], bg: [], rows: [], state: null };
   return {
