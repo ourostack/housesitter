@@ -38,3 +38,32 @@ test('a message says what the sitter saw in words, the same in Node and on the K
   const py = execFileSync('python3', ['-c', `import sys,json; sys.path.insert(0,'device'); import sitter; print(sitter.plain_signs(json.loads(sys.argv[1])))`, JSON.stringify(obs)], { encoding: 'utf8' }).trim();
   assert.equal(py, want);
 });
+
+test('structured lock lessons: Node and the dependency-free sitter agree on wallpaper, layout and refusals', async () => {
+  const { promptSeen } = await import('../src/frames.mjs');
+  const py = `
+import json, sys, base64
+sys.path[:0] = [${JSON.stringify(DEVICE)}, "test"]
+import sitter as S
+from lock_frames import picture, REGIONS
+f = S.frame_features(*picture())
+ref = dict(S.lock_lesson([f] * 3, REGIONS), kind="lock")
+out = []
+for changes in ({}, {"wallpaper": 1}, {"wallpaper": 1, "dx": 8, "dy": -12, "scale": 2},
+                {"field": False}, {"hint": False}, {"hint_dy": -35}, {"desktop": True}, {"wallpaper": 1, "dy": 1}):
+    f = S.frame_features(*picture(**changes))
+    result = S.prompt_seen(f, [ref])
+    out.append({"mean": f["mean"], "top_edges": f["top_edges"], "size": f["size"],
+                "lum": base64.b64encode(f["_lum"]).decode(),
+                "lockLum": base64.b64encode(f["_lock"]).decode(),
+                "visible": result[0], "match": result[1]})
+print(json.dumps({"ref": ref, "cases": out}))`;
+  const r = spawnSync('python3', ['-c', py], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  assert.equal(r.status, 0, r.stderr);
+  const data = JSON.parse(r.stdout);
+  const results = data.cases.map((f) => promptSeen({
+    ...f, lum: Buffer.from(f.lum, 'base64'), lockLum: Buffer.from(f.lockLum, 'base64'),
+  }, [data.ref]));
+  assert.deepEqual(results.map((r) => r.visible), [true, true, true, false, false, false, false, true]);
+  assert.deepEqual(results.map((r) => r.match), data.cases.map((r) => r.match));
+});

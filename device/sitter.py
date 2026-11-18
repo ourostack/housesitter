@@ -41,6 +41,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import re
 import socket
@@ -51,7 +52,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -1660,8 +1661,7 @@ def frame_jpeg(kvmd, run=subprocess.run, width=None):
 
 
 def frame_features(y, w, h):
-    """Mean brightness, menu-bar text edges in the top rows, a 32x18 thumbnail (luma only), and the luma grid the
-    password prompt is matched on."""
+    """Screen classification, a thumbnail, the legacy prompt grid and the in-memory luma plane for widget matching."""
     step = max(1, len(y) // 4000)
     sample = y[::step]
     mean = sum(sample) / max(1, len(sample))
@@ -1676,7 +1676,8 @@ def frame_features(y, w, h):
         for tx in range(32):
             yy, xx = int((ty + 0.5) * h / 18), int((tx + 0.5) * w / 32)
             thumb.append(y[yy * w + xx])
-    return {"mean": round(mean, 1), "top_edges": edges, "thumb": thumb, "size": [w, h], "_lum": lum_grid(y, w, h)}
+    return {"mean": round(mean, 1), "top_edges": edges, "thumb": thumb, "size": [w, h],
+            "_lum": lum_grid(y, w, h), "_lock": y}
 
 
 # The password prompt's own pixels: the avatar, the name and "Enter Password" are white and never move; an aerial
@@ -1688,6 +1689,108 @@ PROMPT_LEARN_LUMA, PROMPT_SEEN_LUMA, PROMPT_RECALL, PROMPT_MIN_POINTS = 200, 160
 # Two-sided: the prompt is a little white on a darker screen. Real lock and FileVault frames have 0.1-1% of the grid
 # that bright; a desktop has 62%. A frame brighter than this nearly everywhere (white, grey, a bright app) never matches.
 PROMPT_MAX_BRIGHT = 0.15
+LOCK_SHIFT = (0.012, 0.0456)
+
+
+def lock_lesson(frames, regions):
+    """Learn only operator-marked widgets, using signed local contrast rather than wallpaper luminance."""
+    if len(frames) < 3:
+        raise ValueError("a lock lesson needs at least three fresh frames")
+    if not isinstance(regions, dict) or set(regions) != {"field", "hint"}:
+        raise ValueError("lock regions need field and hint rectangles: [left, top, right, bottom], fractions of the whole picture")
+    boxes = {}
+    sizes = [f.get("size") for f in frames]
+    if not sizes[0] or any(s != sizes[0] for s in sizes):
+        raise ValueError("lock lesson frames must have the same decoded resolution")
+    gx, gy = sizes[0]
+    rx0, rx1, ry0, ry1 = PROMPT_REGION
+    for name, box in regions.items():
+        if (not isinstance(box, (list, tuple)) or len(box) != 4
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in box)):
+            raise ValueError("%s needs four numeric screen fractions" % name)
+        x0, y0, x1, y1 = box
+        if not (rx0 <= x0 < x1 <= rx1 and ry0 <= y0 < y1 <= ry1
+                and 0.04 <= x1 - x0 <= 0.30 and 0.006 <= y1 - y0 <= 0.10):
+            raise ValueError("%s must tightly enclose one widget in the lower middle of the picture" % name)
+        boxes[name] = [math.ceil(x0 * gx), math.ceil(y0 * gy), int(x1 * gx), int(y1 * gy)]
+    a, b = boxes["field"], boxes["hint"]
+    if max(a[0], b[0]) < min(a[2], b[2]) and max(a[1], b[1]) < min(a[3], b[3]):
+        if not (a[0] + 2 <= b[0] < b[2] <= a[2] - 2 and a[1] + 2 <= b[1] < b[3] <= a[3] - 2):
+            raise ValueError("hint must be separate from the field, or strictly inside it with room for its border")
+    lums = [f.get("_lock") for f in frames]
+    if not lums or any(not l or len(l) != gx * gy for l in lums):
+        raise ValueError("new lock lessons need freshly decoded luma planes")
+    widgets = []
+    step = max(1, gx // 1000)
+    for name in ("hint", "field"):
+        x0, y0, x1, y1 = boxes[name]
+        pairs = []
+        for y in range(y0, y1 - 2 * step, step):
+            for x in range(x0, x1 - 2 * step, step):
+                i = y * gx + x
+                for j in (i + 2 * step, i + 2 * step * gx):
+                    if name == "field" and any(b[0] <= p % gx < b[2] and b[1] <= p // gx < b[3] for p in (i, j)):
+                        continue
+                    diffs = [l[i] - l[j] for l in lums]
+                    sign = 1 if min(diffs) >= 32 else -1 if max(diffs) <= -32 else 0
+                    if sign:
+                        pairs.append([i, j, sign])
+        if any(sum(1 for p in pairs if p[2] == sign) < 12 for sign in (-1, 1)):
+            raise ValueError("%s has too little stable, two-sided contrast; show the empty password field and the hint clearly" % name)
+        # Bound both lesson size and work per look, sampling across the whole widget.
+        pairs = [pairs[i * len(pairs) // 256] for i in range(256)] if len(pairs) > 256 else pairs
+        widgets.append({"name": name, "box": boxes[name], "pairs": pairs})
+    return {"v": 2, "size": sizes[0], "widgets": widgets}
+
+
+def lock_match(ref, f):
+    lum = (f or {}).get("_lock")
+    size = (f or {}).get("size")
+    source = ref.get("size")
+    widgets = ref.get("widgets")
+    if ref.get("v") != 2 or not lum or not size or not source or len(lum) != size[0] * size[1] or not widgets:
+        return 0.0
+    gx, gy = size
+    sx, sy = source
+    if len(widgets) != 2 or {w.get("name") for w in widgets} != {"field", "hint"}:
+        return 0.0
+    mapped = []
+    for widget in widgets:
+        # Map reference pixel centres once, then search integer *HDMI* pixels. Resampling to a coarse grid loses
+        # thin glyph strokes and makes even a one-pixel move depend on the sampling phase.
+        index = lambda i: int((i // sx + 0.5) * gy / sy) * gx + int((i % sx + 0.5) * gx / sx)
+        pairs = [(index(i), index(j), sign) for i, j, sign in widget["pairs"]]
+        x0, y0, x1, y1 = widget["box"]
+        mapped.append(([int(x0 * gx / sx), int(y0 * gy / sy), math.ceil(x1 * gx / sx), math.ceil(y1 * gy / sy)], pairs))
+    best = 0.0
+    mx, my = int(gx * LOCK_SHIFT[0]), int(gy * LOCK_SHIFT[1])
+    for dy in range(-my, my + 1):
+        for dx in range(-mx, mx + 1):
+            score = 1.0
+            for box, pairs in mapped:
+                x0, y0, x1, y1 = box
+                if x0 + dx < 0 or y0 + dy < 0 or x1 + dx > gx or y1 + dy > gy:
+                    score = 0.0
+                    break
+                if len(pairs) < 24:
+                    score = 0.0
+                    break
+                off = dy * gx + dx
+                missed = 0
+                for i, j, sign in pairs:
+                    if sign * (lum[i + off] - lum[j + off]) < 12:
+                        missed += 1
+                        if missed > (1 - PROMPT_RECALL) * len(pairs):
+                            break
+                score = min(score, 1 - missed / len(pairs))
+                if score < PROMPT_RECALL:
+                    break
+            best = max(best, score)
+    return best if best >= PROMPT_RECALL else 0.0
+
+
+def lesson_match(ref, f):
+    return lock_match(ref, f) if "v" in ref else prompt_match(ref["points"], f)
 
 
 def lum_grid(y, w, h, region=PROMPT_REGION, grid=PROMPT_GRID):
@@ -1747,7 +1850,7 @@ PASSWORD_KINDS = ("boot", "lock")
 
 
 def lessons():
-    return [r for r in (load("prompt_refs.json", []) or []) if r.get("points")]
+    return [r for r in (load("prompt_refs.json", []) or []) if r.get("points") or r.get("v") == 2]
 
 
 def prompt_seen(f, refs=None):
@@ -1755,11 +1858,14 @@ def prompt_seen(f, refs=None):
     prompts an operator taught. kind "boot" was taught while a boot was pending (the FileVault screen); "lock" any other
     time. The login window's list of users ("grid") is never a password prompt: see grid_seen."""
     refs = [r for r in (lessons() if refs is None else refs) if (r.get("kind") or "lock") in PASSWORD_KINDS]
+    taught = len(refs)
     if not f or not f.get("_lum") or classify_frame(f) != "prompt_like":
         return False, 0.0, len(refs), None
-    scored = sorted(((prompt_match(r["points"], f), r.get("kind") or "lock") for r in refs), key=lambda m: -m[0])
+    if any(r.get("kind") == "lock" and r.get("v") == 2 for r in refs):
+        refs = [r for r in refs if (r.get("kind") or "lock") != "lock" or r.get("v") == 2]
+    scored = sorted(((lesson_match(r, f), r.get("kind") or "lock") for r in refs), key=lambda m: -m[0])
     best, kind = scored[0] if scored else (0.0, None)
-    return best >= PROMPT_RECALL, round(best, 3), len(refs), (kind if best >= PROMPT_RECALL else None)
+    return best >= PROMPT_RECALL, round(best, 3), taught, (kind if best >= PROMPT_RECALL else None)
 
 
 def grid_seen(f, refs=None):
@@ -1784,12 +1890,15 @@ def prompt_visible(f):
     return prompt_seen(f)[0]
 
 
-def learn_prompt(frames, why, now=None, kind="lock", click=None):
+def learn_prompt(frames, why, now=None, kind="lock", click=None, regions=None):
     """Keep the steady bright pixels of a screen from several frames a few seconds apart (one frame is accepted too)
     as a lesson. Only an operator who is looking at the KVM's picture runs this (housesitter learn-prompt <mac>).
     kind "boot": the FileVault screen; "lock": the lock screen's password prompt; "grid": the login window's list of
-    users, with `click` the account's tile as [fx, fy] fractions of the screen (a grid lesson only ever clicks)."""
+    users, with `click` the account's tile as [fx, fy] fractions of the screen (a grid lesson only ever clicks).
+    The CLI requires `regions` for new lock lessons. No regions preserves the legacy library contract."""
     frames = frames if isinstance(frames, list) else [frames]
+    if regions is not None and kind != "lock":
+        raise ValueError("widget regions are only for a lock lesson, not FileVault or the list of users")
     if kind not in LESSON:
         raise ValueError("kind is boot, lock or grid")
     if kind == "grid" and not (isinstance(click, (list, tuple)) and len(click) == 2 and all(0 < float(c) < 1 for c in click)):
@@ -1798,17 +1907,21 @@ def learn_prompt(frames, why, now=None, kind="lock", click=None):
         k = classify_frame(f)
         if k != "prompt_like":
             raise ValueError("that frame reads as %s, not a login screen; show the FileVault, lock or login screen on the KVM's display first" % k)
+    widget_ref = lock_lesson(frames, regions) if regions is not None else None
     pts = prompt_points(frames)
-    if len(pts) < PROMPT_MIN_POINTS:
+    if widget_ref is None and len(pts) < PROMPT_MIN_POINTS:
         raise ValueError("nothing steady and bright enough to learn (%d points); is the screen on the KVM's picture?" % len(pts))
     refs = lessons()[-6:]
     for r in refs:
         other = r.get("kind") or "lock"
-        if other != kind and any(prompt_match(r["points"], f) >= PROMPT_RECALL for f in frames):
+        if other != kind and any(lesson_match(r, f) >= PROMPT_RECALL for f in frames):
             # If two screens look alike to the sitter, the lesson for one would also act on the other.
             names = {"boot": "FileVault", "lock": "lock screen", "grid": "list of users"}
             raise ValueError("this screen matches the %s lesson it already has, so on this Mac the sitter can't tell your %s from %s; it won't learn it as %s. Is this the screen you meant (restart and teach FileVault at FileVault, or forget the lessons and start again)?" % (LESSON[other], names[other], names[kind], names[kind]))
     ref = {"points": pts, "frames": len(frames), "at": now if now is not None else int(time.time() * 1000), "why": why, "kind": kind}
+    if widget_ref:
+        ref.pop("points")
+        ref.update(widget_ref)
     if kind == "grid":
         ref["click"] = [round(float(click[0]), 4), round(float(click[1]), 4)]
     refs.append(ref)
@@ -3201,8 +3314,22 @@ def main(argv):
         print("learn-prompt: --grid and --filevault are two different lessons: a list of users is only ever clicked, never typed into. Teach each on its own", file=sys.stderr)
         return 2
     if argv[:1] == ["learn-prompt"]:
-        # An operator looking at the KVM's own picture, with the password field on it, teaches the sitter that screen:
-        # three frames a few seconds apart, so a moving wallpaper drops out and only the prompt's own pixels stay.
+        # An operator verifies the empty field on the KVM's picture. Lock widgets use marked regions; legacy
+        # FileVault and user-list lessons still learn steady bright points.
+        regions = None
+        if "--regions" in argv:
+            i = argv.index("--regions")
+            try:
+                regions = json.loads(argv[i + 1])
+                if not isinstance(regions, dict):
+                    raise ValueError("regions must be an object")
+            except (IndexError, ValueError) as e:
+                print("learn-prompt: --regions needs a JSON object with field and hint rectangles: %s" % e, file=sys.stderr)
+                return 2
+            argv = argv[:i] + argv[i + 2:]
+        if "--filevault" not in argv and "--grid" not in argv and regions is None:
+            print("learn-prompt: a lock lesson needs --regions with tight field and hint rectangles from the KVM picture; show the empty password field and Touch ID or Enter Password text, not just the avatar", file=sys.stderr)
+            return 2
         frames = []
         for i in range(3):
             raw = frame_raw(kvmd)
@@ -3231,7 +3358,7 @@ def main(argv):
                     return 2
                 kind = "boot"
                 argv = [a for a in argv if a != "--filevault"]
-            print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator", kind=kind, click=click), "points": len(prompt_points(frames)), "kind": kind}))
+            print(json.dumps({"references": learn_prompt(frames, " ".join(argv[1:]) or "taught by an operator", kind=kind, click=click, regions=regions), "points": len(prompt_points(frames)), "kind": kind}))
             return 0
         except ValueError as e:
             print("learn-prompt: %s" % e, file=sys.stderr)

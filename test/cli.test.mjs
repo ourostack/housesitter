@@ -55,6 +55,20 @@ test('CLI: help, adopt --fake, and refusal exit codes', () => {
   assert.equal(cli(['frobnicate', 'x']).status, 2);
 });
 
+test('lock teaching refuses unmarked widgets before contacting a KVM', () => {
+  const config = path.join(scratch, 'teach.json');
+  fs.writeFileSync(config, JSON.stringify({ macs: { studio: { kvm: { endpoints: [] } } } }));
+  const env = { HOUSESITTER_CONFIG: config };
+  const missing = cli(['learn-prompt', 'studio', '--i-see-the-field'], env);
+  assert.equal(missing.status, 2, missing.stderr);
+  assert.match(missing.stdout, /--regions/);
+  const mixed = cli(['learn-prompt', 'studio', '--i-see-the-field', '--filevault', '--regions', '{}'], env);
+  assert.equal(mixed.status, 2, mixed.stderr);
+  assert.match(mixed.stdout, /only for the lock screen/);
+  const malformed = cli(['learn-prompt', 'studio', '--i-see-the-field', '--regions', 'null'], env);
+  assert.equal(malformed.status, 2, malformed.stderr);
+  assert.match(malformed.stdout, /JSON object/);
+});
 test('Reins: only what is possible now; inputs validated with a JSON path', async () => {
   const kvm = { video: { online: true }, hid: { keyboard_online: true } };
   const healthy = R.screen('studio', { kvm, sitter: { state: 'healthy', can: { unlock: true, plug: true } } });

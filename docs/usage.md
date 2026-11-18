@@ -37,7 +37,9 @@ housesitter watch-kvm <mac> --install   on the Mac: a LaunchAgent that checks th
                                          once if it goes silent (and once when it's back): the Mac watches its KVM
                                          [--silent-min 5] [--test]; also --once, --status, --uninstall
 housesitter alert-test <mac> [--again]  one real "I'm stuck" message through the rules, marked TEST (over SSH; once a day)
-housesitter learn-prompt <mac> --i-see-the-field [--filevault]  teach it the prompt you see on the KVM; --filevault during a restart
+housesitter learn-prompt <mac> --i-see-the-field --filevault  teach FileVault during a restart
+housesitter learn-prompt <mac> --i-see-the-field --regions '<json>'
+                                         teach the lock screen's empty field and hint (see Lock lessons below)
 housesitter learn-prompt <mac> --i-see-the-field --grid <x> <y>  the login window's list of users: x y is your
                                          account's tile, as fractions of the screen (0.48 0.87)
 housesitter power-cycle <mac> --attended  you have looked: skip the frozen-desktop check (never the budgets)
@@ -114,5 +116,21 @@ housesitter fleet run --serve [--quiet]   one serving pass on this Mac: run what
 housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing
 housesitter doctor                       check this computer's setup (status <mac> is doctor <mac>)
 ```
+
+## Lock lessons
+
+Lock lessons now use two marked widgets, not a screen-wide collection of bright pixels. On the KVM's own picture, show the **empty password field** and its **hint text** (for example, “Touch ID or Enter Password”). An avatar or wallpaper alone is not enough. Mark each widget with `[left, top, right, bottom]` as fractions of the whole HDMI picture. Keep the field rectangle on its border and the hint rectangle tight around its text; exclude surrounding wallpaper. The hint may be inside the field, but its rectangle must leave room for the field's border.
+
+```sh
+# Synthetic coordinates, NOT a lesson for your Mac: measure its own KVM picture.
+housesitter learn-prompt studio --i-see-the-field \
+  --regions '{"field":[0.43,0.85,0.57,0.8933],"hint":[0.42,0.907,0.58,0.927]}'
+```
+
+The sitter takes three frames. It learns signed local contrast within each marked widget and requires both widgets to match at least 90%, at one common offset. It searches up to 1.2% of screen width and 4.56% of screen height in either direction. Reference pixel centres scale with the picture's resolution; the search uses native HDMI pixels, so a one-pixel movement does not disappear between coarse samples. It does not lower the threshold or search for the field and hint independently. Missing widgets, changed relative layout and an unknown screen still refuse typing. A larger redesign needs another trusted lesson.
+
+Existing FileVault, user-list and lock lessons remain readable. Once a new widget-based lock lesson exists, the sitter ignores old lock lessons, so an avatar-only match cannot bypass the field and hint. An upgrade alone cannot recover features an old lesson never stored: teach the new lesson on the KVM before relying on wallpaper tolerance. The watch-only SSH key remains limited to `watch_check` and `status`; use an already-authorized operator connection or run `sitter.py learn-prompt --regions '<json>'` locally on the KVM. Do not widen the watch key.
+
+Tests use synthetic fields and text over two unrelated wallpapers, joint movement and a doubled resolution; they check missing widgets, independent movement, noisy/bright pictures, a desktop, password trust and lock policy. These tests are not a live-device unlock or a replay of the November 17 incident.
 
 Add `--json` to any command for machine output. `version --json` returns `{"version":"..."}` and `tailnet-policy --json` returns `{"policy":"..."}`, with the full policy text. The config file is `~/.config/housesitter/config.json`, or `$HOUSESITTER_CONFIG`.

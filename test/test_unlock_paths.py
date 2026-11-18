@@ -17,6 +17,7 @@ ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, os.path.join(ROOT, "device"))
 import sitter as W  # noqa: E402
 from fake_tables import FakeTables  # noqa: E402
+from lock_frames import picture, hdmi_picture, REGIONS  # noqa: E402
 
 W.SLEEP = lambda sec: None
 
@@ -115,6 +116,84 @@ class GridLesson(Base):
             self.assertIsNone(W.grid_seen(FV[k]), k)
         self.assertIsNone(W.grid_seen(LUM["desktop"]))
         self.assertEqual(W.lesson_counts(), {"boot": 0, "lock": 1, "grid": 1})
+
+
+class StructuredLockLesson(Base):
+    def teach_lock(self):
+        frames = [W.frame_features(*picture()) for _ in range(3)]
+        W.learn_prompt(frames, "synthetic field and Touch ID hint", regions=REGIONS)
+
+    def test_wallpaper_and_joint_layout_change_still_unlock_once(self):
+        self.teach_lock()
+        f = W.frame_features(*picture(wallpaper=1, dx=8, dy=-12, scale=2))
+        k = Keys()
+        result = W.unlock_steps({}, k, {"ledger": []}, 10_000_000, "test", "request",
+                                secret=PW, grab=screens(f, LUM["desktop"]))
+        self.assertIn("desktop is back", result)
+        self.assertEqual(k.typed(), [b"correct horse"])
+
+    def test_small_shifts_do_not_depend_on_the_sampling_phase(self):
+        for width, height in ((1280, 720), (2560, 1440)):
+            f = W.frame_features(*hdmi_picture(width, height))
+            ref = dict(W.lock_lesson([f] * 3, REGIONS), kind="lock")
+            for dx, dy in ((0, 1), (0, 2), (0, 3), (1, 0), (-2, 3)):
+                with self.subTest(size=(width, height), shift=(dx, dy)):
+                    shifted = W.frame_features(*hdmi_picture(width, height, dx=dx, dy=dy, wallpaper=1))
+                    self.assertTrue(W.prompt_seen(shifted, [ref])[0])
+
+    def test_missing_widgets_wrong_layout_and_desktop_never_receive_password(self):
+        self.teach_lock()
+        for changes in ({"field": False}, {"hint": False}, {"hint_dy": -35}, {"desktop": True},
+                        {"field": False, "hint": False}):
+            with self.subTest(changes=changes):
+                f = W.frame_features(*picture(wallpaper=1, **changes))
+                k = Keys()
+                W.unlock_steps({}, k, {"ledger": []}, 10_000_000, "test", "request",
+                               secret=PW, grab=screens(f), tries=1)
+                self.assertEqual(k.typed(), [])
+
+    def test_plain_bright_and_noisy_pictures_are_not_a_lock_screen(self):
+        self.teach_lock()
+        import random
+        rng = random.Random(17)
+        f = W.frame_features(*picture())
+        for pixels in (bytes([240]) * len(f["_lock"]), bytes([20]) * len(f["_lock"]),
+                       bytes(rng.randrange(256) for _ in f["_lock"])):
+            self.assertFalse(W.prompt_seen(dict(f, _lock=pixels))[0])
+
+    def test_hint_inside_field_cannot_substitute_for_the_field_border(self):
+        # A wider field containing the hint is another layout macOS can show.
+        regions = {"field": [0.410, 0.850, 0.590, 536 / 600], "hint": [0.420, 518 / 600, 0.580, 528 / 600]}
+        f = W.frame_features(*picture(hint_dy=-27, placeholder=False, field_width=180))
+        W.learn_prompt([f] * 3, "synthetic nested hint", regions=regions)
+        self.assertTrue(W.prompt_seen(f)[0])
+        missing = W.frame_features(*picture(field=False, hint_dy=-27))
+        self.assertFalse(W.prompt_seen(missing)[0])
+
+    def test_normal_unlock_policy_and_password_trust_still_apply(self):
+        self.teach_lock()
+        f = W.frame_features(*picture(wallpaper=1))
+        k = Keys()
+        W.unlock_steps({}, k, {"ledger": []}, 10_000_000, "test", "rules", secret=PW, grab=screens(f))
+        self.assertEqual(k.typed(), [])
+        armed("unverified")
+        W.unlock_steps({}, k, {"ledger": []}, 10_000_000, "test", "request", secret=PW, grab=screens(f))
+        self.assertEqual(k.typed(), [])
+
+    def test_legacy_lock_match_cannot_bypass_a_structured_lesson(self):
+        self.teach()
+        self.teach_lock()
+        self.assertFalse(W.prompt_seen(G["field-a"])[0])
+
+    def test_regions_must_be_separate_widgets_not_a_screen_or_wallpaper(self):
+        f = W.frame_features(*picture())
+        for regions in ({}, {"field": REGIONS["field"]}, {"field": REGIONS["field"], "hint": REGIONS["field"]},
+                        {"field": [0, 0, 1, 1], "hint": REGIONS["hint"]}):
+            with self.subTest(regions=regions), self.assertRaises(ValueError):
+                W.learn_prompt([f] * 3, "bad annotation", regions=regions)
+        f = W.frame_features(*picture(field=False, hint=False))
+        with self.assertRaises(ValueError):
+            W.learn_prompt([f] * 3, "just wallpaper", regions=REGIONS)
 
 
 class FromTheGrid(Base):

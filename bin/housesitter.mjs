@@ -564,12 +564,21 @@ async function main() {
     if (!opt['i-see-the-field']) { say(`Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field (or, with --grid, the login window's list of users) on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`); return 2; }
     let grid = '';
     if (!!opt.grid && !!opt.filevault) { say('--grid and --filevault are two different lessons: a list of users is only ever clicked, never typed into. Teach each on its own.'); return 2; }
+    if (opt.regions && (opt.grid || opt.filevault)) { say('--regions is only for the lock screen, not --grid or --filevault.'); return 2; }
+    if (!opt.grid && !opt.filevault && !opt.regions) { say('Lock lessons need --regions with tight field and hint rectangles [left, top, right, bottom], as fractions of the whole KVM picture. Show the empty password field and Touch ID or Enter Password text; do not include wallpaper.'); return 2; }
+    let regions = '';
+    if (opt.regions) {
+      let parsed;
+      try { parsed = JSON.parse(opt.regions); } catch { say('--regions needs a JSON object with field and hint rectangles.'); return 2; }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { say('--regions needs a JSON object with field and hint rectangles.'); return 2; }
+      regions = ` --regions '${JSON.stringify(parsed).replace(/'/g, "'\\''")}'`;
+    }
     if (opt.grid) {
       const [gx, gy] = [Number(rest[0]), Number(rest[1])];
       if (!(gx > 0 && gx < 1 && gy > 0 && gy < 1)) { say('--grid needs your account tile as two fractions of the screen, like --grid 0.48 0.87 (x then y, from housesitter screenshot)'); return 2; }
       grid = ` --grid ${gx} ${gy}`;
     }
-    const r = await sitterSsh(mac)(onSitter(mac, `learn-prompt${opt.filevault ? ' --filevault' : ''}${grid} taught over SSH by an operator who saw the screen`));
+    const r = await sitterSsh(mac)(onSitter(mac, `learn-prompt${opt.filevault ? ' --filevault' : ''}${grid}${regions} taught over SSH by an operator who saw the screen`));
     say(r.status === 0 ? `learned: ${String(r.stdout).trim()}. The sitter types only where a frame matches this.` : `✗ ${String(r.stderr || r.stdout).trim()}`);
     return r.status === 0 ? 0 : r.status === 2 ? 2 : 1;
   }
