@@ -38,6 +38,7 @@ export const DP = {
   deadQuiet: 2 * 24 * 3600000, // the heavy parts of an unlisted session go only after this long untouched
   minHistory: 20 * 1048576, // smaller histories are not worth compressing
   nag: 24 * 3600000, // how often "still under the floor" may be said
+  idleSessionQuiet: 3 * 24 * 3600000, // a listed session's regenerable files go only after the whole session folder was untouched this long
   junkQuiet: 3 * 24 * 3600000, // loose non-git work under ~/code goes only after this long untouched
   cloneQuiet: 3 * 24 * 3600000, // a full clone is removed only after this long untouched
   rest: 3600000, // after a pass that found nothing safe, the next scan waits this long
@@ -84,7 +85,7 @@ export async function pass(opts, deps, say = () => {}) {
     if (!(now - (st0.ledgerAt || 0) < t.ledgerEvery)) { deps.ledger?.({ at: iso(now), free: before.free, pct: before.pct }); stamp({ ledgerAt: now }); }
     if (!(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) { const b = deps.breakdown?.(st0.breakdown); if (b) stamp({ breakdown: { ...b, at: now } }); }
   }
-  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, junk: [], junked: 0, sessions: 0, histories: 0, rescued: [] };
+  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   const rows = (await deps.sessionRows?.()) || null;
   for (const id of rows?.archived || []) {
     if (rows.live.has(id)) continue;
@@ -153,6 +154,26 @@ export async function pass(opts, deps, say = () => {}) {
     reclaimed.sessions += n; out(`dropped the files of unlisted session ${sdir.id.slice(0, 8)}: ${gib(n)}`);
   }
 
+  // A listed session nobody is running, with no automation, untouched for days: only what a build or a clone gives back.
+  // Dependency folders always; a clone only when every branch is on a remote and nothing is uncommitted. History stays.
+  for (const s of deps.idleSessionFiles?.() || []) {
+    if (done()) break;
+    if (deps.open(s.dir)) { out(`kept session ${s.id.slice(0, 8)}'s files: a running process has them open`); continue; }
+    let n = 0;
+    for (const d of deps.regenIn(s.files)) {
+      const b = deps.size(d); if (!b) continue;
+      if (!opts.dry_run) { try { deps.remove(d); } catch (e) { out(`could not remove ${d}: ${e.message}`); continue; } }
+      n += b; out(`${opts.dry_run ? 'would remove' : 'removed'} ${d}: ${gib(b)}`);
+    }
+    for (const c of deps.clonesIn([s.files])) {
+      if (deps.protectedBy?.(c) || deps.clone(c).unique) { out(`kept clone ${c}: it holds work that is not on a remote`); continue; }
+      const b = deps.size(c); if (!b) continue;
+      if (!opts.dry_run) { try { deps.remove(c); } catch (e) { out(`could not remove ${c}: ${e.message}`); continue; } }
+      n += b; out(`${opts.dry_run ? 'would remove' : 'removed'} clone ${c}: ${gib(b)}`);
+    }
+    if (n) { reclaimed.idle.push(s.id); reclaimed.idled += n; }
+  }
+
   for (const dir of deps.worktrees()) {
     if (done()) break;
     const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir), open: false, changedAt: 0, protectedBy: deps.protectedBy?.(dir) || null };
@@ -190,14 +211,14 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   const after = deps.usage();
-  const total = reclaimed.scratch + reclaimed.junked + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const total = reclaimed.scratch + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
   const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
   const tail = `${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
@@ -214,6 +235,9 @@ const sh = (cmd, args, o = {}) => spawnSync(cmd, args, { encoding: 'utf8', maxBu
 const nice = (cmd, args, o) => sh('/usr/bin/nice', ['-n', '10', cmd, ...args], o);
 const sizeOf = (p) => { const r = sh('/usr/bin/du', ['-sk', p], { timeout: 300000 }); return (Number(String(r.stdout).split(/\s+/)[0]) || 0) * 1024; };
 
+// A listed session is a candidate for losing regenerable files only when nothing runs it and no automation will wake it.
+export const mayThinSession = (id, { live, running, automated }) => live.has(id) && !running.has(id) && !automated.has(id);
+
 export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [] } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
@@ -221,7 +245,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   const sessions = path.join(copilotHome, 'session-state');
   const rescueRoot = path.join(home, 'AgentBundles', 'disk-rescue');
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
-  let appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
+  let idleKnown = false, runningIds = new Set(), autoIds = new Set(), appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
   const LEAN = '.github/scripts/lean-worktree.sh';
   // Linked worktrees agents make inside a session's files/ (a worktree's .git is a file).
   const sessionWorktrees = () => {
@@ -340,6 +364,32 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     },
     quietFor: (d) => { const r = sh('/usr/bin/find', [d, '-mtime', `-${Math.ceil(DP.deadQuiet / 86400000)}`, '-print', '-quit'], { timeout: 300000 }); return r.error || r.stdout.trim() ? 0 : Infinity; },
     clonesIn: (dirs) => dirs.flatMap((d) => { const r = sh('/usr/bin/find', [d, '-maxdepth', '5', '-name', '.git', '-prune', '-print'], { timeout: 120000 }); return r.stdout.split('\n').filter(Boolean).map((g) => path.dirname(g)); }),
+    // Listed sessions that are not running, own no automation and have had nothing change for days, with their files/ folder.
+    idleSessionFiles: () => {
+      if (!liveIds || !idleKnown) return [];
+      const out = [];
+      try {
+        for (const id of fs.readdirSync(sessions)) {
+          if (!mayThinSession(id, { live: liveIds, running: runningIds, automated: autoIds })) continue;
+          const dir = path.join(sessions, id), files = path.join(dir, 'files');
+          if (!fs.existsSync(files)) continue;
+          const r = sh('/usr/bin/find', [dir, '-mtime', `-${Math.ceil(DP.idleSessionQuiet / 86400000)}`, '-print', '-quit'], { timeout: 300000 });
+          if (r.error || r.stdout.trim()) continue;
+          out.push({ id, dir, files });
+        }
+      } catch { /* none */ }
+      return out;
+    },
+    // Dependency and build-cache folders a package manager rebuilds; target only beside a Cargo or Maven file.
+    regenIn: (root) => {
+      const names = ['node_modules', '.venv', '.next', '.nuxt', '.turbo', '.parcel-cache', '.gradle', '__pycache__', '.pytest_cache', '.mypy_cache', '.tox'];
+      const expr = ['(', ...names.flatMap((n, i) => (i ? ['-o', '-name', n] : ['-name', n])), ')', '-type', 'd', '-prune', '-print'];
+      const f = sh('/usr/bin/find', [root, '-maxdepth', '8', ...expr], { timeout: 300000 });
+      const found = String(f.stdout).split('\n').filter(Boolean);
+      const t = sh('/usr/bin/find', [root, '-maxdepth', '8', '-name', 'target', '-type', 'd', '-prune', '-print'], { timeout: 300000 });
+      for (const d of String(t.stdout).split('\n').filter(Boolean)) if (['Cargo.toml', 'pom.xml'].some((m) => fs.existsSync(path.join(path.dirname(d), m)))) found.push(d);
+      return found.filter((d, i) => !found.some((o, j) => j !== i && d.startsWith(`${o}/`)));
+    },
     // Session folders the app does not list, biggest first: the parts that are made by the session and rebuilt by no one.
     deadSessions: () => {
       if (!liveIds) return [];
@@ -449,6 +499,12 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       const s = await q('SELECT id FROM sessions WHERE archived_at IS NULL');
       const wr = await q('SELECT w.path AS p, k.session_id AS sid FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL AND k.session_id IS NOT NULL');
       appRows = wr || null;
+      const run = await q('SELECT id FROM sessions WHERE is_running = 1');
+      const au = await q('SELECT session_id, owner_session_id FROM session_automations');
+      // Unknown means not safe: with either read failing, no session counts as idle.
+      runningIds = new Set((run || []).map((r) => r.id));
+      autoIds = new Set((au || []).flatMap((r) => [r.session_id, r.owner_session_id].filter(Boolean)));
+      idleKnown = Boolean(run && au);
       try { idleIds = new Set((await snapshot(base)).filter((x) => x.state === 'idle').map((x) => x.id)); } catch { idleIds = null; }
       appPaths = w ? new Set(w.map((r) => r.p)) : null;
       liveIds = s ? new Set(s.map((r) => r.id)) : null;

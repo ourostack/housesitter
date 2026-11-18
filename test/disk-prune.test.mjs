@@ -2,7 +2,7 @@
 // worktree that a session uses, a process has open, or that changed in the last day is never removed, whatever its name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CACHES, pass, whyKeep, whyKeepSession } from '../src/disk-prune.mjs';
+import { CACHES, mayThinSession, pass, whyKeep, whyKeepSession } from '../src/disk-prune.mjs';
 
 const DAY = 24 * 3600000, GIB = 1073741824;
 const NOW = Date.parse('2026-11-16T12:00:00Z');
@@ -34,6 +34,8 @@ function fake(over = {}) {
     scratch: () => over.scratchList || [],
     clones: () => over.clonesList || [],
     clone: (x) => ({ unique: Boolean(over.uniq?.includes(x)) }),
+    idleSessionFiles: () => over.idleFiles || [],
+    regenIn: (f) => over.regen?.[f] || [],
     idleSessions: () => new Set(over.idle || []),
     thinnable: () => over.thin || [],
     thin: (x) => { log.thinned = (log.thinned || []); log.thinned.push(x); free += 10 * GIB; return true; },
@@ -293,5 +295,43 @@ test('real temp folders and loose ~/code work: Apple\'s entries and git checkout
   assert.ok(!got.some((p) => p === 'repo' || p.startsWith('repo/')), 'a checkout is not loose work');
   assert.ok(!got.some((p) => p === 'mixed' || p.startsWith('mixed/')), 'a folder holding a checkout is left to the checkout stages');
   assert.ok(!got.includes('afile'));
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('idle listed session: dependency folders and fully pushed clones go; unpushed or dirty clones, history and open sessions stay', async () => {
+  const idleFiles = [{ id: 'aaaaaaaa1', dir: '/s/a', files: '/s/a/files' }, { id: 'bbbbbbbb2', dir: '/s/b', files: '/s/b/files' }];
+  const f = fake({
+    idleFiles, regen: { '/s/a/files': ['/s/a/files/x/node_modules', '/s/a/files/y/.venv'], '/s/b/files': ['/s/b/files/node_modules'] },
+    clones: { '/s/a/files': ['/s/a/files/x', '/s/a/files/y'], '/s/b/files': ['/s/b/files/z'] },
+    uniq: ['/s/a/files/y'], openFiles: ['/s/b'],
+  });
+  const r = await pass({}, f.d);
+  assert.deepEqual(f.log.cache, ['/s/a/files/x/node_modules', '/s/a/files/y/.venv', '/s/a/files/x']);
+  assert.deepEqual(r.reclaimed.idle, ['aaaaaaaa1']);
+  assert.ok(!f.log.cache.some((p) => p.endsWith('events.jsonl') || p === '/s/a/files/y' || p.startsWith('/s/b')), 'unpushed clone, history and open session untouched');
+});
+
+test('idle listed session: a dry run removes nothing', async () => {
+  const f = fake({ idleFiles: [{ id: 'cccccccc3', dir: '/s/c', files: '/s/c/files' }], regen: { '/s/c/files': ['/s/c/files/node_modules'] } });
+  await pass({ dry_run: true }, f.d);
+  assert.deepEqual(f.log.cache, []);
+});
+
+test('mayThinSession: running, automated and unlisted sessions are never candidates', () => {
+  const sets = { live: new Set(['a', 'b', 'c']), running: new Set(['b']), automated: new Set(['c']) };
+  assert.equal(mayThinSession('a', sets), true);
+  assert.equal(mayThinSession('b', sets), false);
+  assert.equal(mayThinSession('c', sets), false);
+  assert.equal(mayThinSession('z', sets), false);
+});
+
+test('real regenIn: dependency folders are listed once (nested ones folded in), target only beside Cargo.toml', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-regen-'));
+  for (const d of ['a/node_modules/dep/node_modules', 'a/src', 'b/.venv', 'c/target', 'd/target', 'e/dist']) fs.mkdirSync(path.join(home, d), { recursive: true });
+  fs.writeFileSync(path.join(home, 'd/Cargo.toml'), '');
+  const got = realDiskDeps({ home }).regenIn(home).map((p) => path.relative(home, p)).sort();
+  assert.deepEqual(got, ['a/node_modules', 'b/.venv', 'd/target']);
   fs.rmSync(home, { recursive: true, force: true });
 });
