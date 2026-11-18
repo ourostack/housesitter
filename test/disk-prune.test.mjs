@@ -451,3 +451,17 @@ test('real branchDone: merged or remote-deleted branches are done; a branch with
   assert.equal(d2.branchDone(gone), true);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('gitCommonDir answers as git does, for a checkout, a linked worktree, a subfolder and a non-repo', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path'), { execFileSync } = await import('node:child_process');
+  const { gitCommonDir } = await import('../src/disk-prune.mjs');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dp-gc-')));
+  const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-C', cwd, ...a], { encoding: 'utf8' });
+  const main = path.join(root, 'main'); fs.mkdirSync(path.join(main, 'sub'), { recursive: true });
+  git(main, 'init', '-q'); fs.writeFileSync(path.join(main, 'a'), '1'); git(main, 'add', 'a'); git(main, 'commit', '-qm', 'a');
+  const wt = path.join(root, 'wt'); git(main, 'worktree', 'add', '-q', '-b', 'b', wt);
+  fs.mkdirSync(path.join(root, 'plain'));
+  for (const d of [main, path.join(main, 'sub'), wt]) assert.equal(gitCommonDir(d), fs.realpathSync(path.resolve(d, git(d, 'rev-parse', '--git-common-dir').trim())));
+  assert.equal(gitCommonDir(path.join(root, 'plain')), null);
+  fs.rmSync(root, { recursive: true, force: true });
+});
