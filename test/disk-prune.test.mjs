@@ -465,3 +465,38 @@ test('gitCommonDir answers as git does, for a checkout, a linked worktree, a sub
   assert.equal(gitCommonDir(path.join(root, 'plain')), null);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('real protectedBy: a path outside any repository is not protected just because a protected path is outside one too', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dp-pb-')));
+  const prot = path.join(root, 'prot'), other = path.join(root, 'other');
+  fs.mkdirSync(prot); fs.mkdirSync(other);
+  const d = realDiskDeps({ home: root, extraProtected: [prot] });
+  assert.equal(d.protectedBy(path.join(prot, 'x')), prot);
+  assert.equal(d.protectedBy(other), null);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('real quietSince: a file or folder changed within the window is not quiet; an old one is', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dp-qs-')));
+  const old = new Date(Date.now() - 10 * 3600000);
+  const f = path.join(root, 'f'); fs.writeFileSync(f, 'x');
+  const dir = path.join(root, 'd'); fs.mkdirSync(path.join(dir, 'in'), { recursive: true }); const g = path.join(dir, 'in', 'g'); fs.writeFileSync(g, 'x');
+  const d = realDiskDeps({ home: root });
+  assert.equal(d.quietSince(f, 3 * 3600000), false);
+  fs.utimesSync(f, old, old); assert.equal(d.quietSince(f, 3 * 3600000), true);
+  fs.utimesSync(dir, old, old); fs.utimesSync(path.join(dir, 'in'), old, old);
+  assert.equal(d.quietSince(dir, 3 * 3600000), false);
+  fs.utimesSync(g, old, old); assert.equal(d.quietSince(dir, 3 * 3600000), true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('the tell and result count what was kept, by reason', async () => {
+  const scratchList = ['/private/tmp/a', '/private/tmp/b', '/private/tmp/c', '/private/tmp/d'];
+  const f = fake({ scratchList, cloneAge: { '/private/tmp/a': 3600000, '/private/tmp/b': 3600000 }, openFiles: ['/private/tmp/c'], protect: ['/private/tmp/d'] });
+  const r = await pass({}, f.d);
+  assert.deepEqual(r.keeps.scratch, { 'changed within 3 h': 2, 'a process has it open': 1, 'launchd or Housesitter runs from it': 1 });
+});
