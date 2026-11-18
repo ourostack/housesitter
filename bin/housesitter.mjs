@@ -24,6 +24,7 @@ import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Disk from '../src/disk-prune.mjs';
 import * as Load from '../src/load-shed.mjs';
+import * as Reap from '../src/orphan-reap.mjs';
 import * as OsUp from '../src/os-update.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
@@ -280,6 +281,8 @@ async function restartCopilot() {
   }
   if (opt['load-shed']) {
     const r = await Load.pass(opts, Load.realLoadDeps({ state: stateDir, cfgLoad: () => loadConfig() }), (l) => { if (!json && !opt.quiet) console.log(l); });
+    const reap = await Reap.pass(opts, Reap.realReapDeps({ state: stateDir, cfgLoad: () => loadConfig() }), (l) => { if (!json && !opt.quiet) console.log(l); });
+    r.orphans = reap.reaped;
     if (json) emit(r); else if (!opt.quiet && opts.dry_run) say(`load shed: ${r.action} (load ${r.load1} on ${r.cores} cores, limit ${r.limit}; ${r.reniced.length} would be reniced)`);
     return 0;
   }
