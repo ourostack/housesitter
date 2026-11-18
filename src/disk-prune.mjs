@@ -1,7 +1,8 @@
 // `housesitter restart-copilot --disk-prune`: keep free space above a floor (500 GiB by default) with no model turns and
 // nothing for an agent to remember. launchd runs one pass every ten minutes; a pass does nothing while free space is above
 // the floor. Below it, it reclaims safe classes in this order and stops once free space is back at floor + 50 GiB:
-//   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh)
+//   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh), except one a running process has open or one a
+//      pass removed that came back within a week: that one is in use, and removing it again only buys a download
 //   2. thin: a worktree whose session Shepherd reports idle (never busy) is made sparse with the repository's own
 //      .github/scripts/lean-worktree.sh (images, video, audio and bundles leave the working tree and stay in Git;
 //      modified and untracked files stay where they are)
@@ -20,7 +21,8 @@
 //   Before all of that, on every pass and above the floor too: the history of an archived session, compressed by
 //   Shepherd's compressHistory, which refuses a live or open one. A finished history loses nothing, so it waits for nothing.
 // Each hour it records free space in a ledger; each day it measures where the bytes are and says which sources grew,
-// so the cause gets fixed and not only the symptom. A pass that finds nothing safe rests an hour before it scans again.
+// so the cause gets fixed and not only the symptom. A pass that finds nothing safe, or ends still under the floor, rests
+// an hour before it scans again (under 50 GiB free every pass runs).
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,7 +43,9 @@ export const DP = {
   idleSessionQuiet: 3 * 24 * 3600000, // a listed session's regenerable files go only after the whole session folder was untouched this long
   junkQuiet: 3 * 24 * 3600000, // loose non-git work under ~/code goes only after this long untouched
   cloneQuiet: 3 * 24 * 3600000, // a full clone is removed only after this long untouched
-  rest: 3600000, // after a pass that found nothing safe, the next scan waits this long
+  rest: 3600000, // after a pass that found nothing safe, or that ended still under the floor, the next scan waits this long
+  urgent: 50 * 1073741824, // below this much free space a pass never rests
+  cacheBack: 7 * 24 * 3600000, // a cache a pass removed that is back within this long is in use, and is kept
   ledgerEvery: 55 * 60000, // free space is recorded about hourly
   breakdownEvery: 24 * 3600000, // where the bytes are is measured daily
 };
@@ -58,6 +62,18 @@ export function whyKeep(w, now, t = DP) {
   if (w.usedByApp) return 'an unarchived app session uses it';
   if (w.open) return 'a running process has it open';
   if (!(now - w.changedAt >= t.quiet)) return 'something in it changed in the last 24 hours';
+  return null;
+}
+
+// Why a cache may not be removed now, or null when it may. `c`: { open, removedAt } (removedAt: when a pass last removed
+// it, from disk-prune.json). The worktree rule "nothing changed for 24 hours" does not fit a cache: Playwright's
+// browsers are only read while tests run, and APFS does not keep access times, so a cache in use looks quiet. What does
+// show use is a removal undone: a pass removed it, and something put it back within a week. Then removing it again
+// frees nothing for long and costs every lane a download, so it stays. Past the week it may go once more, so a cache
+// nobody needs any more is not kept for ever; the worst case is one download a week, not one every ten minutes.
+export function whyKeepCache(c, now, t = DP) {
+  if (c.open) return 'a running process has a file open in it';
+  if (c.removedAt != null && now - c.removedAt < t.cacheBack) return `it came back within ${Math.round(t.cacheBack / 86400000)} days of being removed, so something uses it`;
   return null;
 }
 
@@ -96,17 +112,27 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   if (before.free >= t.floor && !opts.force) return { action: 'ok', free: before.free, reclaimed };
-  if (!opts.force && !opts.dry_run && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
+  if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
 
   await deps.load?.();
   const done = () => deps.usage().free >= t.floor + t.margin;
   const used = deps.appWorktrees();
 
+  const kept = [];
   for (const c of deps.caches()) {
     if (done()) break;
     const n = deps.size(c); if (!n) continue;
+    const rec = (deps.readState() || {}).caches?.[c] || {};
+    const why = whyKeepCache({ open: deps.open(c), removedAt: rec.removedAt }, now, t);
+    if (why) {
+      if (!rec.said) { out(`kept cache ${c} (${gib(n)}): ${why}`); kept.push(c); }
+      continue;
+    }
     // A cache another process is writing can refuse to go (ENOTEMPTY); that must not end the pass.
-    if (!opts.dry_run) { try { deps.remove(c); } catch (e) { out(`could not remove cache ${c}: ${e.message}`); continue; } }
+    if (!opts.dry_run) {
+      try { deps.remove(c); } catch (e) { out(`could not remove cache ${c}: ${e.message}`); continue; }
+      stamp({ caches: { ...(deps.readState() || {}).caches, [c]: { removedAt: now } } });
+    }
     reclaimed.caches += n; out(`cache ${c}: ${gib(n)}`);
   }
 
@@ -212,19 +238,23 @@ export async function pass(opts, deps, say = () => {}) {
 
   const after = deps.usage();
   const total = reclaimed.scratch + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
-  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, dry_run: Boolean(opts.dry_run) };
+  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, keptCaches: kept, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
-  const tail = `${growers ? ` Biggest sources: ${growers}.` : ''}`;
+  const tail = `${kept.length ? ` Kept ${kept.length} cache(s) in use (${kept.map((c) => path.basename(c)).join(', ')}): removing them again would only make the next run download them.` : ''}${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
     await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
-  } else if (now - (st.toldAt || 0) >= t.nag) {
+  } else if (now - (st.toldAt || 0) >= t.nag || kept.length) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
     st.toldAt = now;
   }
-  if (res.action === 'nothing-safe') st.restUntil = now + t.rest; else delete st.restUntil;
+  // Told, so not again: launchd runs with --quiet, so this message is the only place a keep is said.
+  if (kept.length) st.caches = { ...st.caches, ...Object.fromEntries(kept.map((c) => [c, { ...st.caches?.[c], said: true }])) };
+  // A pass that ends still under the floor rests too: the next one, ten minutes later, would scan the same disk (lsof,
+  // du, find on a loaded Mac) to find the same nothing. Only when space is critically low does every pass run.
+  if (res.action === 'nothing-safe' || (after.free < t.floor && after.free >= t.urgent)) st.restUntil = now + t.rest; else delete st.restUntil;
   deps.writeState({ ...st, lastPass: { at: iso(now), ...res } });
   return res;
 }
