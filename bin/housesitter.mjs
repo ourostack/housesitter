@@ -23,6 +23,7 @@ import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.
 import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Disk from '../src/disk-prune.mjs';
+import * as Load from '../src/load-shed.mjs';
 import * as OsUp from '../src/os-update.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
@@ -257,7 +258,8 @@ async function restartCopilot() {
   if (opt.status) {
     const s = Copilot.readState(stateDir);
     const rec = Rec.readRecovery(stateDir);
-    if (json) emit({ ...s, recovery: rec }); else say(`${Copilot.renderState(s)}\n${Rec.renderRecovery(rec)}`);
+    const load = Load.readLoad(stateDir);
+    if (json) emit({ ...s, recovery: rec, load_shed: load }); else say(`${Copilot.renderState(s)}\n${Rec.renderRecovery(rec)}\n${Load.renderLoad(load.last, load.ledger)}`);
     return 0; // read-only: the exit code says the status was read; a failed restart is in the text and in --json (state, failed)
   }
   if (!!opt['install-recovery'] || !!opt['uninstall-recovery']) {
@@ -274,6 +276,11 @@ async function restartCopilot() {
       for (const r of rs) say(opt['uninstall-recovery'] ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${r.label})` : `✗ ${r.label}: launchctl would not load it: ${r.error}`);
     }
     return rs.every((r) => r.ok) ? 0 : 1;
+  }
+  if (opt['load-shed']) {
+    const r = await Load.pass(opts, Load.realLoadDeps({ state: stateDir, cfgLoad: () => loadConfig() }), (l) => { if (!json && !opt.quiet) console.log(l); });
+    if (json) emit(r); else if (!opt.quiet && opts.dry_run) say(`load shed: ${r.action} (load ${r.load1} on ${r.cores} cores, limit ${r.limit}; ${r.reniced.length} would be reniced)`);
+    return 0;
   }
   if (opt['disk-prune']) {
     const floor = opt['floor-gib'] == null ? undefined : Number(opt['floor-gib']) * 1073741824;
