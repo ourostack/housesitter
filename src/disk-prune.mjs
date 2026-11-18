@@ -102,6 +102,8 @@ export async function pass(opts, deps, say = () => {}) {
     if (!(now - (st0.ledgerAt || 0) < t.ledgerEvery)) { deps.ledger?.({ at: iso(now), free: before.free, pct: before.pct }); stamp({ ledgerAt: now }); }
     if (!(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) { const b = deps.breakdown?.(st0.breakdown); if (b) stamp({ breakdown: { ...b, at: now } }); }
   }
+  const keeps = {};
+  const keep = (cat, why) => { const c = (keeps[cat] ||= {}); c[why] = (c[why] || 0) + 1; };
   const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   const rows = (await deps.sessionRows?.()) || null;
   for (const id of rows?.archived || []) {
@@ -140,15 +142,20 @@ export async function pass(opts, deps, say = () => {}) {
   // Scratch is cheap to judge and often the biggest yield, so it goes before the slow per-worktree stages.
   for (const dir of deps.scratch?.() || []) {
     if (done()) break;
-    if (deps.protectedBy?.(dir) || deps.open(dir) || !(now - deps.changedAt(dir) >= t.scratchQuiet)) continue;
+    if (deps.protectedBy?.(dir)) { keep('scratch', 'launchd or Housesitter runs from it'); continue; }
+    if (deps.open(dir)) { keep('scratch', 'a process has it open'); continue; }
+    const quiet = deps.quietSince ? deps.quietSince(dir, t.scratchQuiet) : now - deps.changedAt(dir) >= t.scratchQuiet;
+    if (!quiet) { keep('scratch', 'changed within 3 h'); continue; }
     const n = deps.size(dir);
+    if (!n) continue;
     if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove scratch ${dir}: ${e.message}`); continue; } }
     reclaimed.scratch += n; out(`removed scratch ${dir}: ${gib(n)}`);
   }
 
   for (const dir of deps.junk?.() || []) {
     if (done()) break;
-    if (deps.protectedBy?.(dir) || used.has(dir) || deps.open(dir) || !(now - deps.changedAt(dir, 3) >= t.junkQuiet)) continue;
+    const jwhy = deps.protectedBy?.(dir) ? 'launchd or Housesitter runs from it' : used.has(dir) ? 'a session uses it' : deps.open(dir) ? 'a process has it open' : !(now - deps.changedAt(dir, 3) >= t.junkQuiet) ? 'changed within 3 days' : null;
+    if (jwhy) { keep('loose', jwhy); continue; }
     const n = deps.size(dir);
     if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove ${dir}: ${e.message}`); continue; } }
     reclaimed.junk.push(dir); reclaimed.junked += n; out(`removed loose work ${dir}: ${gib(n)}`);
@@ -210,7 +217,7 @@ export async function pass(opts, deps, say = () => {}) {
     const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir) && !finished, open: false, changedAt: 0, protectedBy: deps.protectedBy?.(dir) || null };
     if (w.linked && !w.usedByApp && !w.protectedBy) { w.open = deps.open(dir); if (!w.open) w.changedAt = deps.changedAt(dir); }
     const why = whyKeep(w, now, t);
-    if (why) { out(`kept ${dir}: ${why}${pin ? ` (${pin})` : ''}`); continue; }
+    if (why) { keep('worktrees', pin || why); out(`kept ${dir}: ${why}${pin ? ` (${pin})` : ''}`); continue; }
     const n = deps.size(dir);
     if (!opts.dry_run) {
       const g = deps.git(dir);
@@ -226,7 +233,7 @@ export async function pass(opts, deps, say = () => {}) {
   for (const dir of deps.clones?.() || []) {
     if (done()) break;
     const why = deps.protectedBy?.(dir) ? 'launchd or Housesitter runs from it' : used.has(dir) ? 'an unarchived app session uses it' : deps.open(dir) ? 'a running process has it open' : !(now - deps.changedAt(dir) >= t.cloneQuiet) ? 'something in it changed in the last 3 days' : deps.clone(dir).unique ? 'it holds work that is not on a remote' : null;
-    if (why) { out(`kept clone ${dir}: ${why}`); continue; }
+    if (why) { keep('clones', why); out(`kept clone ${dir}: ${why}`); continue; }
     const n = deps.size(dir);
     if (!opts.dry_run) deps.remove(dir);
     reclaimed.clones.push(dir); reclaimed.cloned += n; out(`removed clone ${dir}: ${gib(n)}`);
@@ -245,11 +252,13 @@ export async function pass(opts, deps, say = () => {}) {
 
   const after = deps.usage();
   const total = reclaimed.scratch + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
-  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, keptCaches: kept, dry_run: Boolean(opts.dry_run) };
+  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
-  const tail = `${kept.length ? ` Kept ${kept.length} cache(s) in use (${kept.map((c) => path.basename(c)).join(', ')}): removing them again would only make the next run download them.` : ''}${growers ? ` Biggest sources: ${growers}.` : ''}`;
+  const why = Object.entries(keeps).map(([c, r]) => `${c}: ${Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join(', ')}`).join('; ');
+  if (why) out(`kept, by reason (${why})`);
+  const tail = `${why ? ` Kept, by reason: ${why}.` : ''}${kept.length ? ` Kept ${kept.length} cache(s) in use (${kept.map((c) => path.basename(c)).join(', ')}): removing them again would only make the next run download them.` : ''}${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
     await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
@@ -421,7 +430,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     // What launchd runs from, and the clone Housesitter itself runs from, with their own worktrees: never removed.
     protectedBy: (d) => {
       load_protected();
-      return protectedPaths.find((p) => d === p || d.startsWith(`${p}/`)) || protectedPaths.find((p) => gitCommon(d) === gitCommon(p)) || null;
+      return protectedPaths.find((p) => d === p || d.startsWith(`${p}/`)) || (gitCommon(d) ? protectedPaths.find((p) => gitCommon(d) === gitCommon(p)) : null) || null;
     },
     // Why a session using this worktree must keep its folder: running, an automation (or owner of one), or a drain target.
     sessionPin: (d) => {
@@ -462,9 +471,14 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     },
     linked: (d) => { try { return fs.statSync(path.join(d, '.git')).isFile(); } catch { return false; } },
     // One lsof snapshot per pass; when it cannot be read, everything counts as open.
+    // One lsof per pass, indexed as the set of every open file and each folder above it, so a lookup is one hash read.
     open: (p) => {
-      if (openList === undefined) { const r = sh('/usr/sbin/lsof', ['-nP', '-w', '-Fn'], { timeout: 240000 }); openList = r.error || r.status === null ? null : r.stdout.split('\n').filter((l) => l.startsWith('n/')).map((l) => l.slice(1)); }
-      return openList === null ? true : openList.some((f) => f === p || f.startsWith(`${p}/`));
+      if (openList === undefined) {
+        const r = sh('/usr/sbin/lsof', ['-nP', '-w', '-Fn'], { timeout: 240000 });
+        if (r.error || r.status === null) openList = null;
+        else { openList = new Set(); for (const l of r.stdout.split('\n')) { if (!l.startsWith('n/')) continue; for (let f = l.slice(1); f.length > 1 && !openList.has(f); f = f.slice(0, f.lastIndexOf('/')) || '/') openList.add(f); } }
+      }
+      return openList === null ? true : openList.has(p);
     },
     quietFor: (d) => { const r = sh('/usr/bin/find', [d, '-mtime', `-${Math.ceil(DP.deadQuiet / 86400000)}`, '-print', '-quit'], { timeout: 300000 }); return r.error || r.stdout.trim() ? 0 : Infinity; },
     clonesIn: (dirs) => dirs.flatMap((d) => { const r = sh('/usr/bin/find', [d, '-maxdepth', '5', '-name', '.git', '-prune', '-print'], { timeout: 120000 }); return r.stdout.split('\n').filter(Boolean).map((g) => path.dirname(g)); }),
@@ -548,6 +562,14 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       const list = [...Object.entries(sizes).map(([k, v]) => ({ name: k, size: v, grew: prev?.roots ? v - (prev.roots[k] || 0) : 0 })), ...Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ name: `session ${k.slice(0, 8)}`, size: v, grew: prev ? v - (prevSes[k] || 0) : 0 }))];
       const sessionSizes = Object.fromEntries(Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 50));
       return { roots: sizes, sessionSizes, top: list.sort((a, b) => (b.grew > 0 ? b.grew : 0) - (a.grew > 0 ? a.grew : 0) || b.size - a.size) };
+    },
+    // True when nothing in d changed for `ms`: the entry's own mtime first (no process), then one find for a folder.
+    quietSince: (d, ms) => {
+      let st; try { st = fs.lstatSync(d); } catch { return false; }
+      if (Date.now() - st.mtimeMs < ms) return false;
+      if (!st.isDirectory()) return true;
+      const r = sh('/usr/bin/find', [d, '-mmin', `-${Math.ceil(ms / 60000)}`, '-print', '-quit'], { timeout: 300000 });
+      return !r.error && !r.stdout.trim();
     },
     changedAt: (d, days = 1) => {
       const rec = sh('/usr/bin/find', [d, '-mtime', `-${days}`, '-print', '-quit'], { timeout: 300000 });
