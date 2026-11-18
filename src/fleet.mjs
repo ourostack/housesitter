@@ -74,6 +74,13 @@ export function renderFleet(rows) {
   ]);
 }
 
+export const fleetGistId = (env = process.env) => env.HOUSESITTER_FLEET_GIST || DEFAULT_GIST;
+
+/** The gist client for the fleet gist, with gh's token for the gist's owner (reads and writes). */
+export function fleetClient({ user = process.env.HOUSESITTER_FLEET_USER || OWNER, token, fetchFn } = {}) {
+  return gistClient({ token: token ?? (() => ghCliToken(spawnSync, { user })), ...(fetchFn ? { fetchFn } : {}) });
+}
+
 /** Reads the fleet gist's records. The token is gh's for `user`, because GitHub limits gist reads per token. */
 export async function readFleet({ gistId = process.env.HOUSESITTER_FLEET_GIST || DEFAULT_GIST, user = process.env.HOUSESITTER_FLEET_USER || OWNER, token, fetchFn } = {}) {
   const gh = gistClient({ token: token ?? (() => ghCliToken(spawnSync, { user })), ...(fetchFn ? { fetchFn } : {}) });

@@ -236,6 +236,17 @@ Housesitter and the agent on the Mac (Ouroboros) talk in free text through two s
 
 `housesitter fleet` reads the health records the Macs publish to the fleet gist (one `<machine>.json` each) and prints one row per Mac: how old its last record is, uptime, free disk, the screen, and what is wrong, such as a kernel panic after boot, agent hub not connected, low disk, USB devices missing, no network route or system alerts waiting for a person. It exits 1 when anything is wrong, so a script can ask. `--stale-min`, `--disk-floor-gb` and `--always-on <mac>,<mac>` (Macs that must never sleep) tune what counts as wrong; `HOUSESITTER_FLEET_GIST` and `HOUSESITTER_FLEET_USER` choose the gist and the gh account that reads it; `--from <gist.json>` reads a saved copy.
 
+`housesitter fleet run <host> <step>` lets one Mac ask another to do something, through the same gist. The asking Mac writes `run.<id>.req.json` (an id, the step's name, who asked, when, and when it expires; never a command); the target's `housesitter fleet run --serve` (a launchd job, every minute, loaded by `--install-recovery`) picks it up and looks the name up in its own allowlist, `caretakers.fleet_run` in its config:
+
+```json
+{ "caretakers": { "fleet_run": {
+  "host": "laptop",
+  "bootstrap": { "script": "~/path/to/bootstrap-laptop.sh", "steps": ["copilot-pins", "runner"], "timeout_sec": 900 },
+  "allow": { "say-hi": { "argv": ["/bin/echo", "hi"], "timeout_sec": 60 } } } } }
+```
+
+A name on the list runs as `bash <script> --only <step>` (or the `argv` given), with no shell and with its timeout (default 600 s, at most an hour); a name not on it is refused and never run, and a Mac with no `caretakers.fleet_run` runs nothing. The id is marked seen before the step starts, so a request runs at most once, even if the step dies; one older than a day is answered `expired` and not run. The result, `run.<id>.res.json`, holds the status, the exit code and the last 20 lines of output with anything credential-shaped removed, and a result that cannot be posted is kept and posted on a later pass. `housesitter fleet run --status` shows every request and its result. Both ends append to `fleet-run.log` beside the config, and files older than two days are removed by the target. Secrets never go in the channel: only a step's name, an id, times and that scrubbed output.
+
 ## Restart the Copilot app without losing a session
 
 Housesitter keeps the house: the Mac, the app as a running process, and the launchd jobs kept off (`housesitter hold`). The app's sessions are [Shepherd](https://github.com/ourostack/shepherd)'s, and Housesitter calls Shepherd's library for safe points, progress and resume messages.

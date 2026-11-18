@@ -27,6 +27,7 @@ import * as Load from '../src/load-shed.mjs';
 import * as OsUp from '../src/os-update.mjs';
 import * as Rec from '../src/recovery.mjs';
 import * as Fleet from '../src/fleet.mjs';
+import * as FleetRun from '../src/fleet-run.mjs';
 import * as Apple from '../src/apple-account.mjs';
 import * as Steer from '../src/steer.mjs';
 import * as Hold from '../src/hold.mjs';
@@ -416,6 +417,8 @@ async function main() {
     return 0;
   }
 
+  if (cmd === 'fleet' && name === 'run') return fleetRun();
+
   if (cmd === 'fleet') {
     let beats;
     try {
@@ -677,6 +680,43 @@ async function proof(mac) {
   fs.writeFileSync(path.join(dir, 'timeline.json'), `${JSON.stringify({ mac: mac.name, recorded_by: `housesitter ${VERSION}`, real: true, desktops: opt['all-frames'] ? 'recorded' : 'not recorded', kvm_log: raw ? { unfiltered: 'syslog.log (logread, the whole in-memory buffer; it holds addresses, so check against it rather than publish it whole)', access: 'kvmd-access.log', command: ACCESS } : null, timeline }, null, 2)}\n`);
   say(`\n${kept} frames, timeline.json (${timeline.length} looks)${raw ? ', and the KVM\'s own log (syslog.log, which holds addresses, and kvmd-access.log from it)' : ''} in ${dir}${backAt ? '' : ' (the Mac did not come back while recording)'}.\nA video: ffmpeg -framerate 4 -pattern_type glob -i '${dir}/frame-*.jpg' -vf "scale=1280:-2" -pix_fmt yuv420p ${dir}/proof.mp4`);
   return backAt ? 0 : 1;
+}
+
+// `housesitter fleet run <host> <step> | --status | --serve`: ask another Mac to run an allowlisted step; see src/fleet-run.mjs.
+async function fleetRun() {
+  const dir = path.dirname(configPath());
+  const cfg = loadConfig();
+  const gh = Fleet.fleetClient();
+  const gistId = Fleet.fleetGistId();
+  const host = FleetRun.hostName(cfg);
+  const wrap = (fn) => fn().catch((e) => { if (e.code === 'input-invalid') throw new Refusal('input-invalid', e.message); throw new Refusal('action-failed', `fleet run: ${e.message}. Check that gh is signed in (gh auth status) with a token that may write gists, and that HOUSESITTER_FLEET_GIST names the fleet gist`); });
+  if (opt.serve) {
+    const allow = FleetRun.allowlist(cfg);
+    const r = await wrap(() => FleetRun.pass({ gh, gistId, dir, host, allow, log: (l) => { if (!json && !opt.quiet) console.log(l); } }));
+    if (json) emit({ host, steps_allowed: Object.keys(allow), ...r }); else if (!opt.quiet) say(`fleet run (${host}): ${r.action}${r.handled.map((h) => `; ${h.id} ${h.step}: ${h.outcome}`).join('')}`);
+    return r.handled.some((h) => h.outcome !== 'ok') ? 1 : 0;
+  }
+  if (opt.status) {
+    const g = await wrap(async () => (await gh.get(gistId)).body);
+    let rows = FleetRun.runRows(g);
+    if (opt.id) rows = rows.filter((r) => r.id === opt.id);
+    if (rows.length === 0 && opt.id) throw new Refusal('input-invalid', `no run request ${opt.id} in the fleet gist`);
+    if (json) emit({ rows }); else console.log(FleetRun.renderRows(rows).join('\n'));
+    return rows.some((r) => ['failed', 'timeout', 'refused', 'expired'].includes(r.state)) ? 1 : 0;
+  }
+  const hostArg = rest[0], stepArg = rest[1];
+  need(hostArg && stepArg, 'housesitter fleet run <host> <step> [--wait <seconds>] | housesitter fleet run --status [--id <id>]');
+  const req = await wrap(async () => FleetRun.requestRun({ gh, gistId, dir, from: host, to: hostArg.toLowerCase(), step: stepArg, knownHosts: Object.keys(Fleet.beatsFromGist((await gh.get(gistId)).body)) }));
+  if (!json) say(`asked ${req.to} to run "${req.step}" (request ${req.id}, expires ${req.expires_at}); it picks it up on its next pass, within about a minute. Result: housesitter fleet run --status --id ${req.id}`);
+  const waitSec = Number(opt.wait) || 0;
+  let row = null;
+  for (const until = Date.now() + waitSec * 1000; waitSec && Date.now() < until;) {
+    await new Promise((r) => setTimeout(r, 15000));
+    row = FleetRun.runRows((await gh.get(gistId)).body).find((r) => r.id === req.id);
+    if (row && row.state !== 'pending') break;
+  }
+  if (json) emit({ request: req, ...(row ? { result: row } : {}) }); else if (row && row.state !== 'pending') console.log(FleetRun.renderRows([row]).join('\n'));
+  return row && row.state !== 'pending' && row.state !== 'ok' ? 1 : 0;
 }
 
 // `housesitter peer send|inbox|flush|watch`: Ouroboros's end of the peer link with Housesitter; see src/peer.mjs.

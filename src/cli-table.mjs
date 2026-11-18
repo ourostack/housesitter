@@ -13,8 +13,8 @@ const cmd = (def) => defineCommand(def);
 
 // Every flag the commands read. A flag a command does not read is still unknown to the kit: flags are checked across
 // the tool, not per command, until a command declares its own.
-const VALUE_FLAGS = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--floor-gib', '--window', '--listing', '--peer', '--config', '--ref', '--clone'];
-const SWITCH_FLAGS = ['--again', '--all-frames', '--api-open', '--attended', '--attended-test', '--base64', '--detach', '--disk-prune', '--double', '--end', '--expect-reboot', '--fake', '--fast', '--filevault', '--grid', '--heartbeat', '--hold', '--i-see-the-field', '--install', '--install-agent', '--install-keeper', '--install-plugin-updates', '--install-recovery', '--list', '--load-shed', '--no-sessions', '--now', '--once', '--open-at-login', '--os-updates', '--outbox', '--peek', '--plain', '--plugin-updates', '--private', '--quiet', '--repair', '--resume', '--resume-only', '--right', '--sigterm', '--status', '--test', '--this-mac', '--trial', '--uninstall', '--uninstall-agent', '--uninstall-plugin-updates', '--uninstall-recovery', '--version', '--watch', '--yes'];
+const VALUE_FLAGS = ['--address', '--stale-min', '--disk-floor-gb', '--always-on', '--from', '--id', '--wait', '--out', '--max-width', '--record', '--minutes', '--picture', '--home', '--notify', '--email', '--silent-min', '--watched-by', '--location', '--fingerprint', '--every', '--re', '--to', '--agent', '--ouro', '--hackamore', '--app', '--settle', '--settle-max', '--grace', '--person-wait', '--copilot-home', '--cooldown-hours', '--floor-gib', '--window', '--listing', '--peer', '--config', '--ref', '--clone'];
+const SWITCH_FLAGS = ['--again', '--all-frames', '--api-open', '--attended', '--attended-test', '--base64', '--detach', '--serve', '--disk-prune', '--double', '--end', '--expect-reboot', '--fake', '--fast', '--filevault', '--grid', '--heartbeat', '--hold', '--i-see-the-field', '--install', '--install-agent', '--install-keeper', '--install-plugin-updates', '--install-recovery', '--list', '--load-shed', '--no-sessions', '--now', '--once', '--open-at-login', '--os-updates', '--outbox', '--peek', '--plain', '--plugin-updates', '--private', '--quiet', '--repair', '--resume', '--resume-only', '--right', '--sigterm', '--status', '--test', '--this-mac', '--trial', '--uninstall', '--uninstall-agent', '--uninstall-plugin-updates', '--uninstall-recovery', '--version', '--watch', '--yes'];
 
 const REPEAT_FLAGS = ['also', 'skip'];
 
@@ -37,6 +37,7 @@ const SCHEDULED = {
   'laptop-arrival': ['quiet'],
   hold: ['quiet'],
   'peer watch': ['every', 'once'],
+  'fleet run': ['serve'],
 };
 const WHY = { type: 'string', required: true, placeholder: '"who asked you, and what they said"', description: 'Who asked you, and what they said, like "Riley asked me to post the banner"; it is logged with the action.' };
 
@@ -77,6 +78,7 @@ const COMMANDS = [
   cmd({ name: 'steer', summary: 'whether another computer can see and drive this Mac\'s agent sessions', effect: 'private', examples: ['housesitter steer --list'] }),
   cmd({ name: 'laptop-arrival', summary: 'when a Mac that was away is back, bring it up to date and tell the agent once', effect: 'others', args: [mac('the Mac that was away, as its name in the config')], examples: ['housesitter laptop-arrival <mac> --dry-run'] }),
   cmd({ name: 'fleet', summary: 'every Mac side by side, from the fleet gist\'s health records', effect: 'private', readOnly: true, examples: ['housesitter fleet --stale-min 15'] }),
+  cmd({ name: 'fleet run', summary: 'ask another Mac to run one allowlisted step (through the fleet gist), or read the results', effect: 'others', args: [word('host', 'the Mac that runs it, as its name in the fleet gist', { required: false }), word('step', 'the step\'s name; it must be on that Mac\'s allowlist', { required: false })], examples: ['housesitter fleet run laptop copilot-pins', 'housesitter fleet run --status'] }),
   cmd({ name: 'tailnet-policy', summary: 'a Tailscale policy where the KVM reaches nothing', effect: 'private', readOnly: true, examples: ['housesitter tailnet-policy'] }),
   cmd({ name: 'version', summary: 'print the version', effect: 'private', readOnly: true, examples: ['housesitter version'] }),
 ].map((c) => (c.effect === 'others'
