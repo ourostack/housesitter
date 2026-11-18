@@ -28,7 +28,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { compressHistory, deps as shepherdDeps } from '@ouro.bot/shepherd';
+import { archive, compressHistory, deps as shepherdDeps } from '@ouro.bot/shepherd';
 import { realDeps, snapshot, stateDir } from './copilot-app.mjs';
 import { iso, readJson, realTell, writeJson } from './recovery.mjs';
 import { withBlock } from './lean-hook.mjs';
@@ -204,15 +204,19 @@ export async function pass(opts, deps, say = () => {}) {
   for (const dir of deps.worktrees()) {
     if (done()) break;
     // A session still lists the worktree, but its branch is merged or gone: the work is on the remote, so only the quiet and open rules remain.
-    const finished = used.has(dir) && !deps.protectedBy?.(dir) && Boolean(deps.branchDone?.(dir));
+    // Never when the session is running, has an automation, coordinates others or is a drain target: its wake would find no folder.
+    const pin = used.has(dir) ? (deps.sessionPin ? deps.sessionPin(dir) : 'session state unknown') : null;
+    const finished = used.has(dir) && !pin && !deps.protectedBy?.(dir) && Boolean(deps.branchDone?.(dir));
     const w = { dir, linked: deps.linked(dir), usedByApp: used.has(dir) && !finished, open: false, changedAt: 0, protectedBy: deps.protectedBy?.(dir) || null };
     if (w.linked && !w.usedByApp && !w.protectedBy) { w.open = deps.open(dir); if (!w.open) w.changedAt = deps.changedAt(dir); }
     const why = whyKeep(w, now, t);
-    if (why) { out(`kept ${dir}: ${why}`); continue; }
+    if (why) { out(`kept ${dir}: ${why}${pin ? ` (${pin})` : ''}`); continue; }
     const n = deps.size(dir);
     if (!opts.dry_run) {
       const g = deps.git(dir);
       if (g.dirty || g.unpushed) { const b = deps.rescue(dir); reclaimed.rescued.push(b); out(`saved ${dir}'s unsaved work to ${b}`); }
+      // A session that still lists the folder is archived first (reversible), so none is left pointing at a missing folder.
+      if (used.has(dir)) { const a = await deps.archiveSessions(dir); if (!a.ok) { out(`kept ${dir}: could not archive its session first (${a.error})`); continue; } }
       deps.removeWorktree(dir);
     }
     reclaimed.worktrees.push(dir); out(`removed worktree ${dir}: ${gib(n)}`);
@@ -271,6 +275,15 @@ const sizeOf = (p) => { const r = sh('/usr/bin/du', ['-sk', p], { timeout: 30000
 // A listed session is a candidate for losing regenerable files only when nothing runs it and no automation will wake it.
 export const mayThinSession = (id, { live, running, automated }) => live.has(id) && !running.has(id) && !automated.has(id);
 
+// Sessions that Desk's issue drains wake: every session id named in its drain config (generated or by hand).
+export function drainTargets(home) {
+  const ids = new Set();
+  for (const f of [path.join(home, '.local', 'state', 'ouroboros-skills', 'desk', 'drains', 'config.json'), path.join(home, '.config', 'desk', 'issue-watch.json')]) {
+    try { for (const m of fs.readFileSync(f, 'utf8').matchAll(/"session"\s*:\s*"([0-9a-f-]{36})"/g)) ids.add(m[1]); } catch { /* none */ }
+  }
+  return ids;
+}
+
 export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [] } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
@@ -279,7 +292,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   const rescueRoot = path.join(home, 'AgentBundles', 'disk-rescue');
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
   const fetched = new Set();
-  let idleKnown = false, runningIds = new Set(), autoIds = new Set(), appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
+  let drainIds = new Set(), idleKnown = false, runningIds = new Set(), autoIds = new Set(), appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
   const LEAN = '.github/scripts/lean-worktree.sh';
   // Linked worktrees agents make inside a session's files/ (a worktree's .git is a file).
   const sessionWorktrees = () => {
@@ -389,6 +402,29 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     protectedBy: (d) => {
       load_protected();
       return protectedPaths.find((p) => d === p || d.startsWith(`${p}/`)) || protectedPaths.find((p) => gitCommon(d) === gitCommon(p)) || null;
+    },
+    // Why a session using this worktree must keep its folder: running, an automation (or owner of one), or a drain target.
+    sessionPin: (d) => {
+      if (!idleKnown || !appRows) return 'session state unknown';
+      const sids = appRows.filter((r) => r.p === d).map((r) => r.sid);
+      if (!sids.length || sids.some((x) => !x)) return 'no session known for it';
+      for (const sid of sids) {
+        if (runningIds.has(sid)) return 'session is running';
+        if (autoIds.has(sid)) return 'session has an automation or coordinates others';
+        if (drainIds.has(sid)) return 'session is a drain target';
+      }
+      return null;
+    },
+    archiveSessions: async (d) => {
+      try {
+        const rows = await snapshot(base);
+        for (const sid of appRows.filter((r) => r.p === d).map((r) => r.sid)) {
+          const row = rows.find((x) => x.id === sid); if (!row) continue;
+          const r = await archive(shepherd, row, { keepWorktree: true });
+          if (!r.ok) return { ok: false, error: r.error || 'the app refused' };
+        }
+        return { ok: true };
+      } catch (e) { return { ok: false, error: e.message }; }
     },
     // True when the worktree's branch is merged into the default branch or deleted on the remote (fetched once per repository per pass).
     branchDone: (d) => {
@@ -553,6 +589,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       runningIds = new Set((run || []).map((r) => r.id));
       autoIds = new Set((au || []).flatMap((r) => [r.session_id, r.owner_session_id].filter(Boolean)));
       idleKnown = Boolean(run && au);
+      drainIds = drainTargets(home);
       try { idleIds = new Set((await snapshot(base)).filter((x) => x.state === 'idle').map((x) => x.id)); } catch { idleIds = null; }
       appPaths = w ? new Set(w.map((r) => r.p)) : null;
       liveIds = s ? new Set(s.map((r) => r.id)) : null;
