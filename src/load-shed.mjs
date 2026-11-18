@@ -35,6 +35,11 @@ export const DEFAULT_PATTERNS = [
   'headless_shell',
   'chrome-headless',
   '\\bnode\\b.*\\s--test\\b',
+  'go-build[0-9]+/.*\\.test\\b',
+  '\\bgo\\s+test\\b',
+  '\\bcargo\\s+(test|nextest)\\b',
+  '\\b(pytest|vitest|jest)\\b',
+  '\\b(npm|pnpm|yarn)\\s+(run\\s+)?test\\b',
   '\\b(magick|convert|cwebp|dwebp|pngquant|optipng|oxipng|svgo|ffmpeg)\\b',
 ];
 
