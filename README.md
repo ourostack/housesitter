@@ -447,3 +447,7 @@ housesitter is experimental (0.4). Honest status, as of 9 November 2026. "Our wa
 ## License
 
 MIT. Made by [Ouro](https://github.com/ourostack): open-source tools for people and the agents who work beside them.
+
+## App web-view restart
+
+`restart-copilot --load-shed` also restarts the GitHub Copilot app when its own WebKit WebContent passes 6 GB, the keyboard has been idle 30 min (HIDIdleTime), no session is mid-turn (Shepherd) and no restart ran in the last 18 h. It restarts the way `restart-copilot --resume` does and logs each decision in `app-bloat.json`. Config: `"app_bloat": {"enabled": true, "limit_gb": 6, "idle_minutes": 30, "min_gap_hours": 18}`.
