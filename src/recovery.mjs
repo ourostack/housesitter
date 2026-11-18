@@ -115,6 +115,7 @@ export const AGENTS = {
   steer: { label: 'bot.ouro.housesitter.steer', args: ['steer', '--repair', '--no-sessions', '--quiet'], every: 120, logName: 'housesitter-steer.launchd.log' },
   disk: { label: 'bot.ouro.housesitter.disk-prune', args: ['restart-copilot', '--disk-prune', '--quiet'], every: 600, logName: 'housesitter-disk-prune.launchd.log' },
   load: { label: 'bot.ouro.housesitter.load-shed', args: ['restart-copilot', '--load-shed'], every: 30, logName: 'housesitter-load-shed.launchd.log' },
+  fleet: { label: 'bot.ouro.housesitter.fleet-run', args: ['fleet', 'run', '--serve', '--quiet'], every: 60, logName: 'housesitter-fleet-run.launchd.log' },
   hold: { label: 'bot.ouro.housesitter.hold', args: ['hold', '--quiet'], every: 3600, logName: 'housesitter-hold.launchd.log' },
 };
 

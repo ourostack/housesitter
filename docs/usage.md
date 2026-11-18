@@ -106,6 +106,9 @@ housesitter laptop-arrival <mac> [--config <file>] [--dry-run] [--status] [--ins
                                          date and tell the agent once: update and restart its Copilot app (sessions saved and resumed), unload the jobs
                                          this Mac took over, verify its Hub daemon; every step checks first, so a second run changes nothing
 housesitter fleet [--stale-min 15] [--disk-floor-gb 20] [--always-on <mac>,<mac>] [--from <gist.json>]   every Mac side by side from the fleet
+housesitter fleet run <host> <step> [--wait <s>] --why "<reason>"   ask another Mac, through the fleet gist, to run one step on its allowlist (`caretakers.fleet_run` in its config); it runs once, expires after a day, and posts its exit code and last lines back
+housesitter fleet run --status [--id <id>]   the requests and what became of each; exit 1 when one failed, timed out, was refused or expired
+housesitter fleet run --serve [--quiet]   one serving pass on this Mac: run what is asked of it and allowed (bot.ouro.housesitter.fleet-run runs it every minute; installed by --install-recovery)
                                          gist's health records: how old each is and what is wrong (exit 1 when anything is);
                                          HOUSESITTER_FLEET_GIST and HOUSESITTER_FLEET_USER choose the gist and the gh account
 housesitter tailnet-policy               a Tailscale policy where the KVM reaches nothing

@@ -152,6 +152,7 @@ const VERBS = [
   ['steer --list', 'steer', { list: true }],
   ['laptop-arrival laptop --config /tmp/l.json --quiet', 'laptop-arrival', { mac: 'laptop', config: '/tmp/l.json', quiet: true }],
   ['fleet --stale-min 15 --disk-floor-gb 20 --always-on mini,studio', 'fleet', { 'stale-min': '15', 'disk-floor-gb': '20', 'always-on': 'mini,studio' }],
+  [`fleet run laptop runner --wait 60 ${WHY.join(' ')}`, 'fleet run', { host: 'laptop', step: 'runner', wait: '60' }],
   ['tailnet-policy', 'tailnet-policy', {}],
   ['version', 'version', {}],
 ];

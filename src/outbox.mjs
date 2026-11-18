@@ -42,7 +42,7 @@ export function gistClient({ token, fetchFn = globalThis.fetch, userAgent = 'hou
     if (r.status >= 300) throw new Error(`GitHub ${method} ${p.split('?')[0]} -> HTTP ${r.status}${j?.message ? `: ${j.message}` : ''}`);
     return { status: r.status, etag: r.headers.get('etag'), body: j };
   };
-  const files = (f) => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, { content: v }]));
+  const files = (f) => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v === null ? null : { content: v }]));
   return {
     get: (id, etag) => req('GET', `/gists/${id}`, null, etag),
     put: (id, f) => req('PATCH', `/gists/${id}`, { files: files(f) }),
