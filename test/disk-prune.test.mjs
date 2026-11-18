@@ -2,7 +2,7 @@
 // worktree that a session uses, a process has open, or that changed in the last day is never removed, whatever its name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CACHES, mayThinSession, pass, whyKeep, whyKeepSession } from '../src/disk-prune.mjs';
+import { CACHES, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
 
 const DAY = 24 * 3600000, GIB = 1073741824;
 const NOW = Date.parse('2026-11-16T12:00:00Z');
@@ -334,4 +334,55 @@ test('real regenIn: dependency folders are listed once (nested ones folded in), 
   const got = realDiskDeps({ home }).regenIn(home).map((p) => path.relative(home, p)).sort();
   assert.deepEqual(got, ['a/node_modules', 'b/.venv', 'd/target']);
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+// 2026-11-18: every pass under the floor deleted ~/Library/Caches/ms-playwright, the next test run downloaded Chromium
+// and WebKit again, and the next pass deleted them again. A cache that comes back is in use, and stays.
+test('a cache removed on one pass and back on the next is kept, and that is said once', async () => {
+  const pw = '/h/Library/Caches/ms-playwright';
+  const f = fake({ caches: [pw] });
+  await pass({}, f.d);
+  assert.deepEqual(f.log.cache, [pw]);
+  f.d.now = () => NOW + 2 * 3600000;
+  const said = [];
+  const r = await pass({}, f.d, (l) => said.push(l));
+  assert.deepEqual(f.log.cache, [pw], 'the second pass leaves it alone');
+  assert.equal(r.reclaimed.caches, 0);
+  assert.equal(said.filter((l) => l.includes(`kept cache ${pw}`)).length, 1);
+  assert.match(said.find((l) => l.includes('kept cache')), /came back/);
+  f.d.now = () => NOW + 4 * 3600000;
+  const again = [];
+  await pass({}, f.d, (l) => again.push(l));
+  assert.deepEqual(f.log.cache, [pw]);
+  assert.equal(again.filter((l) => l.includes('kept cache')).length, 0, 'said once, not every pass');
+});
+
+test('a cache a running process has open is kept', async () => {
+  const f = fake({ caches: ['/h/Library/Caches/pnpm', '/h/.cache/gh'], openFiles: ['/h/Library/Caches/pnpm'] });
+  await pass({}, f.d);
+  assert.deepEqual(f.log.cache, ['/h/.cache/gh']);
+});
+
+test('a cache unused through the window is still removed when the floor needs it; a dry run records nothing', async () => {
+  const pw = '/h/Library/Caches/ms-playwright';
+  const f = fake({ caches: [pw] });
+  f.log.state = { caches: { [pw]: { removedAt: NOW - 8 * DAY } } };
+  await pass({}, f.d);
+  assert.deepEqual(f.log.cache, [pw]);
+  assert.equal(f.log.state.caches[pw].removedAt, NOW);
+  const g = fake({ caches: [pw] });
+  await pass({ dry_run: true }, g.d);
+  assert.equal(g.log.state.caches, undefined);
+  assert.equal(whyKeepCache({ open: false, removedAt: NOW - 8 * DAY }, NOW), null);
+  assert.match(whyKeepCache({ open: false, removedAt: NOW - 6 * DAY }, NOW), /came back/);
+  assert.match(whyKeepCache({ open: true }, NOW), /open/);
+});
+
+test('a pass that ends still under the floor rests an hour, unless free space is critically low', async () => {
+  const f = fake({ wts: { '/w/r/a': { ageMs: 2 * DAY } } });
+  assert.equal((await pass({}, f.d)).action, 'pruned');
+  assert.equal((await pass({}, f.d)).action, 'resting');
+  const g = fake({ freeGib: 5, wts: { '/w/r/a': { ageMs: 2 * DAY } } });
+  assert.equal((await pass({}, g.d)).after, 25 * GIB);
+  assert.notEqual((await pass({}, g.d)).action, 'resting', 'below the urgent level every pass runs');
 });
