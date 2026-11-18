@@ -28,7 +28,8 @@ FONT = {
 REGIONS = {"field": [0.430, 0.850, 0.570, 536 / 600], "hint": [0.420, 0.907, 0.580, 0.927]}
 
 
-def picture(wallpaper=0, dx=0, dy=0, field=True, hint=True, hint_dy=0, desktop=False, scale=1, placeholder=True, field_width=140):
+def picture(wallpaper=0, dx=0, dy=0, field=True, hint=True, hint_dy=0, desktop=False, scale=1, placeholder=True, field_width=140,
+            hint_text="Touch ID or Enter Password"):
     w, h = 1000, 600
     y = bytearray(w * h)
     for row in range(h):
@@ -59,7 +60,7 @@ def picture(wallpaper=0, dx=0, dy=0, field=True, hint=True, hint_dy=0, desktop=F
         if placeholder:
             text("Enter Password", 500 + dx, 519 + dy)
     if hint:
-        text("Touch ID or Enter Password", 500 + dx, 546 + dy + hint_dy)
+        text(hint_text, 500 + dx, 546 + dy + hint_dy)
     if desktop:
         for row in range(2, 38, 2):
             for col in range(0, 350, 4):

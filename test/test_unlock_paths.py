@@ -143,7 +143,7 @@ class StructuredLockLesson(Base):
 
     def test_missing_widgets_wrong_layout_and_desktop_never_receive_password(self):
         self.teach_lock()
-        for changes in ({"field": False}, {"hint": False}, {"hint_dy": -35}, {"desktop": True},
+        for changes in ({"field": False}, {"hint": False}, {"hint_text": "Enter Password"}, {"hint_dy": -35}, {"desktop": True},
                         {"field": False, "hint": False}):
             with self.subTest(changes=changes):
                 f = W.frame_features(*picture(wallpaper=1, **changes))
