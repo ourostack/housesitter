@@ -2180,7 +2180,8 @@ class NamedSecrets(unittest.TestCase):
         seen = W.frame_id(self.screen, now - 2000)
         self.assertEqual(len(seen.split(".")[2]), 96, "a small id: 144 cells of 4 bits")
         ask = lambda **k: self.ask(dict({"name": "setup-password", "prompt": "sudo in Terminal", "seen": seen}, **k), now=now)
-        for bad in (None, "", "f1.1.abc.def", seen[:-1] + ("0" if seen[-1] != "0" else "1"), seen.replace("f1.%d" % (now - 2000), "f1.%d" % now)):
+        for bad in (None, "", "f1.1.abc.def", seen[:-1] + ("0" if seen[-1] != "0" else "1"), seen.replace("f2.%d" % (now - 2000), "f2.%d" % now),
+                    seen.replace(".live.", ".offline."), ".".join(p for i, p in enumerate(seen.split(".")) if i != 3)):
             r = ask(seen=bad)
             self.assertEqual(r["code"], "input-invalid", bad)
         old = self.ask({"name": "setup-password", "prompt": "sudo in Terminal", "seen": W.frame_id(self.screen, now - 31000)}, now=now)
@@ -2191,12 +2192,12 @@ class NamedSecrets(unittest.TestCase):
         self.screen = bytes(min(255, b + (6 if i % 2 else -6) + (25 if i in (40, 41) else 0)) for i, b in enumerate(real))
         self.assertTrue(ask()["ok"])
         # The sheet closed (or another window came up) after the caller looked: never typed into what is there now.
-        self.screen = bytes(200 for _ in real)
+        self.screen = bytes(255 - b for b in real)
         moved = ask()
         self.assertEqual(moved["code"], "action-unavailable")
         self.assertIn("the screen changed since the picture you judged", moved["result"])
-        self.screen = bytes(2 for _ in real)
-        self.assertIn("black", ask(seen=W.frame_id(self.screen, now - 1000))["result"])
+        self.screen = bytes(2 + 6 * (i % 2) for i in range(144))
+        self.assertIn("the KVM can't see the screen", ask(seen=W.frame_id(self.screen, now - 1000))["result"], "a black screen is as flat as the placeholder")
         W.screen_grid = lambda kvmd, width=1280: None
         self.assertIn("the check picture failed", ask()["result"])
         self.assertEqual(len([p for p in self.kvmd.posts if p[0].startswith("/hid/print")]), 1, "typed once: only when nothing moved")
@@ -2211,8 +2212,8 @@ class NamedSecrets(unittest.TestCase):
             r = W.handle({"op": "screenshot", "args": {}}, {"name": "studio"}, K(), None, self.logs.append, 10 ** 12, {})
         finally:
             W.frame_grid = orig
-        at, cells = W.parse_frame_id(r["result"]["frame"])
-        self.assertEqual(at, 10 ** 12)
+        at, cells, source = W.parse_frame_id(r["result"]["frame"])
+        self.assertEqual((at, source), (10 ** 12, "live"))
         self.assertIsNone(W.frame_moved(cells, grid))
         self.assertFalse(os.path.exists(os.path.join(self.dir, "state.json")), "a frame id is carried by the caller, not kept by the sitter")
 
@@ -2431,7 +2432,7 @@ class StreamerStaysUp(unittest.TestCase):
         key, grids = W.device_key, W.screen_grid
         W.device_key = lambda paths=None: (b"t" * 32, "given")
         W.store_secret("setup-password", "synthetic-value")
-        screen, tries = bytes(200 for _ in range(144)), []
+        screen, tries = bytes((i * 37) % 256 for i in range(144)), []
 
         def flaky(kvmd, width=1280):
             tries.append(1)
@@ -2453,3 +2454,71 @@ class StreamerStaysUp(unittest.TestCase):
         self.assertEqual(r["code"], "action-unavailable")
         self.assertIn("the check picture failed 3 times", r["result"])
         self.assertNotIn("the screen changed since", r["result"])
+
+
+class TheKvmCantSeeTheScreen(unittest.TestCase):
+    """kvmd's "NO LIVE VIDEO" placeholder got a valid frame id on the real KVM (22:55Z, 2026-11-19), so a frame taken of
+    the placeholder could pass type_secret's seen gate while the real screen was unseen."""
+    SCREEN = bytes(40 if (i % 16) in range(3, 13) and (i // 16) in range(2, 7) else 200 for i in range(144))
+    # The placeholder: near-black, with a little white text in the middle.
+    PLACEHOLDER = bytes(30 if i in (71, 72, 87, 88) else 12 for i in range(144))
+
+    def setUp(self):
+        W.HOME = scratch()
+        self.key, self.grids = W.device_key, W.screen_grid
+        W.device_key = lambda paths=None: (b"t" * 32, "given")
+        W.store_secret("setup-password", "synthetic-value")
+        self.fresh = self.SCREEN
+        W.screen_grid = lambda kvmd, width=1280: self.fresh
+
+    def tearDown(self):
+        W.device_key, W.screen_grid = self.key, self.grids
+
+    def ask(self, seen, kvmd=None):
+        k = kvmd or FakeKvmd()
+        r = W.handle({"op": "type_secret", "args": {"name": "setup-password", "prompt": "sudo", "seen": seen}}, {"name": "mini"}, k, None, lambda m: None, 10 ** 12, W.load("state.json", {"ledger": []}))
+        return r, [p for p in k.posts if p[0].startswith("/hid/print")]
+
+    def test_a_placeholder_like_grid_is_flat_and_a_real_screen_is_not(self):
+        self.assertTrue(W.grid_flat(self.PLACEHOLDER))
+        self.assertTrue(W.grid_flat([8] * 144), "the all-A frame id seen on the KVM")
+        self.assertFalse(W.grid_flat(self.SCREEN))
+        _, cells, _ = W.parse_frame_id(W.frame_id(self.PLACEHOLDER, 10 ** 12))
+        self.assertTrue(W.grid_flat(cells), "still flat after the id's 4-bit rounding")
+
+    def test_refused_when_the_judged_picture_or_the_check_picture_is_not_live_video(self):
+        now = 10 ** 12
+        for seen in (W.frame_id(self.SCREEN, now - 1000, "offline"), W.frame_id(self.PLACEHOLDER, now - 1000)):
+            r, typed = self.ask(seen)
+            self.assertEqual(r["code"], "action-unavailable", seen)
+            self.assertIn("the KVM can't see the screen", r["result"])
+            self.assertEqual(typed, [])
+        self.fresh = self.PLACEHOLDER
+        r, typed = self.ask(W.frame_id(self.SCREEN, now - 1000))
+        self.assertIn("the KVM can't see the screen", r["result"])
+        self.assertEqual(typed, [])
+
+        class NoSignal(FakeKvmd):
+            def json(self, path):
+                return {"streamer": {"source": {"online": False}}} if path == "/streamer" else super().json(path)
+        self.fresh = self.SCREEN
+        r, typed = self.ask(W.frame_id(self.SCREEN, now - 1000), NoSignal())
+        self.assertIn("the KVM can't see the screen", r["result"], "kvmd says no live video: the picture is its placeholder")
+        self.assertEqual(typed, [])
+        r, typed = self.ask(W.frame_id(self.SCREEN, now - 1000))
+        self.assertTrue(r["ok"], r)
+
+    def test_a_screenshot_without_live_video_gets_an_offline_id(self):
+        class NoSignal(FakeKvmd):
+            def get(self, path, timeout=15):
+                return b"\xff\xd8placeholder\xff\xd9"
+
+            def json(self, path):
+                return {"streamer": {"source": {"online": False}}} if path == "/streamer" else super().json(path)
+        orig = W.frame_grid
+        W.frame_grid = lambda jpg, run=None: self.SCREEN
+        try:
+            r = W.handle({"op": "screenshot", "args": {}}, {"name": "mini"}, NoSignal(), None, lambda m: None, 10 ** 12, {})
+        finally:
+            W.frame_grid = orig
+        self.assertEqual(W.parse_frame_id(r["result"]["frame"])[2], "offline")
