@@ -2851,8 +2851,12 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
     prompt = prompt.strip()
     if name in KVM_OWN_SECRETS:
         return {"ok": False, "code": "action-unavailable", "result": "%s is the KVM's own credential; the sitter uses it itself and never types it into the Mac" % name}
-    if name == "mac" and at_password_screen(st):
-        return {"ok": False, "code": "action-unavailable", "result": "the Mac is at a FileVault, login or lock screen; the Mac's password is typed there only by unlock, with its own gates: use unlock"}
+    if name == "mac":
+        # A fresh read, as for an agent's typing: the Mac's password goes only to a desktop (a sheet or sudo there);
+        # at FileVault, a login or a lock screen it is unlock's, with its own gates.
+        why = hands_refusal(cfg, kvmd, st)
+        if why:
+            return {"ok": False, "code": "action-unavailable", "result": "the Mac's own password is typed here only on a desktop (%s); at FileVault, a login or a lock screen, use unlock" % why}
     value = load_secret(name)
     if not value:
         return {"ok": False, "code": "action-unavailable", "result": "the sitter holds no secret named %s. Fix: on a controller Mac, housesitter secret %s %s --kvm" % (name, cfg.get("name", "<mac>"), name)}
@@ -3362,9 +3366,7 @@ def heartbeat(cfg, status, opener=urllib.request.urlopen):
 def forget():
     """Wipe the sitter's secrets and memory from this KVM (the files, not just their contents)."""
     gone = []
-    creds = secret_names()
-    for n in creds + ["state", "status"]:
-        p = os.path.join(HOME, n + (".cred" if n in creds else ".json"))
+    for p in [os.path.join(HOME, n + ".cred") for n in secret_names()] + [os.path.join(HOME, n) for n in ("state.json", "status.json")]:
         if os.path.exists(p):
             with open(p, "w") as f:
                 f.write("")

@@ -2165,7 +2165,14 @@ class NamedSecrets(unittest.TestCase):
         self.assertEqual(r["code"], "action-unavailable")
         self.assertIn("use unlock", r["result"])
         W.save("status.json", {"obs": {"screen": "desktop"}})
-        self.assertTrue(self.ask({"name": "mac", "prompt": "an authentication sheet in System Settings"})["ok"])
+        reads, orig = ["unknown"], W.screen_read
+        W.screen_read = lambda cfg, kvmd: (reads[0], None)
+        try:
+            self.assertIn("use unlock", self.ask({"name": "mac", "prompt": "a lock screen it was never taught"})["result"], "a stale status is not enough: it reads the screen now")
+            reads[0] = "desktop"
+            self.assertTrue(self.ask({"name": "mac", "prompt": "an authentication sheet in System Settings"})["ok"])
+        finally:
+            W.screen_read = orig
         self.assertEqual(W.password_gate()["trust"], "unverified", "typing it elsewhere proves nothing about unlock")
 
     def test_types_only_if_nothing_moved_since_the_caller_looked(self):
