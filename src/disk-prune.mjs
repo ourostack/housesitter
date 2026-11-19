@@ -1,6 +1,6 @@
-// `housesitter restart-copilot --disk-prune`: keep free space above a floor (500 GiB by default) with no model turns and
+// `housesitter restart-copilot --disk-prune`: keep free space above a floor (20% of the volume by default) with no model turns and
 // nothing for an agent to remember. launchd runs one pass every ten minutes; a pass does nothing while free space is above
-// the floor. Below it, it reclaims safe classes in this order and stops once free space is back at floor + 50 GiB:
+// the floor. Below it, it reclaims safe classes in this order and stops once free space is back at floor + 5% of the volume:
 //   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh), except one a running process has open or one a
 //      pass removed that came back within a week: that one is in use, and removing it again only buys a download
 //   2. thin: a worktree whose session Shepherd reports idle (never busy) is made sparse with the repository's own
@@ -35,8 +35,12 @@ import { iso, readJson, realTell, writeJson } from './recovery.mjs';
 import { withBlock } from './lean-hook.mjs';
 
 export const DP = {
-  floor: 500 * 1073741824, // free bytes below which a pass starts reclaiming
-  margin: 50 * 1073741824, // it stops once free space is floor + margin
+  // Free space below which a pass starts reclaiming is a share of the volume (the old backlog bar: keep it under 80% full),
+  // not a fixed 500 GiB: on a 926 GiB disk that bar can never be met, so every pass was under it and cleared caches.
+  floorPct: 0.2,
+  marginPct: 0.05, // it stops once free space is floor + this share
+  floorFallback: 500 * 1073741824, // used only when the volume's size is unknown
+  marginFallback: 50 * 1073741824,
   scratchQuiet: 3 * 3600000, // temp scratch is churned all day, so a full day of quiet would never come
   // Chromium browsers (Edge, Chrome) clone their own app bundle (about 1 GiB) into $TMPDIR/../X/<bundle id>.code_sign_clone/
   // for a signature check at launch, and delete the clone when they exit. A browser that is killed (a headless launch ended
@@ -60,6 +64,11 @@ export const DP = {
 const GIB = 1073741824;
 export const gib = (b) => `${(b / GIB).toFixed(1)} GiB`;
 
+// Caches that cost every lane minutes of download to rebuild: kept unless free space is urgent.
+export const COSTLY_CACHES = ['Library/Caches/ms-playwright'];
+export const floorOf = (t, size) => t.floor ?? (size ? Math.round(size * t.floorPct) : t.floorFallback);
+export const marginOf = (t, size) => t.margin ?? (size ? Math.round(size * t.marginPct) : t.marginFallback);
+
 export const CACHES = ['.npm/_cacache', '.cache/gh', 'Library/Caches/ms-playwright', 'Library/Caches/pip', 'Library/Caches/go-build', 'Library/Caches/pnpm'];
 
 // Why a worktree may not be removed now, or null when it may. `w`: { dir, linked, usedByApp, open, changedAt, protectedBy }.
@@ -80,6 +89,7 @@ export function whyKeep(w, now, t = DP) {
 // nobody needs any more is not kept for ever; the worst case is one download a week, not one every ten minutes.
 export function whyKeepCache(c, now, t = DP) {
   if (c.open) return 'a running process has a file open in it';
+  if (c.costly && !c.urgent) return 'it costs every lane a download to rebuild, and free space is not urgent';
   if (c.removedAt != null && now - c.removedAt < t.cacheBack) return `it came back within ${Math.round(t.cacheBack / 86400000)} days of being removed, so something uses it`;
   return null;
 }
@@ -101,6 +111,7 @@ export async function pass(opts, deps, say = () => {}) {
   const out = (m) => say(`${iso(now)} disk-prune: ${m}`);
   const st0 = deps.readState() || {};
   const before = deps.usage();
+  const floor = floorOf(t, before.size), margin = marginOf(t, before.size);
   const stamp = (patch) => { if (!opts.dry_run) deps.writeState({ ...(deps.readState() || {}), ...patch }); };
 
   if (!opts.dry_run) {
@@ -130,11 +141,11 @@ export async function pass(opts, deps, say = () => {}) {
   }
   if (leaked.length) out(`${opts.dry_run ? 'would remove' : 'removed'} ${leaked.length} leaked browser code-sign clone(s): ${gib(reclaimed.browserClones)}`);
 
-  if (before.free >= t.floor && !opts.force) return { action: 'ok', free: before.free, reclaimed };
+  if (before.free >= floor && !opts.force) return { action: 'ok', free: before.free, reclaimed };
   if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
 
   await deps.load?.();
-  const done = () => deps.usage().free >= t.floor + t.margin;
+  const done = () => deps.usage().free >= floor + margin;
   const used = deps.appWorktrees();
 
   const kept = [];
@@ -142,7 +153,7 @@ export async function pass(opts, deps, say = () => {}) {
     if (done()) break;
     const n = deps.size(c); if (!n) continue;
     const rec = (deps.readState() || {}).caches?.[c] || {};
-    const why = whyKeepCache({ open: deps.open(c), removedAt: rec.removedAt }, now, t);
+    const why = whyKeepCache({ open: deps.open(c), removedAt: rec.removedAt, costly: COSTLY_CACHES.some((x) => c.endsWith(x)), urgent: before.free < t.urgent }, now, t);
     if (why) {
       if (!rec.said) { out(`kept cache ${c} (${gib(n)}): ${why}`); kept.push(c); }
       continue;
@@ -276,17 +287,17 @@ export async function pass(opts, deps, say = () => {}) {
   if (why) out(`kept, by reason (${why})`);
   const tail = `${why ? ` Kept, by reason: ${why}.` : ''}${kept.length ? ` Kept ${kept.length} cache(s) in use (${kept.map((c) => path.basename(c)).join(', ')}): removing them again would only make the next run download them.` : ''}${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(t.floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < t.floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag || kept.length) {
-    await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(t.floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
+    await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
     st.toldAt = now;
   }
   // Told, so not again: launchd runs with --quiet, so this message is the only place a keep is said.
   if (kept.length) st.caches = { ...st.caches, ...Object.fromEntries(kept.map((c) => [c, { ...st.caches?.[c], said: true }])) };
   // A pass that ends still under the floor rests too: the next one, ten minutes later, would scan the same disk (lsof,
   // du, find on a loaded Mac) to find the same nothing. Only when space is critically low does every pass run.
-  if (res.action === 'nothing-safe' || (after.free < t.floor && after.free >= t.urgent)) st.restUntil = now + t.rest; else delete st.restUntil;
+  if (res.action === 'nothing-safe' || (after.free < floor && after.free >= t.urgent)) st.restUntil = now + t.rest; else delete st.restUntil;
   deps.writeState({ ...st, lastPass: { at: iso(now), ...res } });
   return res;
 }
@@ -371,7 +382,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   };
   return {
     now: () => Date.now(),
-    usage: () => { const r = sh('/bin/df', ['-k', volume]).stdout.trim().split('\n').pop().split(/\s+/); const size = Number(r[1]), used = Number(r[2]), free = Number(r[3]) * 1024; return { pct: Math.round((used / size) * 100), free }; },
+    usage: () => { const r = sh('/bin/df', ['-k', volume]).stdout.trim().split('\n').pop().split(/\s+/); const size = Number(r[1]), used = Number(r[2]), free = Number(r[3]) * 1024; return { pct: Math.round((used / size) * 100), free, size: size * 1024 }; },
     caches: () => CACHES.map((c) => path.join(home, c)).filter((p) => fs.existsSync(p)),
     size: sizeOf,
     // rmSync can lose a race with a process still writing into the folder (ENOTEMPTY); retry, then let rm have a go.
