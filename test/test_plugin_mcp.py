@@ -11,7 +11,7 @@ from plugin_base import slurp, FLEET, IN, OUT, PLUGIN, ROOT, PluginCase, iso
 
 SERVER = os.path.join(PLUGIN, "mcp", "server.py")
 TOOLS = {"sitter_status", "sitter_look", "sitter_screenshot", "sitter_unlock", "sitter_want_desktop", "sitter_power_cycle", "sitter_power_on",
-         "sitter_click", "sitter_type", "sitter_type_secret", "sitter_key", "sitter_scroll", "peer_send", "peer_bring_back_ouroboros", "peer_inbox", "kvm_health"}
+         "sitter_click", "sitter_type", "sitter_type_secret", "sitter_setup_mode", "sitter_key", "sitter_scroll", "peer_send", "peer_bring_back_ouroboros", "peer_inbox", "kvm_health"}
 JPEG = b"\xff\xd8\xff\xe0fake-jpeg-frame\xff\xd9"
 
 
@@ -98,6 +98,16 @@ class McpTest(PluginCase):
         got, rep = self.call("sitter_type", {"text": "hello"})
         self.assertEqual(got, {"ok": False, "code": "action-unavailable", "result": "the Mac is at a password screen; only the sitter types there"})
         self.assertFalse(rep["isError"])
+
+    def test_setup_mode_runs_the_sitters_root_command(self):
+        got, rep = self.call("sitter_setup_mode", {"on": True, "mac": "laptop", "hours": 3})
+        self.assertEqual(got, {"ok": True, "result": {"setup": {"argv": ["on", "--mac", "laptop", "--hours", "3"]}}})
+        self.assertEqual(self.sitter_calls()[-1]["argv1"], "setup-mode")
+        got, _ = self.call("sitter_setup_mode", {"on": False})
+        self.assertEqual(got["result"]["setup"]["argv"], ["off"])
+        got, rep = self.call("sitter_setup_mode", {"on": True, "mac": "laptop", "hours": 99})
+        self.assertEqual((got["ok"], got["code"]), (False, "input-invalid"))
+        self.assertIn("at most 24", got["result"])
 
     def test_type_secret_refusals_come_back_verbatim(self):
         os.environ["FAKE_SITTER_REFUSE"] = "type_secret"

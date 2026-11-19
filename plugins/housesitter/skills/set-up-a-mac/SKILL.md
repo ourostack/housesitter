@@ -41,7 +41,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **One password prompt at a time (m7).** Before I open Terminal or start anything that asks for a password, I check whether a prompt is already waiting, and answer that one.
 - **Never press Escape at a login window.** It switches to the list of users, where no field has focus.
 - **Never use the clipboard.** No cmd+c or cmd+v. I type with `sitter_type`.
-- **The hands gate.** `sitter_click`, `sitter_type`, `sitter_key` and `sitter_scroll` work only on a desktop with its menu bar. Anywhere else the sitter refuses ("not a desktop with its menu bar", "at a password screen"), and so it does from a boot until the first desktop. I don't work around a refusal; it's a stuck step.
+- **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` when the cables go back. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
 - **Budgets.** `sitter_type_secret` allows 20 an hour. Peer messages: 10 an hour each way, so codes go with `now: true` and the rest are batched.
 - **Clear what's in the way (m8, m11).** Before each step I close notices, first-run windows and banners over the app I'm about to use. Once the step is done, I close every window it opened.
 - **Leave the reference Mac alone.** I ask Ouroboros only to read, to approve a code, or to run the config's own commands.
@@ -72,7 +72,7 @@ On every wake I call `sitter_status`, `sitter_look` and `peer_inbox`, and reread
 
 **I see:** a large centred pane with a heading, Back and Continue at the bottom, no menu bar.
 
-**Today this is the owner's.** The sitter refuses my hands here: there's no menu bar, and after the cable move a boot is pending. I probe once with `sitter_key` "shift", which changes nothing on any pane. If it's refused, I tell the owner once: "<mac> is in Setup Assistant at '<heading>'; the sitter won't let me click there. Please finish it." The message includes the choices from the table below, with the values filled in: the full name, the account name, and the password `initial_password` (I write it out; it's non-secret by the owner's choice). Then I wait for a desktop or a login window.
+**With setup mode on, I click through it myself**, with the choices from the table below. Without it, the sitter refuses my hands here: there's no menu bar, and after the cable move a boot is pending. I probe once with `sitter_key` "shift", which changes nothing on any pane. If it's refused, I tell the owner once: "<mac> is in Setup Assistant at '<heading>'; the sitter won't let me click there. Please finish it." The message includes the choices from the table below, with the values filled in: the full name, the account name, and the password `initial_password` (I write it out; it's non-secret by the owner's choice). Then I wait for a desktop or a login window.
 
 **If my hands work** (a future sitter), I answer each pane by its heading, one at a time, looking after each click:
 

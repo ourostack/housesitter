@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.6.36"
+VERSION = "0.6.37"
 PROTOCOL = "2025-06-18"
 LONG_OPS = ("type", "type_secret", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
@@ -55,6 +55,30 @@ def sitter(op, args=None, timeout=None):
     except (IndexError, ValueError):
         err = r.stderr.decode("utf-8", "replace").strip().splitlines()
         return {"ok": False, "code": "action-failed", "result": "the sitter exited %d without a JSON reply%s" % (r.returncode, (": " + err[-1][:300]) if err else "")}
+
+
+def sitter_setup_mode(a):
+    """Setup mode is root's, on the KVM: `sitter.py setup-mode on --mac <label> [--hours N]` or `off`. This server runs
+    on the KVM as root; the outbox has no such op."""
+    if a.get("on") is True:
+        args = ["setup-mode", "on", "--mac", str(a.get("mac") or "")] + (["--hours", str(a["hours"])] if a.get("hours") is not None else [])
+    elif a.get("on") is False:
+        args = ["setup-mode", "off"]
+    else:
+        raise ValueError("on: true (with mac) or false")
+    cmd = shlex.split(env("HOUSESITTER_SITTER_CMD", "python3 /etc/kvmd/user/housesitter/sitter.py")) + args
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "code": "action-failed", "result": "couldn't run the sitter: %s" % e}
+    lines = [ln for ln in r.stdout.decode("utf-8", "replace").splitlines() if ln.strip()]
+    if r.returncode == 0 and lines:
+        try:
+            return {"ok": True, "result": json.loads(lines[-1])}
+        except ValueError:
+            pass
+    err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+    return {"ok": False, "code": "input-invalid" if r.returncode == 2 else "action-failed", "result": err[-1][:300] if err else "the sitter exited %d" % r.returncode}
 
 
 def save_screen(b64, label):
@@ -189,6 +213,8 @@ TOOLS = [
     ("sitter_type", "Type text on the Mac through the KVM's keyboard (up to 2000 characters). Never a password: use sitter_type_secret.", schema({"text": {"type": "string"}}, ["text"]), 130000, False),
     ("sitter_type_secret", "Have the sitter type its own sealed copy of a named secret (like setup-password, apple-account or mac) into the Mac now, then Return if enter is true. Use it whenever a password prompt for a secret the sitter holds (sitter_status lists their names under secrets) is on the screen and focused; you never see the secret. prompt is one line saying which prompt you see and where; it goes in the sitter's audit log. seen is the frame id (result.frame) of the sitter_screenshot or sitter_look in which you saw the password field focused (a caret in it, a highlighted field, the prompt's words): the sitter types only if a fresh picture still matches it and it is under 30 s old. 20 an hour; never the KVM's own credentials; the Mac's password at FileVault or a lock screen is sitter_unlock's.",
      schema({"name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"}, "prompt": {"type": "string", "maxLength": 200}, "enter": {"type": "boolean"}, "seen": {"type": "string"}}, ["name", "prompt", "seen"]), 130000, False),
+    ("sitter_setup_mode", "Setup mode, for setting up another Mac on the KVM's cables: on (with mac, a label for the Mac being set up, and hours, default 6, at most 24) or off. While on, the sitter acts on nothing by itself (no unlock, power or hang action, no typing at any taught lesson), refuses unlock and power requests, and my clicks, keys, typing and sitter_type_secret work on any screen (Setup Assistant, a login window, FileVault); Escape still only on a desktop. It turns itself off at its expiry; sitter_status shows it.",
+     schema({"on": {"type": "boolean"}, "mac": {"type": "string"}, "hours": NUM}, ["on"]), 40000, False),
     ("sitter_key", "Press a key or combination on the Mac, like \"cmd+space\", \"return\" or \"ctrl+alt+delete\".", schema({"combo": {"type": "string"}}, ["combo"]), 40000, False),
     ("sitter_scroll", "Scroll on the Mac: dx, dy wheel steps (negative dy is up), optionally at x, y first (same pixels as sitter_click).",
      schema({"dx": NUM, "dy": NUM, "x": NUM, "y": NUM, "w": NUM, "h": NUM}, ["dx", "dy"]), 40000, False),
@@ -248,6 +274,8 @@ def call(name, a):
         return sitter("type", pick(a, ["text"])), []
     if name == "sitter_type_secret":
         return sitter("type_secret", dict(pick(a, ["name", "prompt", "enter", "seen"]), by="housesitter")), []
+    if name == "sitter_setup_mode":
+        return sitter_setup_mode(a), []
     if name == "sitter_key":
         return sitter("key", pick(a, ["combo"])), []
     if name == "sitter_scroll":

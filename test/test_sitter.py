@@ -2232,3 +2232,92 @@ class NamedSecrets(unittest.TestCase):
         rules = [e for e in ledger if e.get("kind") != "type_secret"]
         m, judged = W.judge({"state": "filevault", "incident": {"started": t0 - 1, "failed": {}}}, rules, t0 + 10 * 60000)
         self.assertEqual(judged["kind"], "unlock", "the unlock is what gets judged, not the typed secret after it")
+
+
+class SetupMode(unittest.TestCase):
+    """Setup mode, set only by root: the KVM's cables are on another Mac, so the sitter acts on nothing by itself, and an
+    agent's hands (and type_secret) work on any screen over SSH or MCP, never through the outbox."""
+
+    def setUp(self):
+        W.HOME = scratch()
+        self.logs = []
+        self.key, self.read, self.arp = W.device_key, W.screen_read, W.arp_alive
+        W.device_key = lambda paths=None: (b"t" * 32, "given")
+        W.screen_read = lambda cfg, kvmd: ("unknown", None)  # Setup Assistant: no menu bar
+        W.save("status.json", {"obs": {"screen": "login"}})
+        W.set_setup_mode(["on", "--mac", "laptop"])
+
+    def tearDown(self):
+        W.device_key, W.screen_read, W.arp_alive = self.key, self.read, self.arp
+
+    def do(self, op, args=None, via="ssh", k=None):
+        return W.handle({"op": op, "args": args or {}}, {"name": "mini"}, k or FakeKvmd(), FakePlug(), self.logs.append, int(time.time() * 1000), {"ledger": []}, via=via)
+
+    def test_on_off_hours_and_expiry(self):
+        s = W.setup_mode()
+        self.assertEqual(s["mac"], "laptop")
+        self.assertEqual(s["until"] - s["since"], 6 * 3600000)
+        for bad in (["on"], ["on", "--mac", "laptop", "--hours", "25"], ["on", "--mac", "laptop", "--hours", "0"], ["on", "--mac", "two\nlines"], ["sideways"]):
+            with self.assertRaises(ValueError, msg=bad):
+                W.set_setup_mode(bad)
+        self.assertEqual(W.main(["setup-mode", "on", "--mac", "laptop", "--hours", "99"]), 2)
+        self.assertEqual(W.set_setup_mode(["on", "--mac", "laptop", "--hours", "24"])["setup"]["until"] - W.setup_mode()["since"], 24 * 3600000)
+        self.assertEqual(self.do("status")["result"]["setup"]["mac"], "laptop")
+        self.assertIsNone(W.setup_mode(now=W.setup_mode()["until"]), "it turns itself off at its expiry")
+        self.assertFalse(os.path.exists(os.path.join(W.HOME, "setup.json")))
+        self.assertIsNone(self.do("status")["result"]["setup"])
+        W.set_setup_mode(["on", "--mac", "laptop"])
+        self.assertEqual(W.set_setup_mode(["off"])["was"]["mac"], "laptop")
+        self.assertIsNone(W.setup_mode())
+
+    def test_hands_on_any_screen_over_ssh_never_through_the_outbox_and_no_escape_off_a_desktop(self):
+        k = FakeKvmd(text="Welcome Continue")
+        for op, args in (("click", {"x": 10, "y": 10}), ("key", {"combo": "tab"}), ("type", {"text": "Ada"}), ("scroll", {"dy": -1})):
+            self.assertTrue(self.do(op, args, k=k)["ok"], op)
+        n = len(k.posts)
+        self.assertEqual(self.do("type", {"text": "Ada"}, via="outbox", k=k)["code"], "action-unavailable")
+        self.assertEqual(self.do("click", {"x": 10, "y": 10}, via="outbox", k=k)["code"], "action-unavailable")
+        r = self.do("key", {"combo": "esc"}, k=k)
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertIn("never Escape there", r["result"])
+        self.assertEqual(len(k.posts), n)
+        W.set_setup_mode(["off"])
+        self.assertEqual(self.do("type", {"text": "Ada"})["code"], "action-unavailable", "off: the normal rules are back")
+
+    def test_type_secret_on_any_screen_keeps_its_frame_gate(self):
+        W.store_secret("mac", "synthetic-mac-password")
+        screen, grids = bytes(range(100, 244)), W.screen_grid
+        W.screen_grid = lambda kvmd, width=1280: screen
+        try:
+            now = int(time.time() * 1000)
+            k = FakeKvmd()
+            r = self.do("type_secret", {"name": "mac", "prompt": "Setup Assistant's account password", "seen": W.frame_id(screen, now - 1000)}, k=k)
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(self.do("type_secret", {"name": "mac", "prompt": "x", "seen": W.frame_id(screen, now - 1000)}, via="outbox")["code"], "action-unavailable")
+            self.assertEqual(self.do("type_secret", {"name": "mac", "prompt": "x", "seen": "f1.1.x.y"})["code"], "input-invalid")
+        finally:
+            W.screen_grid = grids
+
+    def test_no_unlock_power_or_lesson_typing_and_alerts_say_setting_up(self):
+        for op in ("unlock", "want_desktop", "power_cycle", "power_on"):
+            r = self.do(op)
+            self.assertEqual(r["code"], "action-unavailable", op)
+            self.assertIn("setup mode is on for laptop", r["result"])
+        self.assertTrue(W.boot_watch({"name": "mini"}, FakeKvmd(), self.logs.append)["setup"], "no boot watch: no typing at any lesson")
+        W.save("status.json", {})
+        plug = FakePlug(on=True, watts=14)
+        W.arp_alive = lambda ips, macs: False
+        statuses = [W.once({"name": "mini", "mac_ips": []}, FakeKvmd(online=True, clocks=("9:41",)), plug, self.logs.append, now=t * 60000) for t in range(0, 8)]
+        self.assertEqual(statuses[-1]["state"], "hung")
+        self.assertEqual(plug.calls, [], "a frozen picture in setup mode is never power-cycled")
+        self.assertEqual(statuses[-1]["setup"]["mac"], "laptop")
+        self.assertFalse(statuses[-1]["can"]["plug"] or statuses[-1]["can"]["unlock"])
+        sent = []
+
+        class Resp:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        cfg = {"name": "mini", "notify": {"kind": "webhook", "url": "https://example.invalid/hook"}}
+        W.perform_notify(cfg, {"kind": "notify", "why": "hung, and no smart plug or Fingerbot to restart it"}, {"state": "hung"}, {"video": True}, opener=lambda req, timeout=10: (sent.append(req), Resp())[1])
+        self.assertIn("mini's KVM is setting up laptop", sent[0].data.decode("utf-8"))
