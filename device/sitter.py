@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.9"
+VERSION = "0.3.10"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -442,7 +442,77 @@ def harden(kvmd, cfg=None, run=subprocess.run, gl=None):
     else:
         out["gl_cloud"] = "n/a (not a GL.iNet KVM)"
     out["ingress"] = apply_ingress(ingress_mode(cfg), run=run)
+    out["streamer"] = streamer_forever(run=run)
     return out
+
+
+# kvmd's streamer stays up between looks. Started and stopped for each picture, the Comet's encoder ran out of CMA
+# (2026-11-19) and type_secret's check picture failed. kvmd reads override.d/*.yaml, then override.yaml.
+KVMD_ETC = "/etc/kvmd"
+STREAMER_FILE = "0090-housesitter-streamer.yaml"
+STREAMER_YAML = "kvmd:\n    streamer:\n        forever: true\n"
+
+
+def streamer_forever_set(etc=None):
+    """Does kvmd's config keep the streamer up (forever: true), in our override.d file or in override.yaml?"""
+    etc = etc or KVMD_ETC
+    try:
+        with open(os.path.join(etc, "override.d", STREAMER_FILE)) as f:
+            if f.read() == STREAMER_YAML:
+                return True
+    except OSError:
+        pass
+    try:
+        with open(os.path.join(etc, "override.yaml")) as f:
+            return bool(re.search(r"^\s+forever:\s*true\s*$", f.read(), re.M))
+    except OSError:
+        return False
+
+
+def streamer_forever(run=subprocess.run, etc=None):
+    """Set kvmd's streamer to stay up, read it back, and restart kvmd only when it changed. Its own file in override.d
+    where kvmd has one; else appended to override.yaml when that has no kvmd section of its own; else it says what to
+    add by hand."""
+    etc = etc or KVMD_ETC
+    pending = os.path.join(HOME, "streamer-restart.pending")
+    if streamer_forever_set(etc) and not os.path.exists(pending):
+        return "stays up (forever: true, read back)"
+    d, ov = os.path.join(etc, "override.d"), os.path.join(etc, "override.yaml")
+    if not os.path.isdir(etc):
+        return "n/a (no %s: not kvmd)" % etc
+    try:
+        if streamer_forever_set(etc):
+            pass  # set before; only kvmd's restart is still owed
+        elif os.path.isdir(d):
+            with open(os.path.join(d, STREAMER_FILE), "w") as f:
+                f.write(STREAMER_YAML)
+        else:
+            try:
+                with open(ov) as f:
+                    text = f.read()
+            except OSError:
+                text = ""
+            if re.search(r"^kvmd:", text, re.M):
+                return "NOT set: %s has a kvmd section of its own; add streamer: forever: true under it by hand" % ov
+            with open(ov, "a") as f:
+                f.write(("\n" if text and not text.endswith("\n") else "") + STREAMER_YAML)
+    except OSError as e:
+        return "NOT set: %s" % str(e)[:120]
+    if not streamer_forever_set(etc):
+        return "NOT set: it did not read back from %s" % etc
+    # Owed until a restart succeeds: a later harden restarts kvmd even though the setting already reads back.
+    os.makedirs(HOME, mode=0o700, exist_ok=True)
+    open(pending, "w").close()
+    try:
+        r = run(["sh", "-c", "r=1; if command -v systemctl >/dev/null && systemctl is-enabled kvmd >/dev/null 2>&1; then systemctl restart kvmd && r=0; "
+                 "else for s in /etc/init.d/S*kvmd /etc/init.d/S*kvmd.sh; do [ -x \"$s\" ] && \"$s\" restart && r=0; done; fi; exit $r"], capture_output=True, timeout=120)
+        ok = getattr(r, "returncode", 1) == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if not ok:
+        return "NOT applied yet: set and read back, but kvmd didn't restart; housesitter adopt tries again (or restart kvmd)"
+    os.remove(pending)
+    return "stays up (forever: true, set and read back; kvmd restarted)"
 
 
 INGRESS_PORTS = (22, 80, 443)  # 80 only redirects to 443, but it is still nginx answering whoever asks
@@ -2841,6 +2911,7 @@ def should_publish(st, status, now, beat_min=10):
 
 OPS = ("status", "watch_check", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll", "type_secret")
 TYPE_SECRETS_PER_HOUR = 20
+CHECK_PICTURE_TRIES = 3
 
 
 def at_password_screen(st=None):
@@ -2986,14 +3057,18 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
     seen_at, seen_cells = seen
     if not -5000 <= now - seen_at <= FRAME_MAX_AGE_MS:
         return {"ok": False, "code": "action-unavailable", "result": "the picture you judged is %d s old; take a fresh screenshot, check the password field still has focus, and pass its frame within %d s" % ((now - seen_at) // 1000, FRAME_MAX_AGE_MS // 1000)}
-    try:
-        fresh = screen_grid(kvmd)
-    except Exception as e:  # noqa: BLE001
-        fresh, why = None, str(e)[:120]
-    else:
-        why = "no picture decoded"
+    fresh, why = None, "no picture decoded"
+    for i in range(CHECK_PICTURE_TRIES):
+        if i:
+            SLEEP(1)
+        try:
+            fresh = screen_grid(kvmd)
+        except Exception as e:  # noqa: BLE001
+            fresh, why = None, str(e)[:120]
+        if fresh:
+            break
     if not fresh:
-        return {"ok": False, "code": "action-unavailable", "result": "the sitter couldn't take a fresh picture to check nothing moved (%s), so it types nothing" % why}
+        return {"ok": False, "code": "action-unavailable", "result": "the check picture failed %d times, 1 s apart (%s), so it types nothing; that says nothing about whether the screen changed: try again" % (CHECK_PICTURE_TRIES, why)}
     if classify_frame({"mean": sum(fresh) / len(fresh), "top_edges": 0}) == "black":
         return {"ok": False, "code": "action-unavailable", "result": "the screen is black now (asleep, or no picture): no password field to type into"}
     moved = frame_moved(seen_cells, fresh)
@@ -3459,7 +3534,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "watcher": st.get("watcher"), "emails_today": emails_today(st.get("ledger"), now),
-              "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(), "setup": setup,
+              "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(), "streamer_forever": streamer_forever_set() and not os.path.exists(os.path.join(HOME, "streamer-restart.pending")), "setup": setup,
               "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "watched_by": bool((cfg.get("watched_by") or {}).get("url")) or bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}

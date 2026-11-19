@@ -82,6 +82,10 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     kItems.push({ dot: 'bad', text: `NOT filtering who reaches it${ing.since ? ` since ${clock(ing.since, now)}` : ''}: ${short(ing.detail || ing.drifted || 'unknown', 90)}` });
     todo.push({ cmd: `housesitter adopt ${name}`, why: 'puts the KVM\'s rules back in place, and says why if it can\'t' });
   }
+  if (st && st.streamer_forever === false) {
+    kItems.push({ dot: 'warn', text: 'kvmd\'s streamer stops between looks: each picture restarts the encoder, which ran out of memory on the Comet (2026-11-19)' });
+    todo.push({ cmd: `housesitter adopt ${name}`, why: 'sets kvmd\'s streamer to stay up (forever: true) and reads it back' });
+  }
   sec.push({ label: 'THE KVM', items: kItems });
 
   const adm = adminSection(name, mac, admin);
