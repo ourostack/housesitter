@@ -6,7 +6,7 @@ Housesitter is an [Ouro](https://github.com/ourostack/ouroboros) agent that live
 - **A peer link with Ouroboros**, the agent on the Mac: `peer_send` and `peer_inbox`, free text through two secret gists (`peer.py`).
 - **`kvm_health`**: the KVM's memory, load, uptime, free space and the sitter's heartbeat.
 - **A watcher** (`watch.py`) that wakes the agent with `ouro msg --to <agent>` (an ordinary turn with all its tools) when Ouroboros writes, the sitter's state or the screen changes, the sitter goes quiet, or the Mac's fleet heartbeat goes stale or comes back.
-- **The skill** (`skills/housesitter/SKILL.md`) for using all of it.
+- **The skills:** `skills/housesitter/SKILL.md` for using all of it, and `skills/set-up-a-mac/SKILL.md` for taking a wiped Mac from any screen to its owner's setup, then on to keep-alive (its config: `setup-a-mac.example.json` beside it).
 
 Everything is Python 3 standard library only (3.9 and up); nothing to install on the KVM.
 

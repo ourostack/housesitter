@@ -1,0 +1,24 @@
+{
+  "mac": "owners-macbook",
+  "reference_mac": "owners-mac-mini",
+  "initial_password": "a-throwaway-the-owner-chose",
+  "initial_password_is_not_secret": true,
+  "account": {
+    "full_name": "Owner Name",
+    "short_name": "owner"
+  },
+  "region": "United States",
+  "enroll": {
+    "work_email": "owner@example.com",
+    "install_command": "curl -fsSL -o ~/Downloads/CompanyPortal.pkg 'https://go.microsoft.com/fwlink/?linkid=853070' && pkgutil --check-signature ~/Downloads/CompanyPortal.pkg | grep -q 'Developer ID Installer: Microsoft Corporation' && sudo installer -pkg ~/Downloads/CompanyPortal.pkg -target /"
+  },
+  "setup_command": "curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/<kit>.sh | bash",
+  "kit_readme": "https://github.com/<owner>/<repo>/blob/main/<kit>/README.md",
+  "rerun_step": "bash ~/<desk>/<kit>/bootstrap.sh --only <step>",
+  "apple_account": {
+    "email": "owner@icloud.com",
+    "send_from_reference": "./mac secret <mac> send --keychain housesitter/<reference_mac>-apple-account=housesitter/<mac>-apple-account",
+    "fill_command": "housesitter apple-account <mac> --now"
+  },
+  "operator": true
+}
