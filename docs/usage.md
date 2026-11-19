@@ -8,9 +8,13 @@ housesitter demo night                   one bad night, rehearsed: a panic, a fr
 housesitter adopt <mac> --address <ip>   set up a new KVM next to <mac>: three cables in, then this
     [--notify ntfy|<url>] [--email <you@example.com>] [--watched-by <url>] [--location home|away] [--fingerprint <sha256>]
     [--this-mac] [--outbox] [--dry-run] [--fake]
-housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account>   store a secret (read from stdin, no echo);
-                                         apple-account stays on this Mac (never the KVM) and also lets hackamore type it into
-                                         Setup Assistant's iCloud password pane and nowhere else
+housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account|<name>> [--kvm] [--fake]
+                                         store a secret (read from stdin, no echo) in this Mac's Keychain; any <name> of
+                                         lower-case letters, digits and dashes (like setup-password) is housesitter/<mac>-<name>.
+                                         --kvm also seals it on the KVM over SSH stdin (with nothing on stdin, the Keychain's
+                                         copy), where the sitter types it when an agent asks (type_secret). apple-account
+                                         without --kvm stays on this Mac and lets hackamore type it into Setup Assistant's
+                                         iCloud password pane and nowhere else
 housesitter apple-account <mac> [--now | --watch | --expect-reboot --why "<the 12:00 update reboot>" | --install-agent | --uninstall-agent [--dry-run] | --status]
                                          the Apple Account password prompt after an update reboot: within 30 min of a boot
                                          Housesitter coordinated (--expect-reboot marks one before it), or with --now, it is

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { configPath, loadConfig, macConfig, secretStore, updateMac } from '../src/config.mjs';
 import { adopt, defaultRefs, fakeDeps, hostIfconfig, realDeps } from '../src/adopt.mjs';
 import { night, render } from '../src/demo.mjs';
-import { buildDoctor, renderDoctor } from '../src/doctor.mjs';
+import { adminFacts, buildDoctor, renderDoctor } from '../src/doctor.mjs';
 import { renderEvening, replay } from '../src/evening.mjs';
 import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
@@ -19,7 +19,7 @@ import * as Plug from '../src/plug.mjs';
 import * as Watch from '../src/watch.mjs';
 import * as O from '../src/outbox.mjs';
 import os from 'node:os';
-import { describeStatus, kvmHost, sitterClient, sshRunner } from '../src/sitter.mjs';
+import { describeStatus, kvmHost, sitterClient, sshKeyPath, sshRunner } from '../src/sitter.mjs';
 import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Disk from '../src/disk-prune.mjs';
@@ -35,6 +35,7 @@ import * as Steer from '../src/steer.mjs';
 import * as Hold from '../src/hold.mjs';
 import * as Arrival from '../src/laptop-arrival.mjs';
 import * as Deploy from '../src/deploy.mjs';
+import * as Secrets from '../src/secrets.mjs';
 import { isCommand, parseCall, previewOf, refusalOf, runHelp } from '../src/cli-table.mjs';
 import { quietPipes } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
 
@@ -490,18 +491,33 @@ async function main() {
 
   if (cmd === 'secret') {
     const which = rest[0];
-    need(name && ['mac-password', 'kvm-admin', 'outbox-token', 'ntfy-token', 'apple-account'].includes(which), 'housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account>  (reads the value from stdin)');
-    const refs = defaultRefs(name);
+    need(name && which, 'housesitter secret <mac> <mac-password|kvm-admin|outbox-token|ntfy-token|apple-account|<name>> [--kvm] [--fake]  (reads the value from stdin; with --kvm and nothing on stdin, seals the Keychain\'s copy on the KVM)');
     let m = {};
     try { m = macConfig(name); } catch { /* new */ }
-    const ref = { 'mac-password': m.mac_password || refs.mac, 'kvm-admin': m.kvm?.admin_password || refs.admin, 'outbox-token': m.outbox?.token || refs.outbox, 'ntfy-token': m.notify?.token || refs.ntfy, 'apple-account': Apple.appleRef(name) }[which];
-    if (process.stdin.isTTY) { process.stderr.write(`${which} for ${name} (input hidden), then Return: `); spawnStty('-echo'); }
-    const value = await new Promise((res) => { let b = ''; process.stdin.on('data', (d) => { b += d; if (process.stdin.isTTY && b.includes('\n')) { process.stdin.pause(); res(b); } }); process.stdin.on('end', () => res(b)); });
+    let target;
+    try { target = Secrets.secretTarget(name, which, m); } catch (e) { throw new Refusal(e.code, e.message); }
+    const fake = opt.fake ? Secrets.fakeSecretDeps() : null;
+    const store = fake ? fake.store : secretStore();
+    if (fake) say('REHEARSAL (a pretend Keychain and KVM; nothing leaves this computer)');
+    if (process.stdin.isTTY) { process.stderr.write(`${which} for ${name} (input hidden)${opt.kvm ? ', or Return alone to send the Keychain\'s copy' : ''}, then Return: `); spawnStty('-echo'); }
+    const raw = await new Promise((res) => { let b = ''; process.stdin.on('data', (d) => { b += d; if (process.stdin.isTTY && b.includes('\n')) { process.stdin.pause(); res(b); } }); process.stdin.on('end', () => res(b)); });
     if (process.stdin.isTTY) { spawnStty('echo'); process.stderr.write('\n'); }
-    secretStore().set(ref, value.replace(/\r?\n$/, ''));
-    updateMac(name, (c) => { if (which === 'mac-password') c.mac_password = ref; if (which === 'kvm-admin') { c.kvm = c.kvm || {}; c.kvm.admin_password = ref; } if (which === 'outbox-token' && c.outbox) c.outbox.token = ref; if (which === 'ntfy-token' && c.notify) c.notify.token = ref; if (which === 'apple-account') c.apple_account = ref; });
-    if (which === 'apple-account') { const r = Apple.installRule(name); say(`hackamore may now type it only into Setup Assistant's iCloud password pane (${r.file}${r.changed ? '' : ', already set'})`); }
-    say(`stored at ${ref}${which === 'mac-password' || which === 'ntfy-token' ? `; run housesitter adopt ${name} to put it on the sitter` : ''}`);
+    const value = raw.replace(/\r?\n$/, '');
+    if (!value && !opt.kvm) throw new Refusal('input-invalid', `nothing on stdin: type ${which} for ${name}, then Return (it is never echoed)`);
+    if (value) {
+      store.set(target.ref, value);
+      if (!fake) {
+        updateMac(name, (c) => { if (which === 'mac-password') c.mac_password = target.ref; if (which === 'kvm-admin') { c.kvm = c.kvm || {}; c.kvm.admin_password = target.ref; } if (which === 'outbox-token' && c.outbox) c.outbox.token = target.ref; if (which === 'ntfy-token' && c.notify) c.notify.token = target.ref; if (which === 'apple-account') c.apple_account = target.ref; });
+        if (which === 'apple-account') { const r = Apple.installRule(name); say(`hackamore may now type it only into Setup Assistant's iCloud password pane (${r.file}${r.changed ? '' : ', already set'})`); }
+      }
+      say(`stored at ${target.ref}${!opt.kvm && (which === 'mac-password' || which === 'ntfy-token') ? `; run housesitter adopt ${name} to put it on the sitter` : ''}${!opt.kvm && target.kind === 'named' ? `; add --kvm to seal it on the KVM, where the sitter can type it (type_secret)` : ''}`);
+    }
+    if (opt.kvm) {
+      let receipt;
+      try { receipt = await Secrets.sealOnKvm({ name, which, target, store, ssh: fake ? fake.ssh : sitterSsh(macConfig(name)), onSitter: (a) => onSitter(fake ? { name } : macConfig(name), a) }); } catch (e) { throw e.code ? new Refusal(e.code, e.message) : e; }
+      say(`sealed on ${name}'s KVM as ${receipt.stored} (bound to its ${receipt.bound_to === 'hardware' ? 'hardware ids' : receipt.bound_to})${receipt.unchanged ? '; unchanged' : ''}${target.kvmName === 'mac' && !receipt.unchanged ? '; a new Mac password starts unverified: housesitter unlock ' + name + ' --trial' : ''}`);
+      if (json) emit({ name, secret: which, ref: target.ref, kvm: receipt.stored, fake: Boolean(fake) });
+    }
     return 0;
   }
 
@@ -527,13 +543,15 @@ async function main() {
 
   if (cmd === 'status' || cmd === 'doctor') {
     const [kvm, sit] = await Promise.all([kvmLook(mac).catch((e) => ({ error: e.message })), sitterClient(mac).status().catch((e) => ({ errors: [e.message] }))]);
-    if (json) { emit({ name, kvm, sitter: sit.status, sitter_via: sit.via }); return 0; }
+    // Doctor also asks whether this Mac can administer the KVM: its admin password here, and a root key that works.
+    const admin = cmd === 'doctor' ? adminFacts({ name, mac, sit, has: (r) => secretStore().has(r), exists: (f) => fs.existsSync(f), here: os.hostname().replace(/\.local$/, ''), keyPath: mac.kvm?.ssh_key ? mac.kvm.ssh_key.replace(/^~(?=\/)/, os.homedir()) : sshKeyPath(name) }) : null;
+    if (json) { emit({ name, kvm, sitter: sit.status, sitter_via: sit.via, ...(admin ? { admin } : {}) }); return 0; }
     if (opt.plain) {
       console.log(kvm.error ? `KVM: not reached (${kvm.error})` : `KVM via ${kvm.via}: ${kvm.model || 'kvmd'}; video ${kvm.video.online ? `on, ${kvm.video.resolution}` : 'no signal'}; keyboard ${kvm.hid.keyboard_online ? 'online' : 'offline'}`);
       console.log(sit.status ? `${describeStatus(name, sit.status)}\n  via ${sit.via}` : `sitter: no status (${(sit.errors || []).join('; ') || 'no route'})`);
       return 0;
     }
-    const model = buildDoctor({ name, mac, kvm, sit });
+    const model = buildDoctor({ name, mac, kvm, sit, admin });
     console.log(renderDoctor(model, { color: useColor(), hidePicture: !!opt.private }));
     return cmd === 'doctor' && (kvm.error || !sit.status) ? 3 : 0;
   }

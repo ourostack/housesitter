@@ -13,7 +13,7 @@
 - To drive the app windows themselves (the accessibility tree, with this KVM's pixels as the fallback), use [hackamore](https://github.com/ourostack/hackamore): `hackamore ls <app> --kvm <mac>`.
 - Library: `import { open } from '@ouro.bot/housesitter'` → `screenshot/click/type/key/scroll/computer`
 - Coordinates are in the last screenshot's pixels.
-- Never type a password; `type` refuses anything that looks like one. Ask the sitter: `housesitter unlock <mac>`.
+- Never type a password; `type` refuses anything that looks like one. Ask the sitter: `housesitter unlock <mac>` at FileVault or the lock screen; at any other password prompt, the sitter's `type_secret` op (the plugin's `sitter_type_secret` tool, or `sitter.py do type_secret '{"name":"setup-password","prompt":"sudo in Terminal","enter":true,"seen":"<result.frame of the screenshot you judged>"}'` over SSH; never the outbox; only if a fresh picture still matches that frame and it is under 30 s old) types its own sealed copy of a named secret, 20 an hour, audited without the value. Seal one on the KVM with `housesitter secret <mac> <name> --kvm`.
 - Mac locked and you need its UI? `housesitter want-desktop <mac> [--minutes 10]` (or the Reins action `want_desktop`): the sitter unlocks it through its own gates, only if its config says `"unlock_lock_screen": "on_request"` or `true`; otherwise action-unavailable.
 - Smart plug: `housesitter plug <mac> find|adopt [ip]|status|prove --attended`.
 - Deploy a tool's release: `housesitter deploy housesitter|shepherd [--ref <tag|branch|sha>] [--dry-run] [--json] --why "…"` builds and checks the release, then swaps `current` in one rename; jobs run from `current`. Never `git pull` in a live clone.
@@ -26,7 +26,7 @@
 - Messages: ntfy or a webhook; `adopt --notify ntfy --email <address>` also emails one address through an ntfy.sh account (token: `housesitter secret <mac> ntfy-token`; 5 emails a day on a free account). `housesitter alert-test <mac>` sends one real stuck message marked TEST.
 
 ## Housesitter, the agent on the KVM
-- [plugins/housesitter](plugins/housesitter/README.md): an Ouro plugin. MCP tools sitter_status, sitter_look, sitter_screenshot, sitter_unlock, sitter_want_desktop, sitter_power_cycle, sitter_power_on, sitter_click, sitter_type, sitter_key, sitter_scroll (each runs `sitter.py do <op>` and returns its reply as is), peer_send, peer_inbox, kvm_health; watch.py wakes the agent with `ouro msg --to <agent>`; skills/housesitter/SKILL.md.
+- [plugins/housesitter](plugins/housesitter/README.md): an Ouro plugin. MCP tools sitter_status, sitter_look, sitter_screenshot, sitter_unlock, sitter_want_desktop, sitter_power_cycle, sitter_power_on, sitter_click, sitter_type, sitter_type_secret, sitter_key, sitter_scroll (each runs `sitter.py do <op>` and returns its reply as is), peer_send, peer_inbox, kvm_health; watch.py wakes the agent with `ouro msg --to <agent>`; skills/housesitter/SKILL.md.
 - Peer link with the agent on the Mac: `housesitter peer send <text> [--re <id>] [--now]`, `housesitter peer inbox [--peek]`, `housesitter peer flush [--now]`, `housesitter peer watch [--agent ouroboros] [--every 30] [--once]` (wakes the agent with `ouro msg` on new messages without marking them read, and flushes what's due). Free text, one gist file per message; sends are queued and flushed in one PATCH at most every 6 minutes (`--now`/`now` at once), at most 10 gist writes an hour each way (HOUSESITTER_PEER_FLUSH_SEC, HOUSESITTER_PEER_MAX_PER_HOUR).
 
 ## Docs

@@ -11,7 +11,7 @@ from plugin_base import slurp, FLEET, IN, OUT, PLUGIN, ROOT, PluginCase, iso
 
 SERVER = os.path.join(PLUGIN, "mcp", "server.py")
 TOOLS = {"sitter_status", "sitter_look", "sitter_screenshot", "sitter_unlock", "sitter_want_desktop", "sitter_power_cycle", "sitter_power_on",
-         "sitter_click", "sitter_type", "sitter_key", "sitter_scroll", "peer_send", "peer_bring_back_ouroboros", "peer_inbox", "kvm_health"}
+         "sitter_click", "sitter_type", "sitter_type_secret", "sitter_key", "sitter_scroll", "peer_send", "peer_bring_back_ouroboros", "peer_inbox", "kvm_health"}
 JPEG = b"\xff\xd8\xff\xe0fake-jpeg-frame\xff\xd9"
 
 
@@ -77,6 +77,8 @@ class McpTest(PluginCase):
             ("sitter_click", {"x": 10, "y": 20, "w": 1280, "h": 720, "button": "right", "double": True}, "click", {"x": 10, "y": 20, "w": 1280, "h": 720, "button": "right", "double": True}),
             ("sitter_click", {"x": 5, "y": 6}, "click", {"x": 5, "y": 6}),
             ("sitter_type", {"text": "Activity Monitor"}, "type", {"text": "Activity Monitor"}),
+            ("sitter_type_secret", {"name": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True, "seen": "f1.1.x.y"}, "type_secret",
+             {"name": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True, "seen": "f1.1.x.y", "by": "housesitter"}),
             ("sitter_key", {"combo": "cmd+space"}, "key", {"combo": "cmd+space"}),
             ("sitter_scroll", {"dx": 0, "dy": -3, "x": 100, "y": 200}, "scroll", {"dx": 0, "dy": -3, "x": 100, "y": 200}),
             ("sitter_unlock", {}, "unlock", {}),
@@ -95,6 +97,12 @@ class McpTest(PluginCase):
         os.environ["FAKE_SITTER_REFUSE"] = "type"
         got, rep = self.call("sitter_type", {"text": "hello"})
         self.assertEqual(got, {"ok": False, "code": "action-unavailable", "result": "the Mac is at a password screen; only the sitter types there"})
+        self.assertFalse(rep["isError"])
+
+    def test_type_secret_refusals_come_back_verbatim(self):
+        os.environ["FAKE_SITTER_REFUSE"] = "type_secret"
+        got, rep = self.call("sitter_type_secret", {"name": "setup-password", "prompt": "sudo in Terminal", "seen": "f1.1.x.y"})
+        self.assertEqual(got["code"], "action-unavailable")
         self.assertFalse(rep["isError"])
 
     def test_a_sitter_that_cannot_run_is_an_answer_not_a_crash(self):

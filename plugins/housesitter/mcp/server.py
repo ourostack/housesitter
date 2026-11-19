@@ -21,9 +21,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.6.35"
+VERSION = "0.6.36"
 PROTOCOL = "2025-06-18"
-LONG_OPS = ("type", "unlock", "want_desktop", "power_cycle", "power_on")
+LONG_OPS = ("type", "type_secret", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
 MINI_STALE_MIN = 15
 TIMEOUT_META = "ouro.bot/timeoutMs"
@@ -186,7 +186,9 @@ TOOLS = [
     ("sitter_power_on", "Ask the sitter to power the Mac on (it keeps its own checks).", schema(), 130000, False),
     ("sitter_click", "Click on the Mac's screen. x, y are in the pixels of a picture w by h (default 1920x1080: pass the screenshot's own size). button left, right or middle; double for a double click.",
      schema({"x": NUM, "y": NUM, "w": NUM, "h": NUM, "button": {"type": "string", "enum": ["left", "right", "middle"]}, "double": {"type": "boolean"}}, ["x", "y"]), 40000, False),
-    ("sitter_type", "Type text on the Mac through the KVM's keyboard (up to 2000 characters).", schema({"text": {"type": "string"}}, ["text"]), 130000, False),
+    ("sitter_type", "Type text on the Mac through the KVM's keyboard (up to 2000 characters). Never a password: use sitter_type_secret.", schema({"text": {"type": "string"}}, ["text"]), 130000, False),
+    ("sitter_type_secret", "Have the sitter type its own sealed copy of a named secret (like setup-password, apple-account or mac) into the Mac now, then Return if enter is true. Use it whenever a password prompt for a secret the sitter holds (sitter_status lists their names under secrets) is on the screen and focused; you never see the secret. prompt is one line saying which prompt you see and where; it goes in the sitter's audit log. seen is the frame id (result.frame) of the sitter_screenshot or sitter_look in which you saw the password field focused (a caret in it, a highlighted field, the prompt's words): the sitter types only if a fresh picture still matches it and it is under 30 s old. 20 an hour; never the KVM's own credentials; the Mac's password at FileVault or a lock screen is sitter_unlock's.",
+     schema({"name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"}, "prompt": {"type": "string", "maxLength": 200}, "enter": {"type": "boolean"}, "seen": {"type": "string"}}, ["name", "prompt", "seen"]), 130000, False),
     ("sitter_key", "Press a key or combination on the Mac, like \"cmd+space\", \"return\" or \"ctrl+alt+delete\".", schema({"combo": {"type": "string"}}, ["combo"]), 40000, False),
     ("sitter_scroll", "Scroll on the Mac: dx, dy wheel steps (negative dy is up), optionally at x, y first (same pixels as sitter_click).",
      schema({"dx": NUM, "dy": NUM, "x": NUM, "y": NUM, "w": NUM, "h": NUM}, ["dx", "dy"]), 40000, False),
@@ -244,6 +246,8 @@ def call(name, a):
         return sitter("click", args), []
     if name == "sitter_type":
         return sitter("type", pick(a, ["text"])), []
+    if name == "sitter_type_secret":
+        return sitter("type_secret", dict(pick(a, ["name", "prompt", "enter", "seen"]), by="housesitter")), []
     if name == "sitter_key":
         return sitter("key", pick(a, ["combo"])), []
     if name == "sitter_scroll":

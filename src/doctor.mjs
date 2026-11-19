@@ -16,7 +16,41 @@ const SCREEN = {
 // A ledger result, without its parenthetical detail, cut at a word and marked when cut.
 const short = (r, n = 70) => { const t = String(r).replace(/ \([^)]*\)?.*$/, ''); return t.length <= n ? t : `${t.slice(0, n).replace(/\s+\S*$/, '')}…`; };
 
-export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date.now() }) {
+// Who can administer the KVM: this Mac (its admin password in the Keychain, a root SSH key that works), and the
+// controller Macs the config lists. Two homes at least, so wiping one Mac never locks everyone out (2026-11-19: the
+// admin password and root key lived only on the laptop, and wiping it did).
+export function adminSection(name, mac = {}, admin = null) {
+  const items = [];
+  const todo = [];
+  if (!admin) return { items, todo };
+  const here = admin.here || 'this Mac';
+  items.push(admin.password ? { dot: 'ok', text: `this Mac (${here}) holds the KVM's admin password (${admin.passwordRef})` } : { dot: 'bad', text: `this Mac (${here}) does NOT hold the KVM's admin password (${admin.passwordRef})` });
+  items.push(admin.rootKey === true ? { dot: 'ok', text: 'and a root SSH key that works' } : admin.rootKey === false ? { dot: 'bad', text: `its root SSH key (${admin.keyPath}) did not get in` } : { dot: 'bad', text: `no root SSH key for the KVM on this Mac (${admin.keyPath})` });
+  if (!admin.password || admin.rootKey !== true) {
+    items.push({ dot: 'bad', text: 'this Mac is NOT able to administer the KVM: it can\'t update the sitter or adopt it again' });
+    if (!admin.password) todo.push({ cmd: `housesitter secret ${name} kvm-admin`, why: 'the KVM\'s admin password, copied from a controller Mac that holds it' });
+    if (admin.rootKey !== true) todo.push({ cmd: `housesitter adopt ${name}`, why: 'with the admin password here, it puts this Mac\'s own root key on the KVM' });
+  }
+  const ctl = Array.isArray(mac.controllers) ? mac.controllers.filter(Boolean) : [];
+  if (ctl.length < 2) {
+    items.push({ dot: 'warn', text: `the KVM's admin password lives in only one place; if that Mac is wiped, nobody can update the KVM (${ctl.length ? `"controllers" lists only ${ctl[0]}` : 'no "controllers" listed in the config'})` });
+    todo.push({ cmd: `housesitter secret ${name} kvm-admin && housesitter adopt ${name}`, why: 'on a second Mac; then list both under "controllers" in each Mac\'s config' });
+  } else {
+    items.push({ dot: 'ok', text: `controllers: ${ctl.join(', ')}; each must hold the admin password and a root key` });
+    if (admin.here && !ctl.some((c) => String(c).toLowerCase() === admin.here.toLowerCase())) items.push({ dot: 'off', text: `this Mac (${admin.here}) is not one of them` });
+  }
+  return { items, todo };
+}
+
+// What adminSection reads, from this Mac: `has(ref)` asks the Keychain, `exists(path)` the disk; a root key works when
+// the sitter answered over SSH with it.
+export function adminFacts({ name, mac = {}, sit = null, has, exists, here, keyPath }) {
+  const passwordRef = mac.kvm?.admin_password || `keychain:housesitter/${name}-kvm-admin`;
+  const rootKey = !exists(keyPath) ? null : String(sit?.via || '').startsWith('ssh');
+  return { here, password: Boolean(has(passwordRef)), passwordRef, rootKey, keyPath };
+}
+
+export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date.now(), admin = null }) {
   const st = sit?.status || null;
   const todo = [];
   const sec = [];
@@ -49,6 +83,9 @@ export function buildDoctor({ name, mac = {}, kvm = null, sit = null, now = Date
     todo.push({ cmd: `housesitter adopt ${name}`, why: 'puts the KVM\'s rules back in place, and says why if it can\'t' });
   }
   sec.push({ label: 'THE KVM', items: kItems });
+
+  const adm = adminSection(name, mac, admin);
+  if (adm.items.length) { sec.push({ label: 'KVM ADMIN', items: adm.items }); todo.push(...adm.todo); }
 
   // the password gate
   const pItems = [];

@@ -228,8 +228,9 @@ class Secrets(unittest.TestCase):
         self.assertIsNone(W.load_secret("mac", b), "a copied file does not open on another device")
         with self.assertRaises(ValueError):
             W.store_secret("mac", "two\nlines", key=a)
-        with self.assertRaises(ValueError):
-            W.store_secret("other", "x", key=a)
+        for bad in ("Setup", "1st", "has space", "../mac", "a" * 33, ""):
+            with self.assertRaises(ValueError, msg=bad):
+                W.store_secret(bad, "x", key=a)
 
     def test_device_key_prefers_hardware_ids(self):
         f = os.path.join(self.dir, "cid")
@@ -2043,3 +2044,184 @@ class AlertTest(unittest.TestCase):
         W.notify(self.cfg, "mini is stuck at FileVault", "body", opener=self.opener)
         t = self.reqs[0].get_header("Title")
         self.assertEqual(t.decode() if isinstance(t, bytes) else t, "mini is stuck at FileVault")
+
+
+class NamedSecrets(unittest.TestCase):
+    """Any named secret, sealed like the Mac's password, and `type_secret`: the sitter types its own copy at a prompt an
+    agent names, over SSH or the plugin's MCP only, 20 an hour, with an audit line that never holds the value."""
+    VALUE = "Synthetic-Setup-Pass_27chars"
+
+    def setUp(self):
+        self.dir = scratch()
+        W.HOME = self.dir
+        self.key = W.device_key
+        W.device_key = lambda paths=None: (b"t" * 32, "given")
+        self.logs = []
+        self.kvmd = FakeKvmd()
+        W.store_secret("setup-password", self.VALUE)
+        # The screen as the sitter's fresh picture sees it: a sudo prompt in a Terminal window, as 16x9 grey cells.
+        self.screen = bytes(40 if (i % 16) in range(3, 13) and (i // 16) in range(2, 7) else 200 for i in range(144))
+        self.grids = W.screen_grid
+        W.screen_grid = lambda kvmd, width=1280: self.screen
+
+    def tearDown(self):
+        W.device_key = self.key
+        W.screen_grid = self.grids
+
+    def ask(self, args, via="ssh", now=10 ** 12, st=None):
+        args = dict(args)
+        if "seen" not in args:
+            args["seen"] = W.frame_id(self.screen, now - 2000)  # the caller looked 2 s ago
+        return W.handle({"op": "type_secret", "args": args}, {"name": "studio"}, self.kvmd, None, self.logs.append, now, st if st is not None else W.load("state.json", {"ledger": []}), via=via)
+
+    def test_any_well_formed_name_is_stored_and_listed_by_presence_only(self):
+        W.store_secret("apple-account", "another-synthetic-value")
+        import io
+        out, orig = io.StringIO(), sys.stdout
+        try:
+            sys.stdout = out
+            self.assertEqual(W.main(["secrets"]), 0)
+        finally:
+            sys.stdout = orig
+        listed = json.loads(out.getvalue())
+        self.assertEqual(listed, {"mac": False, "kvmd": False, "outbox": False, "plug": False, "ntfy": False, "apple-account": True, "setup-password": True})
+        self.assertNotIn(self.VALUE, out.getvalue())
+        self.assertNotIn("another-synthetic-value", out.getvalue())
+        with self.assertRaises(ValueError):
+            W.store_secret("Setup_Password", "x")
+        self.assertIsNone(W.load_secret("../setup-password"), "a name outside the rule is never a path")
+        self.assertEqual(W.forget()["forgot"], ["apple-account.cred", "setup-password.cred"])
+
+    def test_types_its_own_copy_then_return_and_audits_without_the_value(self):
+        r = self.ask({"name": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True, "by": "housesitter"})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.kvmd.posts, [("/hid/print?limit=0&slow=1", self.VALUE.encode("utf-8")), ("/hid/events/send_key?key=Enter", None)])
+        self.assertEqual(r["result"], {"typed": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True})
+        self.assertEqual(len(self.logs), 1)
+        line = self.logs[0]
+        for want in ("setup-password", "sudo password prompt in Terminal", "ssh:housesitter"):
+            self.assertIn(want, line)
+        st = W.load("state.json", {})
+        e = st["ledger"][-1]
+        self.assertEqual((e["kind"], e["secret"], e["prompt"], e["by"], e["result"]), ("type_secret", "setup-password", "sudo password prompt in Terminal", "ssh:housesitter", "typed setup-password and Return"))
+        for where in (line, json.dumps(r), json.dumps(st)):
+            self.assertNotIn(self.VALUE, where)
+            self.assertNotIn(str(len(self.VALUE)), where, "not even its length")
+        self.kvmd.posts = []
+        self.assertTrue(self.ask({"name": "setup-password", "prompt": "Company Portal sign-in"}, now=10 ** 12 + 1000)["ok"])
+        self.assertEqual(len(self.kvmd.posts), 1, "no Return unless asked")
+
+    def test_never_through_the_outbox(self):
+        now = 10 ** 12
+        cmd = {"v": 1, "id": "t1", "op": "type_secret", "args": {"name": "setup-password", "prompt": "sudo in Terminal", "enter": True}, "at": now}
+
+        class G:
+            puts = []
+
+            def get(self, gist, etag=None):
+                return 200, "e1", {"files": {"studio.cmd.json": {"content": json.dumps(cmd)}}}
+
+            def put(self, gist, files):
+                G.puts.append(files)
+                return 200, None, {}
+        rep = W.poll_inbox({"name": "studio", "outbox": {"gist": "o", "inbox": "i"}}, G(), self.kvmd, None, self.logs.append, now=now)
+        self.assertEqual(rep["code"], "action-unavailable")
+        self.assertIn("never the GitHub outbox", rep["result"])
+        self.assertEqual(self.kvmd.posts, [])
+        self.assertNotIn(self.VALUE, json.dumps(G.puts))
+
+    def test_twenty_an_hour_and_a_kvm_reboot_resets_nothing(self):
+        t0 = 10 ** 12
+        for i in range(W.TYPE_SECRETS_PER_HOUR):
+            self.assertTrue(self.ask({"name": "setup-password", "prompt": "sudo in Terminal"}, now=t0 + i * 1000)["ok"])
+        # A fresh process (the KVM rebooted) reads the ledger back from disk.
+        r = self.ask({"name": "setup-password", "prompt": "sudo in Terminal"}, now=t0 + 30 * 60000, st=W.load("state.json", {}))
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertIn("budget used (20 in the last hour)", r["result"])
+        self.assertEqual(len(self.kvmd.posts), W.TYPE_SECRETS_PER_HOUR)
+        self.assertTrue(self.ask({"name": "setup-password", "prompt": "sudo in Terminal"}, now=t0 + 3600000 + 1000)["ok"], "an hour later, one is free again")
+        self.assertEqual(W.budgets(W.load("state.json", {}), t0 + 3600000 + 1000)["type_secret_hour"], [19, 20], "the first two have aged out; the one just typed counts")
+
+    def test_refusals_say_why_with_reins_codes(self):
+        cases = [
+            ({"name": "Setup", "prompt": "sudo"}, "input-invalid"),
+            ({"name": "setup-password"}, "input-invalid"),
+            ({"name": "setup-password", "prompt": "two\nlines"}, "input-invalid"),
+            ({"name": "setup-password", "prompt": "sudo", "enter": "yes"}, "input-invalid"),
+            ({"name": "kvmd", "prompt": "sudo"}, "action-unavailable"),
+            ({"name": "outbox", "prompt": "sudo"}, "action-unavailable"),
+            ({"name": "apple-account", "prompt": "Setup Assistant"}, "action-unavailable"),
+        ]
+        for args, code in cases:
+            self.assertEqual(self.ask(args)["code"], code, args)
+        self.assertIn("housesitter secret studio apple-account --kvm", self.ask({"name": "apple-account", "prompt": "Setup Assistant"})["result"])
+        self.assertEqual(self.kvmd.posts, [])
+        self.assertEqual(self.logs, [])
+
+    def test_the_macs_own_password_is_unlocks_at_a_password_screen(self):
+        W.store_secret("mac", "synthetic-mac-password")
+        W.save("status.json", {"obs": {"screen": "filevault"}})
+        r = self.ask({"name": "mac", "prompt": "FileVault"})
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertIn("use unlock", r["result"])
+        W.save("status.json", {"obs": {"screen": "desktop"}})
+        self.assertTrue(self.ask({"name": "mac", "prompt": "an authentication sheet in System Settings"})["ok"])
+        self.assertEqual(W.password_gate()["trust"], "unverified", "typing it elsewhere proves nothing about unlock")
+
+    def test_types_only_if_nothing_moved_since_the_caller_looked(self):
+        now = 10 ** 12
+        seen = W.frame_id(self.screen, now - 2000)
+        self.assertEqual(len(seen.split(".")[2]), 96, "a small id: 144 cells of 4 bits")
+        ask = lambda **k: self.ask(dict({"name": "setup-password", "prompt": "sudo in Terminal", "seen": seen}, **k), now=now)
+        for bad in (None, "", "f1.1.abc.def", seen[:-1] + ("0" if seen[-1] != "0" else "1"), seen.replace("f1.%d" % (now - 2000), "f1.%d" % now)):
+            r = ask(seen=bad)
+            self.assertEqual(r["code"], "input-invalid", bad)
+        old = self.ask({"name": "setup-password", "prompt": "sudo in Terminal", "seen": W.frame_id(self.screen, now - 31000)}, now=now)
+        self.assertEqual(old["code"], "action-unavailable")
+        self.assertIn("31 s old", old["result"])
+        real = self.screen
+        # Picture noise and a blinking caret: every cell a little different, two a little more.
+        self.screen = bytes(min(255, b + (6 if i % 2 else -6) + (25 if i in (40, 41) else 0)) for i, b in enumerate(real))
+        self.assertTrue(ask()["ok"])
+        # The sheet closed (or another window came up) after the caller looked: never typed into what is there now.
+        self.screen = bytes(200 for _ in real)
+        moved = ask()
+        self.assertEqual(moved["code"], "action-unavailable")
+        self.assertIn("the screen changed since the picture you judged", moved["result"])
+        self.screen = bytes(2 for _ in real)
+        self.assertIn("black", ask(seen=W.frame_id(self.screen, now - 1000))["result"])
+        W.screen_grid = lambda kvmd, width=1280: None
+        self.assertIn("couldn't take a fresh picture", ask()["result"])
+        self.assertEqual(len([p for p in self.kvmd.posts if p[0].startswith("/hid/print")]), 1, "typed once: only when nothing moved")
+
+    def test_screenshot_and_look_hand_out_a_frame_id_and_nothing_is_kept(self):
+        class K(FakeKvmd):
+            def get(self, path, timeout=15):
+                return b"\xff\xd8fake-jpeg\xff\xd9"
+        grid, orig = self.screen, W.frame_grid
+        W.frame_grid = lambda jpg, run=None: grid if W.is_jpeg(jpg) else None
+        try:
+            r = W.handle({"op": "screenshot", "args": {}}, {"name": "studio"}, K(), None, self.logs.append, 10 ** 12, {})
+        finally:
+            W.frame_grid = orig
+        at, cells = W.parse_frame_id(r["result"]["frame"])
+        self.assertEqual(at, 10 ** 12)
+        self.assertIsNone(W.frame_moved(cells, grid))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "state.json")), "a frame id is carried by the caller, not kept by the sitter")
+
+    def test_no_route_seals_a_secret_from_the_outbox_or_the_peer_link(self):
+        self.assertEqual([o for o in W.OPS if "secret" in o], ["type_secret"])
+        for op in ("store_secret", "store-secret"):
+            r = W.handle({"op": op, "args": {"name": "x", "value": "y"}}, {"name": "studio"}, self.kvmd, None, self.logs.append, 1, {"ledger": []}, via="outbox")
+            self.assertEqual(r["code"], "action-unavailable")
+        self.assertIsNone(W.load_secret("x"))
+
+    def test_a_typed_secret_is_not_a_rules_action(self):
+        t0 = 10 ** 12
+        st = {"ledger": [{"at": t0, "kind": "unlock", "state": "filevault", "result": "typed"}]}
+        W.save("state.json", st)
+        self.ask({"name": "setup-password", "prompt": "sudo"}, now=t0 + 60000)
+        ledger = W.load("state.json", {})["ledger"]
+        rules = [e for e in ledger if e.get("kind") != "type_secret"]
+        m, judged = W.judge({"state": "filevault", "incident": {"started": t0 - 1, "failed": {}}}, rules, t0 + 10 * 60000)
+        self.assertEqual(judged["kind"], "unlock", "the unlock is what gets judged, not the typed secret after it")
