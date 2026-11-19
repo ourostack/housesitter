@@ -9,6 +9,8 @@
 //   the app is gone       → if a crash report names it, or sessions were working and it has been gone 5 min: relaunch
 //                            and resume the same way. A quit by a person leaves no report and stays quit.
 //   a gap in these runs   → the Mac itself stopped for 5+ min (a reboot, a sleep, a hang): record the cause, tell once
+//   a new login session   → loginwindow is newer than the last run, with no reboot (a WindowServer crash or a logout closed
+//                           every app, this job too): record it, tell once after the resume
 //
 // Everything that touches the Mac goes through `deps`, so tests run it against a pretend Mac and a pretend hung app.
 
@@ -121,6 +123,15 @@ export function classifyGap({ from, to, facts }) {
   return { cause: 'hang', mins, text: `The Mac stopped running my jobs for ${mins} min (${win}) with no reboot and no sleep in its logs: a hang or heavy stall.${f.load ? ` Load then: ${f.load}.` : ''}${f.memory ? ` Memory: ${f.memory}.` : ''}` };
 }
 
+// What the person is told after the login session restarted without a reboot. `reports` are the crash reports written then:
+// { names, display }, display when one crashed inside a display change (2026-11-18: turning a monitor off made macOS assert in
+// every app, loginwindow included, which logs the person out).
+export function classifyLogout({ at, reports = {} }) {
+  const names = reports.names || [];
+  const why = reports.display ? 'macOS crashed while the displays changed (a monitor turned off, on or was unplugged)' : 'WindowServer or loginwindow quit, or someone logged out';
+  return { cause: reports.display ? 'display-crash' : 'logout', mins: 0, text: `The Mac's login session restarted at ${hhmm(at)} without a reboot: ${why}. That closes every app, the Copilot app included.${names.length ? ` Crash reports then: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` and ${names.length - 6} more` : ''}.` : ''}` };
+}
+
 // ---------- the Mac ----------
 
 // The last `n` bytes of a file, as text ('' when it cannot be read).
@@ -222,6 +233,31 @@ export function realHeartbeatDeps({ home = os.homedir(), copilotHome, hackamore,
     keepAwake: () => ensureKeepAwake({ node, bin, home }),
     evidenceRoot: incidentsDir(home),
     resumed: () => readJson(path.join(state, 'resume-only.json'), null),
+    // When this user's loginwindow started (ms), and when the Mac booted: a newer login with an older boot is a new login session.
+    loginStartedAt: async () => {
+      const pid = (await run('/usr/bin/pgrep', ['-x', '-U', String(process.getuid()), 'loginwindow'])).stdout.trim().split('\n')[0];
+      const at = pid ? Date.parse((await run('/bin/ps', ['-o', 'lstart=', '-p', pid])).stdout.trim()) : NaN;
+      return Number.isFinite(at) ? at : null;
+    },
+    bootedAt: sysctlBoot,
+    // The crash reports written in [from, to] (ms), user and system, by process name, and whether one crashed in a display change.
+    sessionCrashes: (from, to) => {
+      const names = new Set();
+      let display = false;
+      for (const dir of [diag, '/Library/Logs/DiagnosticReports']) {
+        let list = [];
+        try { list = fs.readdirSync(dir).filter((n) => n.endsWith('.ips')); } catch { continue; }
+        for (const n of list) {
+          const f = path.join(dir, n);
+          let t = 0;
+          try { t = fs.statSync(f).mtimeMs; } catch { continue; }
+          if (t < from || t > to) continue;
+          names.add(n.replace(/[-_]\d{4}-\d{2}-\d{2}-\d{6}.*$/, ''));
+          if (!display) try { display = /displayWillConfigNotifyProc|Display:Hotplug|get_current_display_system_state/.test(fs.readFileSync(f, 'utf8')); } catch { /* unreadable */ }
+        }
+      }
+      return { names: [...names].sort(), display };
+    },
   };
   return d;
 }
@@ -301,6 +337,10 @@ export async function pass(opts, deps, say = () => {}) {
   // The Mac's own gap first: it is recorded whatever else happens in this run.
   if (!opts.dry_run) {
     if (stall) st.stall_pending = await handleStall({ stall, deps, out });
+    else if (st.beat_at && deps.loginStartedAt) {
+      const logout = await handleLogout({ since: Date.parse(st.beat_at), now, seen: st.login_seen, deps, out }).catch(() => null);
+      if (logout) { st.stall_pending = logout; st.login_seen = logout.at; }
+    }
     if (st.stall_pending?.cause === 'paused') st.stall_pending = null;
     if (st.stall_pending) st.stall_pending = await settleStall({ st, deps, now, t, out });
   }
@@ -417,6 +457,20 @@ async function handleStall({ stall, deps, out }) {
   return rec;
 }
 
+// A login session newer than the last run, with no reboot since: record it, and leave it pending to be told after the resume.
+async function handleLogout({ since, now, seen, deps, out }) {
+  const login = await deps.loginStartedAt();
+  if (!login || login <= since || login > now || iso(login) === seen) return null;
+  const boot = await deps.bootedAt?.().catch(() => null);
+  if (boot && boot >= since) return null;
+  const reports = (() => { try { return deps.sessionCrashes?.(since - 60000, now) || {}; } catch { return {}; } })();
+  const c = classifyLogout({ at: login, reports });
+  const rec = { kind: 'stall', at: iso(login), from: iso(since), to: iso(login), cause: c.cause, mins: 0, text: c.text };
+  recordIncident(deps.state, rec);
+  out(`the login session restarted at ${iso(login)}: ${c.cause}`);
+  return rec;
+}
+
 // After a stall, tell once, when the resume that followed has finished (or a while has passed), so the message can say how
 // it went. Returns what is still pending: null once told.
 export async function settleStall({ st, deps, now = deps.now(), t = HB, out = () => {} }) {
@@ -428,7 +482,7 @@ export async function settleStall({ st, deps, now = deps.now(), t = HB, out = ()
   const s = done ? sessionsText(rec.resumed || []) : null;
   const after = s ? ` Everything came back by launchd, and ${s.text}.` : ' The sessions had not finished resuming when I looked; Shepherd\'s health watch is following them.';
   await deps.tell(`${p.text}${after}`);
-  out(`told once about the ${p.mins} min gap (${p.cause})`);
+  out(p.mins ? `told once about the ${p.mins} min gap (${p.cause})` : `told once about the restarted login session (${p.cause})`);
   return null;
 }
 

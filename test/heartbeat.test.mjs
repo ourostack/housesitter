@@ -368,6 +368,35 @@ test('a gap in the runs is the Mac stopping: the cause is recorded, and the pers
   await w.done();
 });
 
+test('a new login session with no reboot (a display-change crash) is recorded and told once, after the resume', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  await w.beat(0);
+  const login = Date.now() - 5000;
+  Object.assign(w.deps, { loginStartedAt: async () => login, bootedAt: async () => Date.now() - 3 * 86400000, sessionCrashes: () => ({ names: ['ControlCenter', 'loginwindow'], display: true }) });
+  const r = await w.beat(40000);
+  assert.equal(r.action, 'ok');
+  const inc = readIncidents(w.deps.state).filter((x) => x.kind === 'stall');
+  assert.equal(inc.length, 1);
+  assert.equal(inc[0].cause, 'display-crash');
+  assert.deepEqual(w.told, [], 'not yet: the sessions have not been resumed');
+  w.resumed = { at: new Date(login + 60000).toISOString(), resumed: [{ id: A, outcome: 'resumed' }] };
+  await w.beat(30000);
+  assert.equal(w.told.length, 1);
+  assert.match(w.told[0], /login session restarted at .* without a reboot: macOS crashed while the displays changed.*Crash reports then: ControlCenter, loginwindow\. Everything came back by launchd, and 1 of 1 session resumed\.$/);
+  await w.beat(30000);
+  assert.equal(w.told.length, 1, 'told once: the same login is not news again');
+  await w.done();
+});
+
+test('a login that follows a reboot is not a lost login session', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  await w.beat(0);
+  Object.assign(w.deps, { loginStartedAt: async () => Date.now(), bootedAt: async () => Date.now() - 1000, sessionCrashes: () => ({}) });
+  await w.beat(40000);
+  assert.equal(readIncidents(w.deps.state).filter((x) => x.kind === 'stall').length, 0);
+  await w.done();
+});
+
 test('settleStall tells after ten minutes even if no resume was recorded', { skip }, async () => {
   const told = [];
   const deps = { now: () => 1e12, tell: async (t) => told.push(t), resumed: () => null };
