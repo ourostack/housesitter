@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.7"
+VERSION = "0.3.8"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2158,23 +2158,79 @@ FRAME_MAX_AGE_MS = 30000
 FRAME_CELL_OK, FRAME_CELL_MAX, FRAME_CELLS_OVER = 20, 40, 3  # grey levels of 255; a stored cell is within 8 of its value
 
 
+def jpeg_size(b):
+    """(width, height) from a JPEG's frame header, else None."""
+    i = 2
+    while i + 9 < len(b) and b[i] == 0xFF:
+        m, n = b[i + 1], (b[i + 2] << 8) | b[i + 3]
+        if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+            return (b[i + 7] << 8) | b[i + 8], (b[i + 5] << 8) | b[i + 6]
+        i += 2 + n
+    return None
+
+
+def gray_cells(buf, w, h, size=FRAME_GRID):
+    """The mean of every pixel in each of 16x9 cells of a grey picture w by h (one byte a pixel), as bytes."""
+    gw, gh = size
+    sums = [0] * (gw * gh)
+    xs = [(i * w // gw, max(i * w // gw + 1, (i + 1) * w // gw)) for i in range(gw)]
+    for y in range(h):
+        j, row = min(gh - 1, y * gh // h), y * w
+        for i, (x0, x1) in enumerate(xs):
+            sums[j * gw + i] += sum(buf[row + x0:row + x1])
+    out = bytearray()
+    for j in range(gh):
+        rows = len([y for y in range(h) if min(gh - 1, y * gh // h) == j]) or 1
+        for i, (x0, x1) in enumerate(xs):
+            out.append(min(255, sums[j * gw + i] // (rows * (x1 - x0))))
+    return bytes(out)
+
+
 def frame_grid(jpg, run=subprocess.run):
-    """The picture as 16x9 grey cells (bytes), scaled by the KVM's own ffmpeg; None without a JPEG or ffmpeg."""
-    if not is_jpeg(jpg):
+    """The picture as 16x9 grey cells (bytes), or None. No ffmpeg filter (the Comet's ffmpeg has none, not even scale,
+    2026-11-19): ffmpeg only decodes the JPEG to raw grey at its own size, shrunk in the decoder itself where it can
+    (-lowres: each 8x8 block becomes its average, about 160 pixels wide), and Python averages the cells."""
+    wh = jpeg_size(jpg) if is_jpeg(jpg) else None
+    if not wh:
         return None
-    gw, gh = FRAME_GRID
+    w, h = wh
+    shrink = next((n for n in (3, 2, 1) if (w >> n) >= 120), 0)
+    for n in ((shrink, 0) if shrink else (0,)):
+        cw, ch = -((-w) >> n), -((-h) >> n)
+        try:
+            out = run(["ffmpeg", "-hide_banner", "-loglevel", "error"] + (["-lowres", str(n)] if n else []) + ["-f", "image2pipe", "-i", "-",
+                       "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"], input=jpg, capture_output=True, timeout=20).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if len(out) == cw * ch:
+            return gray_cells(out, cw, ch)
+    return None
+
+
+def grid_of(jpg):
+    """frame_grid of a picture the sitter just took; where its ffmpeg can't decode a JPEG, the luma of the frame it
+    decoded itself on the way (frame_jpeg), which it then lets go of, so no full-size frame stays in memory."""
+    global LAST_FRAME
     try:
-        out = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "image2pipe", "-i", "-", "-vf", "scale=%d:%d:flags=area" % (gw, gh),
-                   "-f", "rawvideo", "-pix_fmt", "gray", "-"], input=jpg, capture_output=True, timeout=20).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return bytes(out) if len(out) == gw * gh else None
+        g = frame_grid(jpg)
+        if not g and LAST_FRAME:
+            yuv, w, h = LAST_FRAME
+            g = gray_cells(memoryview(yuv)[:w * h], w, h)
+        return g
+    finally:
+        LAST_FRAME = None
+
+
+def forget_frame():
+    global LAST_FRAME
+    LAST_FRAME = None
 
 
 def screen_grid(kvmd, width=1280):
     """A fresh picture, the same way `screenshot` takes one, as frame_grid's cells."""
-    return frame_grid(snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % width,
-                                    frame=lambda k: frame_jpeg(k, width=width)))
+    forget_frame()
+    return grid_of(snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % width,
+                                 frame=lambda k: frame_jpeg(k, width=width)))
 
 
 def _frame_tag(payload):
@@ -2990,9 +3046,10 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         return {"ok": True, "result": res}
     if op == "screenshot":
         w = max(320, min(int(a.get("width", 1280)), 1920))
+        forget_frame()
         jpg = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % w,
                             frame=lambda k: frame_jpeg(k, width=w))
-        return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd), "frame": frame_id(frame_grid(jpg), now)},
+        return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd), "frame": frame_id(grid_of(jpg), now)},
                 "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
     if op == "click":
         why = hands_refusal(cfg, kvmd, st, via)

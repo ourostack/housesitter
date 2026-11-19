@@ -2326,3 +2326,57 @@ class SetupMode(unittest.TestCase):
         W.perform_notify(cfg, {"kind": "notify", "why": "at the FileVault screen for 10+ min. Look: housesitter status <mac>"}, {"state": "hung"}, {"video": True}, opener=lambda req, timeout=10: (sent.append(req), Resp())[1])
         self.assertIn("mini's KVM is setting up laptop", sent[0].data.decode("utf-8"))
         self.assertIn("housesitter status mini", sent[0].data.decode("utf-8"), "commands name the sitter, not the setup label")
+
+
+class FrameGridWithoutFilters(unittest.TestCase):
+    """The Comet's ffmpeg has no filters at all, not even scale (22:33Z, 2026-11-19): every frame id was null."""
+
+    @staticmethod
+    def jpeg(w, h):
+        sof = bytes([0xFF, 0xC0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3]) + bytes(9)
+        return b"\xff\xd8" + bytes([0xFF, 0xE0, 0, 4, 0, 0]) + sof + b"\xff\xd9"
+
+    def test_cells_are_the_mean_of_every_pixel(self):
+        w, h = 160, 90
+        buf = bytes(0 if x < 80 else 255 for y in range(h) for x in range(w))
+        cells = W.gray_cells(buf, w, h)
+        self.assertEqual(len(cells), 144)
+        self.assertEqual([cells[j * 16 + i] for j in (0, 8) for i in (0, 7, 8, 15)], [0, 0, 255, 255] * 2)
+        odd = bytes((x * 3 + y) % 256 for y in range(37) for x in range(53))  # sizes that don't divide into cells
+        self.assertEqual(len(W.gray_cells(odd, 53, 37)), 144)
+        self.assertEqual(W.jpeg_size(self.jpeg(1280, 720)), (1280, 720))
+
+    def test_no_ffmpeg_filter_is_ever_asked_for(self):
+        calls = []
+
+        class Done:
+            def __init__(self, out):
+                self.stdout = out
+
+        def ffmpeg(argv, input=None, capture_output=True, timeout=20):
+            calls.append(argv)
+            if any(a in ("-vf", "-af", "-filter", "-filter:v", "-filter_complex", "-lavfi") or a.startswith("-filter") for a in argv):
+                return Done(b"")  # "No such filter": nothing comes out
+            n = int(argv[argv.index("-lowres") + 1]) if "-lowres" in argv else 0
+            return Done(bytes(120 for _ in range((-(-1280 >> n)) * (-(-720 >> n)))))
+        g = W.frame_grid(self.jpeg(1280, 720), run=ffmpeg)
+        self.assertEqual(g, bytes([120]) * 144)
+        self.assertEqual(calls[0][calls[0].index("-lowres") + 1], "3", "decoded at an eighth of the size, about 160 wide")
+        # A decoder without -lowres: the same cells from the JPEG's own size.
+        calls.clear()
+        no_lowres = lambda argv, **k: Done(b"" if "-lowres" in argv else bytes(120 for _ in range(1280 * 720)))
+        self.assertEqual(W.frame_grid(self.jpeg(1280, 720), run=lambda argv, **k: (calls.append(argv), no_lowres(argv))[1]), bytes([120]) * 144)
+        for argv in calls:
+            self.assertFalse([a for a in argv if a in ("-vf", "-af", "-lavfi", "-filter_complex") or a.startswith("-filter")], argv)
+            self.assertIn("gray", argv)
+
+    def test_where_ffmpeg_cannot_decode_a_jpeg_the_frame_it_decoded_itself_is_used_then_let_go(self):
+        w, h = 64, 36
+        W.LAST_FRAME = (bytes(200 for _ in range(w * h)) + bytes(w * h // 2), w, h)
+        orig = W.frame_grid
+        W.frame_grid = lambda jpg, run=None: None
+        try:
+            self.assertEqual(W.grid_of(b"\xff\xd8x"), bytes([200]) * 144)
+        finally:
+            W.frame_grid = orig
+        self.assertIsNone(W.LAST_FRAME, "no full-size frame stays in memory")
