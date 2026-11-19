@@ -39,6 +39,11 @@ test('a git child of a match, the app, launchd daemons, Housesitter and Shepherd
   for (const pid of [1, 100, 101, 105, 108, 109, 110, 111, 112, 115]) assert.ok(!matched.some((p) => p.pid === pid), `pid ${pid}`);
 });
 
+test('brand tools and Python pool workers are batch work (2026-11-18: four sky_seams pools starved the app)', () => {
+  const t = [P(2, 1, 'python3 brand/tools/sky_seams.py --out x'), P(3, 2, 'python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=5)'), P(4, 1, '/opt/py/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(pipe_handle=9)'), P(5, 1, 'python3 serve.py')];
+  assert.deepEqual(pick(t, settings()).matched.map((p) => p.pid).sort(), [2, 3, 4]);
+});
+
 test('a descendant of a matched root that is itself excluded is skipped with its own children', () => {
   const t = [P(2, 1, 'node stryker run'), P(3, 2, 'git gc'), P(4, 3, 'node child')];
   assert.deepEqual(pick(t, settings()).matched.map((p) => p.pid), [2]);
