@@ -2,7 +2,7 @@
 
 Housesitter is an [Ouro](https://github.com/ourostack/ouroboros) agent that lives on the IP-KVM beside a Mac. This plugin gives it:
 
-- **The sitter's eyes and hands** as MCP tools: `sitter_status`, `sitter_look`, `sitter_screenshot`, `sitter_unlock`, `sitter_want_desktop`, `sitter_power_cycle`, `sitter_power_on`, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll`. Each runs `sitter.py do <op>` on the KVM and returns the sitter's reply as it is.
+- **The sitter's eyes and hands** as MCP tools: `sitter_status`, `sitter_look`, `sitter_screenshot`, `sitter_unlock`, `sitter_want_desktop`, `sitter_power_cycle`, `sitter_power_on`, `sitter_click`, `sitter_type`, `sitter_type_secret` (the sitter types its own sealed copy of a named secret at a password prompt the agent names; never through the outbox), `sitter_key`, `sitter_scroll`. Each runs `sitter.py do <op>` on the KVM and returns the sitter's reply as it is.
 - **A peer link with Ouroboros**, the agent on the Mac: `peer_send` and `peer_inbox`, free text through two secret gists (`peer.py`).
 - **`kvm_health`**: the KVM's memory, load, uptime, free space and the sitter's heartbeat.
 - **A watcher** (`watch.py`) that wakes the agent with `ouro msg --to <agent>` (an ordinary turn with all its tools) when Ouroboros writes, the sitter's state or the screen changes, the sitter goes quiet, or the Mac's fleet heartbeat goes stale or comes back.

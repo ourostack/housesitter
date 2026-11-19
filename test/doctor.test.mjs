@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { buildDoctor, renderDoctor } from '../src/doctor.mjs';
+import { adminFacts, buildDoctor, renderDoctor } from '../src/doctor.mjs';
 import { loadEvening, renderEvening, replay } from '../src/evening.mjs';
 import { glimpse, painter, width } from '../src/paint.mjs';
 import { promptMatch } from '../src/frames.mjs';
@@ -168,4 +168,27 @@ test('doctor: who can reach the KVM, read back, or loudly not (#27)', () => {
   assert.match(plain(m), /NOT filtering who reaches it since/);
   assert.ok(m.todo.some((t) => t.cmd === 'housesitter adopt mini'));
   assert.doesNotMatch(at(undefined), /reached by|NOT filtering/, 'an older sitter says nothing, rather than guess');
+});
+
+test('doctor: whether this Mac can administer the KVM, and a warning when its admin password has only one home', () => {
+  const facts = (over = {}) => adminFacts({ name: 'mini', mac: {}, sit: { via: 'ssh 192.168.1.50' }, has: () => true, exists: () => true, here: 'aris-mac-mini', keyPath: '/k', ...over });
+  assert.deepEqual(facts(), { here: 'aris-mac-mini', password: true, passwordRef: 'keychain:housesitter/mini-kvm-admin', rootKey: true, keyPath: '/k' });
+  assert.equal(facts({ sit: { via: 'outbox (GitHub)' } }).rootKey, false, 'a key that did not get in');
+  assert.equal(facts({ exists: () => false }).rootKey, null, 'no key at all');
+  const run = (mac, admin) => { const m = buildDoctor({ name: 'mini', mac, kvm: KVM, sit: { via: 'ssh kvm', status: status() }, now: NOW, admin }); return { m, out: plain(m) }; };
+  const one = run({ controllers: ['aris-mac-mini'] }, facts());
+  assert.match(one.out, /KVM ADMIN/);
+  assert.match(one.out, /this Mac \(aris-mac-mini\) holds the KVM's admin password \(keychain:housesitter\/mini-kvm-admin\)/);
+  assert.match(one.out, /the KVM's admin password lives in only one place; if that Mac is wiped, nobody can update the KVM/);
+  assert.doesNotMatch(one.out, /NOT able to administer/);
+  assert.match(run({}, facts()).out, /no "controllers" listed in the config/);
+  const two = run({ controllers: ['aris-mac-mini', 'laptop'] }, facts());
+  assert.doesNotMatch(two.out, /only one place/);
+  assert.match(two.out, /controllers: aris-mac-mini, laptop/);
+  const wiped = run({ controllers: ['aris-mac-mini', 'laptop'] }, facts({ has: () => false, exists: () => false, here: 'laptop' }));
+  assert.match(wiped.out, /this Mac \(laptop\) does NOT hold the KVM's admin password/);
+  assert.match(wiped.out, /no root SSH key for the KVM on this Mac/);
+  assert.match(wiped.out, /this Mac is NOT able to administer the KVM/);
+  assert.deepEqual(wiped.m.todo.slice(0, 2).map((t) => t.cmd), ['housesitter secret mini kvm-admin', 'housesitter adopt mini']);
+  assert.doesNotMatch(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status() }, now: NOW })), /KVM ADMIN/, 'status (no admin facts) is unchanged');
 });

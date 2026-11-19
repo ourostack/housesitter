@@ -28,8 +28,11 @@ commands every couple of seconds, with ETags. That is how agents reach it from a
 
 Secrets are root-only 0600 files, sealed with a key bound to this device's own ids, so a copied file is useless
 elsewhere: mac.cred (the Mac's password), kvmd.cred (the KVM's admin password), outbox.cred (a gist-only token),
-plug.cred (the smart plug's own password).
-Written by `sitter.py store-secret <name>` from stdin; never in argv, logs or status.
+plug.cred (the smart plug's own password), and any other named secret an agent may need typed into the Mac (a
+setup password, an Apple Account password: <name>.cred, the name lower-case letters, digits and dashes).
+Written by `sitter.py store-secret <name>` from stdin; never in argv, logs or status. `type_secret` (over SSH or the
+plugin's MCP, never the outbox) types the sitter's own copy of a named secret at a prompt an agent names, only while a
+fresh picture still matches the frame the agent judged.
 
 Files: $HOUSESITTER_HOME (default /etc/kvmd/user/housesitter): config.json, *.cred, state.json, status.json,
 sitter.log. Python 3 standard library only: nothing to pip-install, so a firmware update can't break a dependency.
@@ -52,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -1084,6 +1087,26 @@ def make_power(cfg):
 HW_IDS = ("/sys/block/mmcblk0/device/cid", "/sys/block/mmcblk1/device/cid", "/proc/device-tree/serial-number")
 SOFT_IDS = ("/etc/machine-id",)
 SECRET_NAMES = ("mac", "kvmd", "outbox", "plug", "ntfy")
+# Any other secret is named by its owner: lower-case letters, digits and dashes, starting with a letter.
+SECRET_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+# The KVM's own credentials: the sitter uses them itself and never types them into the Mac.
+KVM_OWN_SECRETS = ("kvmd", "outbox", "plug", "ntfy")
+
+
+def secret_name_ok(name):
+    return isinstance(name, str) and bool(SECRET_NAME_RE.match(name))
+
+
+def secret_names():
+    """Every secret name this sitter knows of: the built-in ones, and each named <name>.cred stored here."""
+    extra = []
+    try:
+        for f in os.listdir(HOME):
+            if f.endswith(".cred") and secret_name_ok(f[:-5]) and f[:-5] not in SECRET_NAMES:
+                extra.append(f[:-5])
+    except OSError:
+        pass
+    return list(SECRET_NAMES) + sorted(extra)
 
 
 def device_key(paths=None):
@@ -1137,8 +1160,8 @@ def unseal(text, key):
 
 
 def store_secret(name, value, key=None):
-    if name not in SECRET_NAMES:
-        raise ValueError("unknown secret %r (one of %s)" % (name, ", ".join(SECRET_NAMES)))
+    if not secret_name_ok(name):
+        raise ValueError("a secret's name is 1-32 lower-case letters, digits and dashes, starting with a letter (like setup-password)")
     if not value or len(value) > 512 or "\n" in value:
         raise ValueError("refusing: empty, too long, or more than one line")
     key, binding = (key, "given") if key else device_key()
@@ -1155,6 +1178,8 @@ def store_secret(name, value, key=None):
 
 
 def load_secret(name, key=None):
+    if not secret_name_ok(name):
+        return None
     try:
         with open(os.path.join(HOME, name + ".cred")) as f:
             text = f.read().strip()
@@ -1334,6 +1359,7 @@ def budgets(st, now, rules=DEFAULTS, bcfg=None):
             "unlock_hour": [len(hour), rules["unlocks_per_hour"]], "unlock_hour_frees_at": min(e["at"] for e in hour) + 3600000 if hour else None,
             "unlock_test_hour": [len(test), rules["attended_test_unlocks_per_hour"]],
             "cycles_day": [len(day), rules["cycles_per_day"]], "cycles_day_frees_at": min(e["at"] for e in day) + 86400000 if day else None,
+            "type_secret_hour": [len(_recent(ledger, "type_secret", now, 60)), TYPE_SECRETS_PER_HOUR],
             "blocked": typing_budget(st, now, rules, bcfg)}
 
 
@@ -2120,6 +2146,74 @@ def glimpse_of_jpeg(jpg, run=subprocess.run, size=GLIMPSE):
     return {"w": gw, "h": gh, "rgb": base64.b64encode(out).decode("ascii")} if len(out) == gw * gh * 3 else None
 
 
+# ---------- frame ids: "nothing has moved since you looked" ----------
+# A frame id is a small perceptual hash of one picture: 16x9 grey cells, each the area average of its part of the
+# screen, kept to 4 bits, with the time it was taken and a tag only this KVM can make. `screenshot` and `look` hand one
+# out; type_secret takes the one its caller judged and types only if a fresh picture still matches it. Nothing is kept:
+# the id carries all it needs, so the sitter's memory stays as it was.
+FRAME_GRID = (16, 9)
+FRAME_MAX_AGE_MS = 30000
+FRAME_CELL_OK, FRAME_CELL_MAX, FRAME_CELLS_OVER = 20, 40, 3  # grey levels of 255; a stored cell is within 8 of its value
+
+
+def frame_grid(jpg, run=subprocess.run):
+    """The picture as 16x9 grey cells (bytes), scaled by the KVM's own ffmpeg; None without a JPEG or ffmpeg."""
+    if not is_jpeg(jpg):
+        return None
+    gw, gh = FRAME_GRID
+    try:
+        out = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "image2pipe", "-i", "-", "-vf", "scale=%d:%d:flags=area" % (gw, gh),
+                   "-f", "rawvideo", "-pix_fmt", "gray", "-"], input=jpg, capture_output=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bytes(out) if len(out) == gw * gh else None
+
+
+def screen_grid(kvmd, width=1280):
+    """A fresh picture, the same way `screenshot` takes one, as frame_grid's cells."""
+    return frame_grid(snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % width,
+                                    frame=lambda k: frame_jpeg(k, width=width)))
+
+
+def _frame_tag(payload):
+    return hmac.new(device_key()[0], b"housesitter frame id\x00" + payload.encode("ascii"), hashlib.sha256).hexdigest()[:12]
+
+
+def frame_id(grid, at):
+    """"f1.<ms>.<cells>.<tag>", or None when there is no grid or no device key to tag it with."""
+    if not grid or len(grid) != FRAME_GRID[0] * FRAME_GRID[1]:
+        return None
+    packed = bytes((grid[i] >> 4) << 4 | (grid[i + 1] >> 4) for i in range(0, len(grid), 2))
+    payload = "f1.%d.%s" % (at, base64.urlsafe_b64encode(packed).decode("ascii").rstrip("="))
+    try:
+        return "%s.%s" % (payload, _frame_tag(payload))
+    except RuntimeError:
+        return None
+
+
+def parse_frame_id(fid):
+    """(taken at, the 16x9 cells as grey levels) from a frame id this KVM made, else None."""
+    try:
+        v, at, cells, tag = str(fid).split(".")
+        if v != "f1" or not hmac.compare_digest(tag, _frame_tag("%s.%s.%s" % (v, at, cells))):
+            return None
+        packed = base64.urlsafe_b64decode(cells + "=" * (-len(cells) % 4))
+    except (ValueError, TypeError, RuntimeError):
+        return None
+    if len(packed) * 2 != FRAME_GRID[0] * FRAME_GRID[1]:
+        return None
+    return int(at), [((b >> sh) & 15) * 16 + 8 for b in packed for sh in (4, 0)]
+
+
+def frame_moved(seen, fresh):
+    """None when the fresh cells match what was seen within the tolerance (picture noise, a blinking caret), else why not."""
+    deltas = [abs(a - b) for a, b in zip(seen, fresh)]
+    over = sum(1 for d in deltas if d > FRAME_CELL_OK)
+    if max(deltas) > FRAME_CELL_MAX or over > FRAME_CELLS_OVER:
+        return "%d of %d parts of the screen changed (the most by %d of 255)" % (over, len(deltas), max(deltas))
+    return None
+
+
 def decode_picture(path, run=subprocess.run, w=2560):
     """A saved picture (PNG, JPEG) as a yuv420p frame w wide, with ffmpeg: (yuv, w, h) or None."""
     out = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-frames:v", "1", "-vf", "scale=%d:-2" % w,
@@ -2686,7 +2780,8 @@ def should_publish(st, status, now, beat_min=10):
     return status["state"] != last.get("state") or bool(status.get("actions")) or now - last.get("at", 0) >= beat_min * 60000
 
 
-OPS = ("status", "watch_check", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll")
+OPS = ("status", "watch_check", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll", "type_secret")
+TYPE_SECRETS_PER_HOUR = 20
 
 
 def at_password_screen(st=None):
@@ -2730,9 +2825,84 @@ def watch_check(a, st, now, via):
     return {"ok": True, "result": {"status": status, "emails_today": emails_today(st.get("ledger"), now), "now": now}}
 
 
+def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
+    """An agent asks the sitter to type its own sealed copy of a named secret into the Mac now (a setup password at
+    sudo, an Apple Account password in Setup Assistant), optionally then Return. The agent never sees the secret; it
+    names the prompt it sees, which goes in the audit line, and passes `seen`, the frame id of the screenshot or look in
+    which it judged that a focused password field is on screen (the KVM can't read the Mac's keyboard focus: the caller
+    judges it from the picture, and the sitter guarantees the picture hasn't changed since). Gates: over SSH or the plugin's MCP only, never the GitHub
+    outbox (its token can also take screenshots, so a secret typed through it could leak); a name it holds; never the
+    KVM's own credentials; the Mac's own password never at a password screen (that is unlock's, with its own gates);
+    20 an hour, counted in the ledger (write-ahead, so a KVM reboot resets nothing); `seen` under 30 s old, and a fresh
+    picture taken just before typing that still matches it and is not black. Never the value, nor its length, in a
+    reply, the ledger or the log."""
+    if via != "ssh":
+        return {"ok": False, "code": "action-unavailable", "result": "type_secret is over SSH or Housesitter's own MCP only, never the GitHub outbox: the outbox can also take screenshots, so a secret typed through it could leak"}
+    name, prompt, enter = a.get("name"), a.get("prompt"), a.get("enter", False)
+    if not secret_name_ok(name):
+        return {"ok": False, "code": "input-invalid", "result": "args.name: a secret's name, 1-32 lower-case letters, digits and dashes (like setup-password)"}
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 200 or "\n" in prompt or "\r" in prompt:
+        return {"ok": False, "code": "input-invalid", "result": "args.prompt: one line (1-200 characters) saying which prompt you see and where, like \"sudo password prompt in Terminal\""}
+    if not isinstance(enter, bool):
+        return {"ok": False, "code": "input-invalid", "result": "args.enter: true or false"}
+    seen = parse_frame_id(a.get("seen"))
+    if not seen:
+        return {"ok": False, "code": "input-invalid", "result": "args.seen: the frame id from the screenshot or look in which you saw the focused password field (result.frame), as the sitter gave it"}
+    prompt = prompt.strip()
+    if name in KVM_OWN_SECRETS:
+        return {"ok": False, "code": "action-unavailable", "result": "%s is the KVM's own credential; the sitter uses it itself and never types it into the Mac" % name}
+    if name == "mac":
+        # A fresh read, as for an agent's typing: the Mac's password goes only to a desktop (a sheet or sudo there);
+        # at FileVault, a login or a lock screen it is unlock's, with its own gates.
+        why = hands_refusal(cfg, kvmd, st)
+        if why:
+            return {"ok": False, "code": "action-unavailable", "result": "the Mac's own password is typed here only on a desktop (%s); at FileVault, a login or a lock screen, use unlock" % why}
+    value = load_secret(name)
+    if not value:
+        return {"ok": False, "code": "action-unavailable", "result": "the sitter holds no secret named %s. Fix: on a controller Mac, housesitter secret %s %s --kvm" % (name, cfg.get("name", "<mac>"), name)}
+    used = [e for e in st.get("ledger") or [] if e.get("kind") == "type_secret" and now - e.get("at", 0) < 3600000]
+    if len(used) >= TYPE_SECRETS_PER_HOUR:
+        frees = min(e["at"] for e in used) + 3600000
+        return {"ok": False, "code": "action-unavailable", "result": "type_secret budget used (%d in the last hour); one frees up in %d min" % (TYPE_SECRETS_PER_HOUR, max(1, (frees - now + 59999) // 60000))}
+    seen_at, seen_cells = seen
+    if not -5000 <= now - seen_at <= FRAME_MAX_AGE_MS:
+        return {"ok": False, "code": "action-unavailable", "result": "the picture you judged is %d s old; take a fresh screenshot, check the password field still has focus, and pass its frame within %d s" % ((now - seen_at) // 1000, FRAME_MAX_AGE_MS // 1000)}
+    try:
+        fresh = screen_grid(kvmd)
+    except Exception as e:  # noqa: BLE001
+        fresh, why = None, str(e)[:120]
+    else:
+        why = "no picture decoded"
+    if not fresh:
+        return {"ok": False, "code": "action-unavailable", "result": "the sitter couldn't take a fresh picture to check nothing moved (%s), so it types nothing" % why}
+    if classify_frame({"mean": sum(fresh) / len(fresh), "top_edges": 0}) == "black":
+        return {"ok": False, "code": "action-unavailable", "result": "the screen is black now (asleep, or no picture): no password field to type into"}
+    moved = frame_moved(seen_cells, fresh)
+    if moved:
+        return {"ok": False, "code": "action-unavailable", "result": "the screen changed since the picture you judged (%s); look again, and pass the new frame if the password field still has focus" % moved}
+    who = "%s:%s" % (via, str(a.get("by") or "operator")[:64])
+    if cfg.get("dry_run"):
+        return {"ok": True, "result": "dry-run: would type %s at %s" % (name, prompt)}
+    entry = write_ahead(st, {"at": now, "kind": "type_secret", "secret": name, "prompt": prompt, "by": who, "enter": enter})
+    try:
+        kvmd.post("/hid/print?limit=0&slow=1", body=value.encode("utf-8"), timeout=90)
+        if enter:
+            SLEEP(0.6)
+            kvmd.post("/hid/events/send_key?key=Enter", timeout=10)
+        res = "typed %s%s" % (name, " and Return" if enter else "")
+    except Exception as e:  # noqa: BLE001
+        err = str(e)[:120]
+        res = "failed: %s" % (err.replace(value, "…") if len(value) >= 4 else err)
+    log("type_secret: %s at %r, asked by %s -> %s" % (name, prompt, who, res))
+    finish(st, entry, res)
+    ok = res.startswith("typed")
+    return {"ok": ok, "code": None if ok else "action-failed", "result": {"typed": name, "prompt": prompt, "enter": enter} if ok else res}
+
+
 def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     """One command (from the inbox, or `sitter.py do` over SSH). Unlock and power ops keep the sitter's own budgets and
-    checks; screenshot, click, type and key are an agent's hands and pass through, except at a password screen.
+    checks; screenshot, click, type and key are an agent's hands and pass through, except at a password screen;
+    type_secret types the sitter's own copy of a named secret, with its own gates (type_secret, above).
     Refusals use Ouro Reins' codes: action-unavailable, input-invalid, action-failed."""
     op = cmd.get("op")
     name = cfg.get("name", "mac")
@@ -2746,13 +2916,21 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         return {"ok": True, "result": load("status.json", {})}
     if op == "watch_check":
         return watch_check(a, st, now, via)
+    if op == "type_secret":
+        return type_secret(a, cfg, kvmd, st, now, via, log)
     if op == "look":
-        return {"ok": True, "result": once(cfg, kvmd, power, log, now=now)}
+        res = once(cfg, kvmd, power, log, now=now)
+        try:
+            res = dict(res, frame=frame_id(screen_grid(kvmd), now))
+        except Exception:  # noqa: BLE001  (a look never fails for want of a frame id)
+            res = dict(res, frame=None)
+        return {"ok": True, "result": res}
     if op == "screenshot":
         w = max(320, min(int(a.get("width", 1280)), 1920))
         jpg = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % w,
                             frame=lambda k: frame_jpeg(k, width=w))
-        return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd)}, "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
+        return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd), "frame": frame_id(frame_grid(jpg), now)},
+                "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
     if op == "click":
         why = hands_refusal(cfg, kvmd, st)
         if why:
@@ -3110,7 +3288,9 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
     inc = (mem or {}).get("incident")
     if inc and inc.get("notified_at") is None and boot.get("told_at") and boot["told_at"] >= inc.get("started", now) - BOOT["armed_min"] * 60000:
         inc["notified_at"] = boot["told_at"]  # the boot watch already told you about this one
-    mem, actions = tick(mem or None, ledger, {k: v for k, v in obs.items() if not k.endswith("_error")}, now, caps, dict(DEFAULTS, **cfg.get("rules", {})))
+    # A typed secret is an agent's act, not the rules': it neither settles nor is judged as a fix.
+    rules_ledger = [e for e in ledger if e.get("kind") != "type_secret"]
+    mem, actions = tick(mem or None, rules_ledger, {k: v for k, v in obs.items() if not k.endswith("_error")}, now, caps, dict(DEFAULTS, **cfg.get("rules", {})))
     if clock_seen is not None:
         mem["clock_seen"] = clock_seen[-4:]
     done = []
@@ -3146,7 +3326,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
         st["last_incident"] = {"started": open_incident.get("started"), "ended": now, "actions": acts[-6:],
                                "told_you": open_incident.get("notified_at") is not None}
     status = {"v": 1, "sitter": VERSION, "at": now, "name": cfg.get("name"), "state": mem["state"], "since": mem.get("since"), "obs": obs,
-              "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in SECRET_NAMES},
+              "actions": done, "can": caps, "incident": mem.get("incident"), "password": password_gate().get("trust"), "secrets": {n: has_secret(n) for n in secret_names()},
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "watcher": st.get("watcher"), "emails_today": emails_today(st.get("ledger"), now),
@@ -3186,8 +3366,7 @@ def heartbeat(cfg, status, opener=urllib.request.urlopen):
 def forget():
     """Wipe the sitter's secrets and memory from this KVM (the files, not just their contents)."""
     gone = []
-    for n in list(SECRET_NAMES) + ["state", "status"]:
-        p = os.path.join(HOME, n + (".cred" if n in SECRET_NAMES else ".json"))
+    for p in [os.path.join(HOME, n + ".cred") for n in secret_names()] + [os.path.join(HOME, n) for n in ("state.json", "status.json")]:
         if os.path.exists(p):
             with open(p, "w") as f:
                 f.write("")
@@ -3261,7 +3440,8 @@ def main(argv):
         print(json.dumps(forget()))
         return 0
     if argv[:1] == ["secrets"]:
-        print(json.dumps({n: has_secret(n) for n in SECRET_NAMES}))
+        # Each name and whether it opens on this KVM: never a value, nor its length.
+        print(json.dumps({n: has_secret(n) for n in secret_names()}))
         return 0
     if argv[:1] == ["password-trial"]:
         # One supervised try, armed by an operator over SSH. Never from the GitHub inbox.

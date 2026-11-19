@@ -15,7 +15,8 @@
 //       "notify": { "kind": "ntfy", "url": "https://ntfy.sh/<your topic>", "email": "you@example.com" },  // or webhook; email needs an ntfy.sh account token
 //       "watched_by": { "url": "https://hc-ping.com/<uuid>" },    // a dead man's switch for the KVM, pinged every look
 //       "outbox": { "gist": "…", "inbox": "…", "token": "keychain:housesitter/studio-outbox" },
-//       "tailscale": { "tag": "tag:kvm", "hostname": "kvm-studio", "authkey": "keychain:housesitter/tailnet-kvm" } } } }
+//       "tailscale": { "tag": "tag:kvm", "hostname": "kvm-studio", "authkey": "keychain:housesitter/tailnet-kvm" },
+//       "controllers": ["aris-mac-mini", "laptop"] } } }          // the Macs that each hold the KVM's admin password and a root key; doctor warns under two
 //
 // Top level, beside "macs": "launchd_disabled": ["<label>", …], the launchd jobs `housesitter hold` keeps off.
 //
