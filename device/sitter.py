@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.10"
+VERSION = "0.3.11"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2308,12 +2308,45 @@ def _frame_tag(payload):
     return hmac.new(device_key()[0], b"housesitter frame id\x00" + payload.encode("ascii"), hashlib.sha256).hexdigest()[:12]
 
 
-def frame_id(grid, at):
-    """"f1.<ms>.<cells>.<tag>", or None when there is no grid or no device key to tag it with."""
-    if not grid or len(grid) != FRAME_GRID[0] * FRAME_GRID[1]:
+FRAME_FLAT_STD = 6  # grey levels: kvmd's "NO LIVE VIDEO" placeholder is near-uniform; a real screen isn't
+
+
+def video_live(kvmd):
+    """Does kvmd (or, where its streamer says nothing, the KVM's own HDMI receiver) say there is live video now? A
+    picture taken without it may be kvmd's "NO LIVE VIDEO" placeholder or a stale frame, not the Mac's screen."""
+    try:
+        src = ((kvmd.json("/streamer") or {}).get("streamer") or {}).get("source") or {}
+        if "online" in src:
+            return src["online"] is True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return hdmi_mode(kvmd=kvmd) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def grid_flat(cells):
+    """A near-uniform picture (kvmd's no-signal placeholder, a blank frame): the cells barely differ."""
+    m = sum(cells) / float(len(cells))
+    return (sum((c - m) ** 2 for c in cells) / len(cells)) ** 0.5 < FRAME_FLAT_STD
+
+
+def live_grid(kvmd, take):
+    """(cells, "live" or "offline") for a picture `take()` returns: live only if kvmd says there is video both before and
+    after it was taken."""
+    before = video_live(kvmd)
+    cells = take()
+    return cells, "live" if before and video_live(kvmd) else "offline"
+
+
+def frame_id(grid, at, source="live"):
+    """"f2.<ms>.<cells>.<source>.<tag>" (source: "live", or "offline" for a picture taken without live video), or None
+    when there is no grid or no device key to tag it with."""
+    if not grid or len(grid) != FRAME_GRID[0] * FRAME_GRID[1] or source not in ("live", "offline"):
         return None
     packed = bytes((grid[i] >> 4) << 4 | (grid[i + 1] >> 4) for i in range(0, len(grid), 2))
-    payload = "f1.%d.%s" % (at, base64.urlsafe_b64encode(packed).decode("ascii").rstrip("="))
+    payload = "f2.%d.%s.%s" % (at, base64.urlsafe_b64encode(packed).decode("ascii").rstrip("="), source)
     try:
         return "%s.%s" % (payload, _frame_tag(payload))
     except RuntimeError:
@@ -2321,17 +2354,17 @@ def frame_id(grid, at):
 
 
 def parse_frame_id(fid):
-    """(taken at, the 16x9 cells as grey levels) from a frame id this KVM made, else None."""
+    """(taken at, the 16x9 cells as grey levels, its source) from a frame id this KVM made, else None."""
     try:
-        v, at, cells, tag = str(fid).split(".")
-        if v != "f1" or not hmac.compare_digest(tag, _frame_tag("%s.%s.%s" % (v, at, cells))):
+        v, at, cells, source, tag = str(fid).split(".")
+        if v != "f2" or source not in ("live", "offline") or not hmac.compare_digest(tag, _frame_tag("%s.%s.%s.%s" % (v, at, cells, source))):
             return None
         packed = base64.urlsafe_b64decode(cells + "=" * (-len(cells) % 4))
     except (ValueError, TypeError, RuntimeError):
         return None
     if len(packed) * 2 != FRAME_GRID[0] * FRAME_GRID[1]:
         return None
-    return int(at), [((b >> sh) & 15) * 16 + 8 for b in packed for sh in (4, 0)]
+    return int(at), [((b >> sh) & 15) * 16 + 8 for b in packed for sh in (4, 0)], source
 
 
 def frame_moved(seen, fresh):
@@ -3054,21 +3087,25 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
     if len(used) >= TYPE_SECRETS_PER_HOUR:
         frees = min(e["at"] for e in used) + 3600000
         return {"ok": False, "code": "action-unavailable", "result": "type_secret budget used (%d in the last hour); one frees up in %d min" % (TYPE_SECRETS_PER_HOUR, max(1, (frees - now + 59999) // 60000))}
-    seen_at, seen_cells = seen
+    seen_at, seen_cells, seen_source = seen
     if not -5000 <= now - seen_at <= FRAME_MAX_AGE_MS:
         return {"ok": False, "code": "action-unavailable", "result": "the picture you judged is %d s old; take a fresh screenshot, check the password field still has focus, and pass its frame within %d s" % ((now - seen_at) // 1000, FRAME_MAX_AGE_MS // 1000)}
-    fresh, why = None, "no picture decoded"
+    if seen_source != "live" or grid_flat(seen_cells):
+        return {"ok": False, "code": "action-unavailable", "result": "the KVM can't see the screen: the picture you judged was %s, not the Mac's screen; it types nothing" % ("taken without live video (kvmd's no-signal placeholder or a stale frame)" if seen_source != "live" else "near-uniform, like kvmd's NO LIVE VIDEO placeholder")}
+    fresh, source, why = None, None, "no picture decoded"
     for i in range(CHECK_PICTURE_TRIES):
         if i:
             SLEEP(1)
         try:
-            fresh = screen_grid(kvmd)
+            fresh, source = live_grid(kvmd, lambda: screen_grid(kvmd))
         except Exception as e:  # noqa: BLE001
             fresh, why = None, str(e)[:120]
         if fresh:
             break
     if not fresh:
         return {"ok": False, "code": "action-unavailable", "result": "the check picture failed %d times, 1 s apart (%s), so it types nothing; that says nothing about whether the screen changed: try again" % (CHECK_PICTURE_TRIES, why)}
+    if source != "live" or grid_flat(fresh):
+        return {"ok": False, "code": "action-unavailable", "result": "the KVM can't see the screen: kvmd has no live video now, or its picture is near-uniform like the NO LIVE VIDEO placeholder; it types nothing"}
     if classify_frame({"mean": sum(fresh) / len(fresh), "top_edges": 0}) == "black":
         return {"ok": False, "code": "action-unavailable", "result": "the screen is black now (asleep, or no picture): no password field to type into"}
     moved = frame_moved(seen_cells, fresh)
@@ -3116,16 +3153,23 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     if op == "look":
         res = once(cfg, kvmd, power, log, now=now)
         try:
-            res = dict(res, frame=frame_id(screen_grid(kvmd), now))
+            g, src = live_grid(kvmd, lambda: screen_grid(kvmd))
+            res = dict(res, frame=frame_id(g, now, src))
         except Exception:  # noqa: BLE001  (a look never fails for want of a frame id)
             res = dict(res, frame=None)
         return {"ok": True, "result": res}
     if op == "screenshot":
         w = max(320, min(int(a.get("width", 1280)), 1920))
         forget_frame()
-        jpg = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % w,
-                            frame=lambda k: frame_jpeg(k, width=w))
-        return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd), "frame": frame_id(grid_of(jpg), now)},
+        shot = {}
+
+        def take():
+            shot["jpg"] = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % w,
+                                        frame=lambda k: frame_jpeg(k, width=w))
+            return grid_of(shot["jpg"])
+        g, src = live_grid(kvmd, take)
+        jpg = shot["jpg"]
+        return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd), "frame": frame_id(g, now, src)},
                 "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
     if op == "click":
         why = hands_refusal(cfg, kvmd, st, via)
