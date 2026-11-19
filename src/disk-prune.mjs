@@ -20,6 +20,7 @@
 //   7. the history of a session the app no longer lists, compressed, never deleted
 //   Before all of that, on every pass and above the floor too: the history of an archived session, compressed by
 //   Shepherd's compressHistory, which refuses a live or open one. A finished history loses nothing, so it waits for nothing.
+//   Also on every pass: the leaked code-sign clones of Chromium browsers (see `leakedCloneQuiet`).
 // Each hour it records free space in a ledger; each day it measures where the bytes are and says which sources grew,
 // so the cause gets fixed and not only the symptom. A pass that finds nothing safe, or ends still under the floor, rests
 // an hour before it scans again (under 50 GiB free every pass runs).
@@ -37,6 +38,11 @@ export const DP = {
   floor: 500 * 1073741824, // free bytes below which a pass starts reclaiming
   margin: 50 * 1073741824, // it stops once free space is floor + margin
   scratchQuiet: 3 * 3600000, // temp scratch is churned all day, so a full day of quiet would never come
+  // Chromium browsers (Edge, Chrome) clone their own app bundle (about 1 GiB) into $TMPDIR/../X/<bundle id>.code_sign_clone/
+  // for a signature check at launch, and delete the clone when they exit. A browser that is killed (a headless launch ended
+  // by SIGKILL, a crash) leaves it behind, and a day of headless launches leaves hundreds of GiB. A running browser keeps
+  // its clone open, so one nothing has open that is also this quiet is a leak, and it goes on every pass, above the floor too.
+  leakedCloneQuiet: 3600000,
   quiet: 24 * 3600000, // a worktree or history changed within this is never touched
   deadQuiet: 2 * 24 * 3600000, // the heavy parts of an unlisted session go only after this long untouched
   minHistory: 20 * 1048576, // smaller histories are not worth compressing
@@ -104,7 +110,7 @@ export async function pass(opts, deps, say = () => {}) {
   }
   const keeps = {};
   const keep = (cat, why) => { const c = (keeps[cat] ||= {}); c[why] = (c[why] || 0) + 1; };
-  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
+  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   const rows = (await deps.sessionRows?.()) || null;
   for (const id of rows?.archived || []) {
     if (rows.live.has(id)) continue;
@@ -113,6 +119,16 @@ export async function pass(opts, deps, say = () => {}) {
     const saved = opts.dry_run ? r.before : r.before - r.after;
     reclaimed.histories += saved; out(`${opts.dry_run ? 'would compress' : 'compressed'} the history of archived session ${id.slice(0, 8)}: ${gib(saved)}`);
   }
+
+  const leaked = [];
+  for (const dir of deps.leakedClones?.() || []) {
+    if (now - (deps.mtimeOf?.(dir) ?? deps.changedAt(dir)) < t.leakedCloneQuiet) { keep('browser clones', 'changed within 1 h'); continue; }
+    if (deps.open(dir)) { keep('browser clones', 'a browser has it open'); continue; }
+    const n = deps.size(dir);
+    if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove browser clone ${dir}: ${e.message}`); continue; } }
+    leaked.push(dir); reclaimed.browserClones += n;
+  }
+  if (leaked.length) out(`${opts.dry_run ? 'would remove' : 'removed'} ${leaked.length} leaked browser code-sign clone(s): ${gib(reclaimed.browserClones)}`);
 
   if (before.free >= t.floor && !opts.force) return { action: 'ok', free: before.free, reclaimed };
   if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
@@ -251,7 +267,7 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   const after = deps.usage();
-  const total = reclaimed.scratch + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const total = reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
   const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
@@ -384,6 +400,19 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
         }
       } catch { /* none */ }
       for (const d of sessionWorktrees()) if (!out.includes(d)) out.push(d);
+      return out;
+    },
+    // Chromium's code-sign clones: <per-user folder>/X/<bundle id>.code_sign_clone/code_sign_clone.<random>, one folder per launch.
+    leakedClones: () => {
+      const u = sh('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR']).stdout.trim();
+      if (!u) return [];
+      const out = [], x = path.join(fs.realpathSync(u), '..', 'X');
+      try {
+        for (const b of fs.readdirSync(x)) {
+          if (!b.endsWith('.code_sign_clone')) continue;
+          for (const c of fs.readdirSync(path.join(x, b))) if (c.startsWith('code_sign_clone.')) out.push(path.join(x, b, c));
+        }
+      } catch { /* none */ }
       return out;
     },
     // Entries I own in /private/tmp and in the per-user temp folder (/private/var/folders/*/*/T): agents' scratch. Apple's
@@ -571,6 +600,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       const r = sh('/usr/bin/find', [d, '-mmin', `-${Math.ceil(ms / 60000)}`, '-print', '-quit'], { timeout: 300000 });
       return !r.error && !r.stdout.trim();
     },
+    // The folder's own modification time: a clone is created whole and never touched, so its age is its folder's.
+    mtimeOf: (d) => { try { return fs.statSync(d).mtimeMs; } catch { return Date.now(); } },
     changedAt: (d, days = 1) => {
       const rec = sh('/usr/bin/find', [d, '-mtime', `-${days}`, '-print', '-quit'], { timeout: 300000 });
       if (rec.error || rec.stdout.trim()) return Date.now();

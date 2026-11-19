@@ -35,6 +35,7 @@ function fake(over = {}) {
     quietFor: (dir) => (over.dead || []).find((x) => x.dir === dir).quietFor ?? Infinity,
     clonesIn: (dirs) => over.clones?.[dirs[0]] || [],
     scratch: () => over.scratchList || [],
+    leakedClones: () => over.leaked || [],
     clones: () => over.clonesList || [],
     clone: (x) => ({ unique: Boolean(over.uniq?.includes(x)) }),
     idleSessionFiles: () => over.idleFiles || [],
@@ -266,6 +267,18 @@ test('scratch in /private/tmp goes only when quiet for a day, not open and not s
   const r = await pass({}, f.d);
   assert.deepEqual(f.log.cache, ['/private/tmp/old']);
   assert.equal(r.reclaimed.scratch, 2 * GIB);
+});
+
+test('leaked browser code-sign clones go on every pass, even above the floor, unless a browser has one open or it is under an hour old', async () => {
+  const leaked = ['/X/e.code_sign_clone/code_sign_clone.old', '/X/e.code_sign_clone/code_sign_clone.live', '/X/e.code_sign_clone/code_sign_clone.new'];
+  const f = fake({ freeGib: 900, leaked, openFiles: [leaked[1]], cloneAge: { [leaked[2]]: 600000 } });
+  const r = await pass({}, f.d);
+  assert.equal(r.action, 'ok');
+  assert.deepEqual(f.log.cache, [leaked[0]]);
+  assert.equal(r.reclaimed.browserClones, 2 * GIB);
+  const dry = fake({ freeGib: 900, leaked: [leaked[0]] });
+  await pass({ dry_run: true }, dry.d);
+  assert.deepEqual(dry.log.cache, []);
 });
 
 test('loose work under ~/code goes only when quiet for three days, not open, not in use and not launchd\'s', async () => {
