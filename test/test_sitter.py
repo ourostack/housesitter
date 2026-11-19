@@ -2355,20 +2355,20 @@ class FrameGridWithoutFilters(unittest.TestCase):
 
         def ffmpeg(argv, input=None, capture_output=True, timeout=20):
             calls.append(argv)
-            if any(a in ("-vf", "-af", "-filter", "-filter:v", "-filter_complex", "-lavfi") or a.startswith("-filter") for a in argv):
-                return Done(b"")  # "No such filter": nothing comes out
+            if any(a in ("-vf", "-af", "-filter", "-filter:v", "-filter_complex", "-lavfi", "-pix_fmt") or a.startswith("-filter") for a in argv):
+                return Done(b"")  # "No such filter" (a -pix_fmt conversion needs scale too): nothing comes out
             n = int(argv[argv.index("-lowres") + 1]) if "-lowres" in argv else 0
-            return Done(bytes(120 for _ in range((-(-1280 >> n)) * (-(-720 >> n)))))
+            luma = (-(-1280 >> n)) * (-(-720 >> n))
+            return Done(bytes(120 for _ in range(luma)) + bytes(luma // 2))  # yuvj420p: luma, then chroma
         g = W.frame_grid(self.jpeg(1280, 720), run=ffmpeg)
         self.assertEqual(g, bytes([120]) * 144)
         self.assertEqual(calls[0][calls[0].index("-lowres") + 1], "3", "decoded at an eighth of the size, about 160 wide")
         # A decoder without -lowres: the same cells from the JPEG's own size.
         calls.clear()
-        no_lowres = lambda argv, **k: Done(b"" if "-lowres" in argv else bytes(120 for _ in range(1280 * 720)))
+        no_lowres = lambda argv, **k: Done(b"" if "-lowres" in argv else bytes(120 for _ in range(1280 * 720)) + bytes(1280 * 720))
         self.assertEqual(W.frame_grid(self.jpeg(1280, 720), run=lambda argv, **k: (calls.append(argv), no_lowres(argv))[1]), bytes([120]) * 144)
         for argv in calls:
-            self.assertFalse([a for a in argv if a in ("-vf", "-af", "-lavfi", "-filter_complex") or a.startswith("-filter")], argv)
-            self.assertIn("gray", argv)
+            self.assertFalse([a for a in argv if a in ("-vf", "-af", "-lavfi", "-filter_complex", "-pix_fmt") or a.startswith("-filter")], argv)
 
     def test_where_ffmpeg_cannot_decode_a_jpeg_the_frame_it_decoded_itself_is_used_then_let_go(self):
         w, h = 64, 36

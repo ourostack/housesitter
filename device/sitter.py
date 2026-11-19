@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.8"
+VERSION = "0.3.9"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2188,8 +2188,9 @@ def gray_cells(buf, w, h, size=FRAME_GRID):
 
 def frame_grid(jpg, run=subprocess.run):
     """The picture as 16x9 grey cells (bytes), or None. No ffmpeg filter (the Comet's ffmpeg has none, not even scale,
-    2026-11-19): ffmpeg only decodes the JPEG to raw grey at its own size, shrunk in the decoder itself where it can
-    (-lowres: each 8x8 block becomes its average, about 160 pixels wide), and Python averages the cells."""
+    2026-11-19), and so no pixel-format conversion either, which would need scale: ffmpeg only decodes the JPEG to raw
+    planar YUV in its own format, shrunk in the decoder itself where it can (-lowres: each 8x8 block becomes its
+    average, about 160 pixels wide); the luma plane comes first, and Python averages its cells."""
     wh = jpeg_size(jpg) if is_jpeg(jpg) else None
     if not wh:
         return None
@@ -2199,11 +2200,11 @@ def frame_grid(jpg, run=subprocess.run):
         cw, ch = -((-w) >> n), -((-h) >> n)
         try:
             out = run(["ffmpeg", "-hide_banner", "-loglevel", "error"] + (["-lowres", str(n)] if n else []) + ["-f", "image2pipe", "-i", "-",
-                       "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"], input=jpg, capture_output=True, timeout=20).stdout
+                       "-frames:v", "1", "-f", "rawvideo", "-"], input=jpg, capture_output=True, timeout=20).stdout
         except (OSError, subprocess.SubprocessError):
             return None
-        if len(out) == cw * ch:
-            return gray_cells(out, cw, ch)
+        if cw * ch <= len(out) <= 3 * cw * ch:  # grey, 4:2:0, 4:2:2 or 4:4:4: the luma plane is first
+            return gray_cells(memoryview(out)[:cw * ch], cw, ch)
     return None
 
 
