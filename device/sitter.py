@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.11"
+VERSION = "0.3.12"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -373,36 +373,74 @@ class StreamWarm:
         return False
 
 
+def ustreamer_pids(proc="/proc"):
+    """The running ustreamer processes (kvmd's streamer), or None where there is no /proc to read."""
+    try:
+        names = os.listdir(proc)
+    except OSError:
+        return None
+    out = []
+    for n in names:
+        if n.isdigit():
+            try:
+                with open(os.path.join(proc, n, "comm")) as f:
+                    if f.read().strip() == "ustreamer":
+                        out.append(int(n))
+            except OSError:
+                pass
+    return sorted(out)
+
+
+def note_streamer(st, now, pids):
+    """Streamer restarts in the last hour, as the sitter sees them at its looks (a new ustreamer process since the last
+    one): a lower bound, since several within a minute count once. None where it can't tell."""
+    if pids is None:
+        return None
+    u = st.get("ustreamer") or {}
+    seen = [t for t in u.get("restarts") or [] if now - t < 3600000][-60:]
+    if u.get("pids") is not None and pids and pids != u["pids"]:
+        seen.append(now)
+    st["ustreamer"] = {"pids": pids, "restarts": seen}
+    return len(seen)
+
+
 def is_jpeg(b):
     return isinstance(b, (bytes, bytearray)) and b[:2] == b"\xff\xd8"
 
 
-def snapshot_jpeg(kvmd, query="allow_offline=1", frame=None):
-    def snap():
-        # GL-RM1PE V1.7.1 answers HTTP 500 rather than a non-JPEG body while its encoder is on H.264 at 2560x1440
-        # (seen 2026-11-10): either way, there's no JPEG here, so try the next way.
-        try:
-            img = kvmd.get("/streamer/snapshot?%s" % query, timeout=20)
-        except Exception:  # noqa: BLE001
-            return None
-        return img if is_jpeg(img) else None
+# Every snapshot asks kvmd the same thing, and nothing ever changes the streamer's parameters: a change (the old
+# MJPEG/H.264 flip, a different preview size) restarts the streamer, and each start takes video-encoder memory from CMA,
+# which fragmented and ran out on the Comet ("init venc failed", 2026-11-19: 41 starts in 5 minutes). Resizing is ours.
+SNAPSHOT_QUERY = "allow_offline=1"
 
+
+def snapshot_jpeg(kvmd, frame=None):
+    """kvmd's JPEG of the running stream, as it is; where it has none (GL-RM1PE V1.7.1 answers HTTP 500 while its
+    encoder is on H.264 at 2560x1440, seen 2026-11-10), a keyframe of the running H.264 stream, decoded here. Never
+    change the streamer, the EDID or the Mac's display mode to get a picture."""
     with StreamWarm(kvmd):
-        img = snap()
-        if img:
-            return img
-        kvmd.post("/streamer/set_params?video_format=1", timeout=15)
-        time.sleep(1.5)
-        img = snap()
-        if img:
-            return img
-        # GL-RM1PE V1.7.1 at 2560x1440 stays on H.264 either way (seen 2026-11-08): put the encoder back and decode a
-        # keyframe on the device instead. Never change the EDID or the Mac's display mode to get a picture.
         try:
-            kvmd.post("/streamer/set_params?video_format=0", timeout=15)
+            img = kvmd.get("/streamer/snapshot?%s" % SNAPSHOT_QUERY, timeout=20)
         except Exception:  # noqa: BLE001
-            pass
+            img = None
+        if is_jpeg(img):
+            return img
     return (frame or frame_jpeg)(kvmd)
+
+
+def shrink_jpeg(jpg, width, run=subprocess.run):
+    """The JPEG at most about `width` wide, shrunk in ffmpeg's decoder (-lowres: no filter, which the Comet's ffmpeg
+    lacks, and no pixel-format conversion) and encoded again; the JPEG as it is if it already fits or that fails."""
+    wh = jpeg_size(jpg) if is_jpeg(jpg) else None
+    if not wh or wh[0] <= width:
+        return jpg
+    n = next((k for k in (1, 2, 3) if -((-wh[0]) >> k) <= width), 3)
+    try:
+        out = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-lowres", str(n), "-f", "image2pipe", "-i", "-", "-frames:v", "1",
+                   "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "-"], input=jpg, capture_output=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return jpg
+    return out if is_jpeg(out) else jpg
 
 
 def ocr_text(kvmd, box=None):
@@ -2300,8 +2338,7 @@ def forget_frame():
 def screen_grid(kvmd, width=1280):
     """A fresh picture, the same way `screenshot` takes one, as frame_grid's cells."""
     forget_frame()
-    return grid_of(snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % width,
-                                 frame=lambda k: frame_jpeg(k, width=width)))
+    return grid_of(snapshot_jpeg(kvmd, frame=lambda k: frame_jpeg(k, width=width)))
 
 
 def _frame_tag(payload):
@@ -3164,11 +3201,10 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         shot = {}
 
         def take():
-            shot["jpg"] = snapshot_jpeg(kvmd, "allow_offline=1&preview=1&preview_max_width=%d&preview_quality=70" % w,
-                                        frame=lambda k: frame_jpeg(k, width=w))
+            shot["jpg"] = snapshot_jpeg(kvmd, frame=lambda k: frame_jpeg(k, width=w))
             return grid_of(shot["jpg"])
         g, src = live_grid(kvmd, take)
-        jpg = shot["jpg"]
+        jpg = shrink_jpeg(shot.pop("jpg"), w)
         return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd), "frame": frame_id(g, now, src)},
                 "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
     if op == "click":
@@ -3579,6 +3615,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "watcher": st.get("watcher"), "emails_today": emails_today(st.get("ledger"), now),
               "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(), "streamer_forever": streamer_forever_set() and not os.path.exists(os.path.join(HOME, "streamer-restart.pending")), "setup": setup,
+              "streamer_restarts_hour": note_streamer(st, now, ustreamer_pids()),
               "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "watched_by": bool((cfg.get("watched_by") or {}).get("url")) or bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
@@ -3591,7 +3628,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
             st["published"] = {"at": now, "state": status["state"]}
         except Exception as e:  # noqa: BLE001
             log("outbox publish failed: %s" % str(e)[:160])
-    save_state(st, ("mem", "desktop_at", "published", "last_incident", "lock_read_at"))
+    save_state(st, ("mem", "desktop_at", "published", "last_incident", "lock_read_at", "ustreamer"))
     save("status.json", status)
     heartbeat(cfg, status)
     return status

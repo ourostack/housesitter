@@ -200,3 +200,9 @@ test('doctor: says when kvmd\'s streamer stops between looks, and how to keep it
   assert.doesNotMatch(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status({ streamer_forever: true }) }, now: NOW })), /streamer stops/);
   assert.doesNotMatch(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status() }, now: NOW })), /streamer stops/, 'an older sitter that does not say is not flagged');
 });
+
+test('doctor: counts kvmd\'s streamer restarts when the sitter can see them', () => {
+  assert.match(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status({ streamer_restarts_hour: 0 }) }, now: NOW })), /kvmd's streamer: no restarts in the last hour/);
+  assert.match(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status({ streamer_restarts_hour: 7 }) }, now: NOW })), /kvmd's streamer restarted 7 times in the last hour/);
+  assert.doesNotMatch(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status({ streamer_restarts_hour: null }) }, now: NOW })), /streamer restarted|no restarts/);
+});
