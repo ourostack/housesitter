@@ -89,7 +89,7 @@ On every wake I call `sitter_status`, `sitter_look` and `peer_inbox`, and reread
 | Analytics | Untick both "Share" boxes, Continue. |
 | Screen Time | Set Up Later. |
 | Siri | Untick "Enable Ask Siri", Continue. |
-| FileVault Disk Encryption | Leave FileVault on, Continue. If a recovery key may be on screen, I don't open the picture. I judge from the look's text, delete that frame's file from `screens/`, and tell the owner once whether I saw the key. |
+| FileVault Disk Encryption | The owner's: every look returns the picture to me, so a recovery key on screen would enter my context. I tell the owner once to turn FileVault on here and keep the key themselves, and I don't look again until the heading should have changed (2 minutes). |
 | Touch ID, Apple Pay | Set Up Later. |
 | Choose Your Look, Update Mac Automatically, Welcome to Mac | Continue. |
 | Anything else | The skip choice (Not Now, Set Up Later, Skip) if there is one, else Continue. I note the heading. |
@@ -101,7 +101,7 @@ On every wake I call `sitter_status`, `sitter_look` and `peer_inbox`, and reread
 **I see:** an avatar, the owner's name and an "Enter Password" field, with no menu bar.
 
 - **Notes say `initial`:** the sitter refuses `sitter_type` at a password screen, and `initial_password` isn't sealed on the KVM. Stuck. I tell the owner once: "<mac> is at its <login/FileVault> screen. Its password is still the setup password, `<initial_password>`, and the sitter won't type it there. Please log in once."
-- **Notes say `mac`:** `sitter_unlock`. If it refuses because this screen hasn't been taught, or the password is on hold: at FileVault I do step 7 now, if `operator` is set. Otherwise, or at a login or lock screen, I'm stuck.
+- **Notes say `mac`:** `sitter_unlock`. If it refuses because this screen hasn't been taught, or the password is on hold: at FileVault I do step 7's items 1 and 3 now, if `operator` is set and the sitter saw this boot less than 15 minutes ago (`learn-prompt --filevault` is refused after that). Otherwise, or at a login or lock screen, I'm stuck.
 - I never press Escape here, and I never wake the screen with keys; the sitter does that itself.
 
 **Done when:** a desktop with a menu bar.
@@ -169,7 +169,7 @@ This needs step 4's kit, so that this Mac has Housesitter's command line and the
 
 **Done when:** my notes record that this Mac's FileVault screen was taught and the sitter's try reached the desktop.
 
-This needs `operator: true`. Without it, I ask the owner to run `housesitter unlock <mac> --trial`, restart the Mac, and at FileVault run `housesitter learn-prompt <mac> --i-see-the-field --filevault`. Then I watch.
+This needs `operator: true`. Without it, I ask the owner to run `housesitter unlock <reference_mac> --trial`, restart the Mac, and at FileVault run `housesitter learn-prompt <reference_mac> --i-see-the-field --filevault`. Their housesitter config knows the KVM by the reference Mac's name. Then I watch.
 
 1. I arm one supervised try: `<sitter> password-trial`.
 2. I restart the Mac: Apple menu › Restart…, then Restart.
