@@ -1,16 +1,43 @@
 // Eyes and hands: the pixel driver over a pretend KVM, both transports, and Anthropic computer-use input.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { driver, directTransport, outboxTransport, open, Refusal } from '../src/hands.mjs';
+import { driver, directTransport, outboxTransport, open, Refusal, SNAPSHOT_PATH, shrinkJpeg } from '../src/hands.mjs';
 import { makeClient } from '../src/kvmd.mjs';
 import { fakeWorld, fakeJpeg } from '../src/fake.mjs';
 import { absPoint, keyNames, looksSecret } from '../src/keys.mjs';
 
+// The Mac's own resizing (sips), played by drawing the fake picture at the asked width.
+const fakeShrink = (img, maxWidth) => { const s = { width: img.readUInt16BE(img.indexOf(Buffer.from([0xff, 0xc0])) + 7) }; return maxWidth && s.width > maxWidth ? fakeJpeg(maxWidth, Math.round((maxWidth * img.readUInt16BE(img.indexOf(Buffer.from([0xff, 0xc0])) + 5)) / s.width)) : img; };
 const kvm = (opts) => {
   const w = fakeWorld(opts);
   const c = makeClient({ base: w.url, pin: w.pin, password: w.st.adminPassword, request: w.request, warm: false });
-  return { w, mac: driver(directTransport(c)) };
+  return { w, c, mac: driver(directTransport(c, { shrink: fakeShrink })) };
 };
+
+test('every screenshot asks kvmd the same plain snapshot, whatever the size asked: never a preview size', async () => {
+  const { c, mac } = kvm({ resolution: [2560, 1440] });
+  const asked = [];
+  const raw = c.raw.bind(c);
+  c.raw = (method, p, o) => { asked.push(p); return raw(method, p, o); };
+  for (const maxWidth of [undefined, 1280, 960, 640]) await mac.screenshot({ maxWidth });
+  await mac.computer({ action: 'screenshot' });
+  const snaps = asked.filter((p) => p.includes('/streamer/snapshot'));
+  assert.equal(snaps.length, 5);
+  assert.deepEqual([...new Set(snaps)], [SNAPSHOT_PATH]);
+  assert.equal(SNAPSHOT_PATH, '/api/streamer/snapshot?allow_offline=1');
+});
+
+test('shrinkJpeg: the Mac\'s sips does the resizing; elsewhere, or on failure, the picture as it is', () => {
+  const big = fakeJpeg(2560, 1440);
+  const calls = [];
+  const run = (cmd, args) => { calls.push([cmd, ...args]); return { status: 1 }; };
+  assert.equal(shrinkJpeg(big, 1280, { run, platform: 'linux' }), big);
+  assert.equal(shrinkJpeg(big, 4000, { run, platform: 'darwin' }), big, 'already fits');
+  assert.equal(calls.length, 0);
+  assert.equal(shrinkJpeg(big, 1280, { run, platform: 'darwin' }), big, 'sips failed: as it is');
+  assert.equal(calls[0][0], '/usr/bin/sips');
+  assert.equal(calls[0][calls[0].indexOf('--resampleWidth') + 1], '1280');
+});
 
 test('a shrunk screenshot maps clicks back to the real resolution', async () => {
   const { w, mac } = kvm({ resolution: [2560, 1440] });
