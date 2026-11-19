@@ -22,7 +22,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 | `enroll` | Optional Microsoft work enrollment: `work_email`, and `install_command`, which installs Company Portal from Terminal. |
 | `setup_command` | The owner's one-line setup command. `kit_readme` says what it asks for; `rerun_step` reruns one of its steps. |
 | `apple_account` | `email`; `send_from_reference`, run on the reference Mac to send the Apple Account password into this Mac's own Keychain; `fill_command`, run on this Mac to type it from there. |
-| `operator` | `true` if the owner lets me arm and teach the sitter as their operator (step 7 and Moving the cables). Otherwise those commands are the owner's. |
+| `operator` | `true` if the owner lets me arm and teach the sitter as their operator (step 7). Otherwise those commands are the owner's. |
 
 **Secrets on the KVM:** only `mac`. With `enroll`, Platform SSO makes the Mac's password the owner's work password, so `mac` is both: the Mac's login password after enrollment, and the password on Microsoft sign-in pages. Nothing else is sealed here; sealing needs root. I never take a password over the peer link. One-time codes (an Apple two-factor code) are fine.
 
@@ -41,7 +41,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **One password prompt at a time (m7).** Before I open Terminal or start anything that asks for a password, I check whether a prompt is already waiting, and answer that one.
 - **Never press Escape at a login window.** It switches to the list of users, where no field has focus.
 - **Never use the clipboard.** No cmd+c or cmd+v. I type with `sitter_type`.
-- **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` when the cables go back. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
+- **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` at the hand-over (step 7), before the sitter's armed try. If `sitter_status` shows it off, or ending before I'll be done, while I'm still setting up, I turn it on again. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
 - **Budgets.** `sitter_type_secret` allows 20 an hour. Peer messages: 10 an hour each way, so codes go with `now: true` and the rest are batched.
 - **Clear what's in the way (m8, m11).** Before each step I close notices, first-run windows and banners over the app I'm about to use. Once the step is done, I close every window it opened.
 - **Leave the reference Mac alone.** I ask Ouroboros only to read, to approve a code, or to run the config's own commands.
@@ -60,9 +60,9 @@ Stuck means one of three things: the screen hasn't changed in the step's wait ti
 Before the owner moves my HDMI and USB-C, they tell me. Then:
 
 1. I `peer_send` Ouroboros (`now: true`): while I'm away, the reference Mac is unwatched. Nobody unlocks it after a restart, so it shouldn't restart until I'm back. I note the time.
-2. **The sitter knows only one Mac.** Its password and its taught screens apply to whatever Mac is on the cables. If the new Mac's password isn't `mac` yet, it must not type by itself there. If `operator` is set, I run `<sitter> password-hold` before the move. `<sitter>` is `HOUSESITTER_SITTER_CMD`, by default `python3 /etc/kvmd/user/housesitter/sitter.py`. Otherwise I ask the owner to run `housesitter unlock <reference_mac> --hold`. This holds the reference Mac's unlock too, until step 7's try verifies the password again.
+2. **Setup mode on** (the rule above). The sitter knows one Mac at a time, so its password and the reference Mac's taught screens would otherwise apply to the new Mac; setup mode stops it acting by itself.
 3. After the move, `sitter_look` must show a different Mac: a Setup Assistant pane, a new login window, a new wallpaper. If it doesn't, I stop and tell the owner.
-4. When the cables go back, I look and confirm it's the reference Mac. If the password isn't verified, I arm and teach it as in step 7 at its next restart, or ask the owner to. Then I tell Ouroboros its watch has resumed.
+4. When the cables go back, setup mode is already off (step 7). I look and confirm it's the reference Mac, and that `sitter_status` shows setup mode off and the password verified. If the password isn't verified, I arm and teach it as in step 7 at the reference Mac's next restart, or ask the owner to. Then I tell Ouroboros its watch has resumed.
 
 ## Where am I?
 
@@ -74,7 +74,7 @@ On every wake I call `sitter_status`, `sitter_look` and `peer_inbox`, and reread
 
 **With setup mode on, I click through it myself**, with the choices from the table below. Without it, the sitter refuses my hands here: there's no menu bar, and after the cable move a boot is pending. I probe once with `sitter_key` "shift", which changes nothing on any pane. If it's refused, I tell the owner once: "<mac> is in Setup Assistant at '<heading>'; the sitter won't let me click there. Please finish it." The message includes the choices from the table below, with the values filled in: the full name, the account name, and the password `initial_password` (I write it out; it's non-secret by the owner's choice). Then I wait for a desktop or a login window.
 
-**If my hands work** (a future sitter), I answer each pane by its heading, one at a time, looking after each click:
+With my hands working, I answer each pane by its heading, one at a time, looking after each click:
 
 | Heading | Choice |
 | --- | --- |
@@ -89,7 +89,7 @@ On every wake I call `sitter_status`, `sitter_look` and `peer_inbox`, and reread
 | Analytics | Untick both "Share" boxes, Continue. |
 | Screen Time | Set Up Later. |
 | Siri | Untick "Enable Ask Siri", Continue. |
-| FileVault Disk Encryption | The owner's: every look returns the picture to me, so a recovery key on screen would enter my context. I tell the owner once to turn FileVault on here and keep the key themselves, and I don't look again until the heading should have changed (2 minutes). |
+| FileVault Disk Encryption | Not Now, if it's offered: with `enroll`, enrollment turns FileVault on and escrows its key. If it can only be turned on here, it's the owner's: every look returns the picture to me, so a recovery key on screen would enter my context. I tell the owner once to turn FileVault on here and keep the key themselves, and I don't look again for 2 minutes. |
 | Touch ID, Apple Pay | Set Up Later. |
 | Choose Your Look, Update Mac Automatically, Welcome to Mac | Continue. |
 | Anything else | The skip choice (Not Now, Set Up Later, Skip) if there is one, else Continue. I note the heading. |
@@ -100,8 +100,12 @@ On every wake I call `sitter_status`, `sitter_look` and `peer_inbox`, and reread
 
 **I see:** an avatar, the owner's name and an "Enter Password" field, with no menu bar.
 
-- **Notes say `initial`:** the sitter refuses `sitter_type` at a password screen, and `initial_password` isn't sealed on the KVM. Stuck. I tell the owner once: "<mac> is at its <login/FileVault> screen. Its password is still the setup password, `<initial_password>`, and the sitter won't type it there. Please log in once."
-- **Notes say `mac`:** `sitter_unlock`. If it refuses because this screen hasn't been taught, or the password is on hold: at FileVault I do step 7's items 1 and 3 now, if `operator` is set and the sitter saw this boot less than 15 minutes ago (`learn-prompt --filevault` is refused after that). Otherwise, or at a login or lock screen, I'm stuck.
+In setup mode I type here myself, after a fresh look shows the password field focused (if the list of users shows instead, I click the owner's tile and look again):
+
+- **Notes say `initial`:** `sitter_type` `initial_password`, then `sitter_key` "return".
+- **Notes say `mac` or `unknown`:** `sitter_type_secret` `mac`, prompt "<login/FileVault> password field on <mac>", `enter: true`, `seen`.
+- **Outside setup mode, notes say `initial`:** the sitter refuses `sitter_type` at a password screen. Stuck. I tell the owner once: "<mac> is at its <login/FileVault> screen. Its password is still the setup password, `<initial_password>`, and the sitter won't type it there. Please log in once."
+- **Outside setup mode, notes say `mac`:** `sitter_unlock`. If it refuses because this screen hasn't been taught, or the password is on hold: at FileVault I do step 7's items 1 and 3 now, if `operator` is set and the sitter saw this boot less than 15 minutes ago (`learn-prompt --filevault` is refused after that). Otherwise, or at a login or lock screen, I'm stuck.
 - I never press Escape here, and I never wake the screen with keys; the sitter does that itself.
 
 **Done when:** a desktop with a menu bar.
@@ -121,7 +125,7 @@ On every wake I call `sitter_status`, `sitter_look` and `peer_inbox`, and reread
    - Tab, fresh look, New field focused: `sitter_type_secret` `mac`, prompt "new password in the macOS password change dialog".
    - Tab, fresh look, Verify field focused: the same, with `enter: true`.
 
-   If the change is asked at the login window instead, that's a password screen: stuck.
+   If the change is asked at the login window instead, I do the same there in setup mode: the old password, then the new one twice, with a fresh look before each field. Outside setup mode, that's a password screen: stuck.
 
 I note `password: mac` the moment the change succeeds. If it fails halfway, I note `password: unknown` and tell the owner once.
 
@@ -169,9 +173,11 @@ This needs step 4's kit, so that this Mac has Housesitter's command line and the
 
 **Done when:** my notes record that this Mac's FileVault screen was taught and the sitter's try reached the desktop.
 
-This needs `operator: true`. Without it, I ask the owner to run `housesitter unlock <reference_mac> --trial`, restart the Mac, and at FileVault run `housesitter learn-prompt <reference_mac> --i-see-the-field --filevault`. Their housesitter config knows the KVM by the reference Mac's name. Then I watch.
+First, setup mode off (`sitter_setup_mode` with `on: false`): from here the sitter keeps this Mac alive, and its armed try below types only with setup mode off.
 
-1. I arm one supervised try: `<sitter> password-trial`.
+Teaching needs `operator: true`. Without it, I ask the owner to run `housesitter unlock <reference_mac> --trial`, restart the Mac, and at FileVault run `housesitter learn-prompt <reference_mac> --i-see-the-field --filevault`. Their housesitter config knows the KVM by the reference Mac's name. Then I watch.
+
+1. I arm one supervised try: `<sitter> password-trial`. `<sitter>` is `HOUSESITTER_SITTER_CMD`, by default `python3 /etc/kvmd/user/housesitter/sitter.py`.
 2. I restart the Mac: Apple menu › Restart…, then Restart.
 3. When `sitter_look` shows the FileVault password field, within 15 minutes of the boot, I run `<sitter> learn-prompt --filevault taught by Housesitter during setup, field seen on the KVM`.
 4. The sitter types its one armed try by itself. If the desktop follows, the password is verified. If not, it goes back to unverified, for the reference Mac too, and I tell the owner once.
