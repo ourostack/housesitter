@@ -45,7 +45,8 @@ export function shrinkJpeg(image, maxWidth, { run = spawnSync, platform = proces
   let size;
   try { size = imageSize(image); } catch { return image; }
   if (!maxWidth || size.width <= maxWidth || platform !== 'darwin' || !(image[0] === 0xff && image[1] === 0xd8)) return image;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'housesitter-shot-'));
+  let dir;
+  try { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'housesitter-shot-')); } catch { return image; }
   try {
     const src = path.join(dir, 'in.jpg');
     const out = path.join(dir, 'out.jpg');
@@ -53,6 +54,8 @@ export function shrinkJpeg(image, maxWidth, { run = spawnSync, platform = proces
     const r = run('/usr/bin/sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '80', '--resampleWidth', String(Math.round(maxWidth)), src, '--out', out], { encoding: 'utf8', timeout: 20000 });
     const small = r.status === 0 && fs.existsSync(out) ? fs.readFileSync(out) : null;
     return small && small[0] === 0xff && small[1] === 0xd8 ? small : image;
+  } catch {
+    return image;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -74,7 +77,7 @@ export function directTransport(client, { via = `direct ${client.base}`, shrink 
       if (r.status !== 200) throw new Refusal('action-failed', `snapshot -> HTTP ${r.status}${r.status === 503 ? ' (no video client: the encoder is idle; GLKVM starts it only while something watches)' : ''}`);
       // A GL-RM1PE (V1.7.1) at 2560x1440 answers 200 with raw H.264 instead of a JPEG (seen 2026-11-08).
       if (!(r.body?.[0] === 0xff && r.body?.[1] === 0xd8) && r.body?.[0] !== 0x89) throw new Refusal('action-failed', 'snapshot -> not a JPEG (raw H.264: this KVM needs a frame decoded on the device; the sitter does that)');
-      real = real || imageSize(r.body);
+      real = imageSize(r.body);
       const image = shrink(r.body, maxWidth);
       return { image, ...imageSize(image), real: (await realSize()) || real };
     },
