@@ -16,7 +16,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { appGeneration, appReady, family, findMain, isDone, resumeAfter, runInProgress, skipOf, snapshot, stateDir, T, realDeps, DEFAULT_APP } from './copilot-app.mjs';
-import { judgeProgress } from './progress.mjs';
+import { judgeProgress, lastEvent } from './progress.mjs';
+import { readLocalStorage, staleQueued } from './restart-guards.mjs';
 import { hhmm, iso, incidentsDir, readJson, recentIncidents, recordIncident, realTell, run, short, writeJson } from './recovery.mjs';
 
 export const HB = {
@@ -30,6 +31,7 @@ export const HB = {
   hour: 3600000, cap: 3, // recoveries an hour before it stops and tells the person
   stormMs: 15 * 60000, stormCap: 2, // storm brake: this many freeze restarts in this long, and it snapshots memory and backs off
   settleAfterBoot: 10 * 60000, // how long after a stall it waits for the resume before it tells
+  queueEvery: 30 * 60000, // how often it looks for queued messages the app never delivered
 };
 
 // ---------- pure ----------
@@ -121,6 +123,17 @@ export function classifyGap({ from, to, facts }) {
 
 // ---------- the Mac ----------
 
+// The last `n` bytes of a file, as text ('' when it cannot be read).
+function tail(file, n) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size, len = Math.min(n, size), buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    return buf.toString('utf8');
+  } catch { return ''; } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 export function realHeartbeatDeps({ home = os.homedir(), copilotHome, hackamore, state = stateDir(home), bin, node = process.execPath } = {}) {
   const base = realDeps({ home, copilotHome, hackamore, state });
   const file = path.join(state, 'heartbeat.json');
@@ -138,11 +151,20 @@ export function realHeartbeatDeps({ home = os.homedir(), copilotHome, hackamore,
     lastWrite: (o) => { fs.mkdirSync(state, { recursive: true }); fs.writeFileSync(path.join(state, 'last.json'), JSON.stringify(o, null, 2)); },
     tell,
     // The socket: ok when it says hello, down when nothing is serving, timeout when it takes the connection and says nothing.
-    // Every session the app lists, with whether it says it is running and when its history last changed (a stat, never a read).
+    // Every session the app lists, with whether it says it is running, when its history last changed (a stat), and for a running
+    // session the type of its last event (a read of the file's last 64 KB), which tells a session stuck in a hook.
     sessionProgress: async () => {
       const rows = await d.sql('SELECT id, is_running AS running FROM sessions WHERE archived_at IS NULL');
-      return rows.map((r) => { let m = 0; try { m = fs.statSync(path.join(d.home, 'session-state', r.id, 'events.jsonl')).mtimeMs; } catch { /* none */ } return { id: r.id, running: Number(r.running) === 1, lastEventAt: m }; });
+      return rows.map((r) => {
+        const f = path.join(d.home, 'session-state', r.id, 'events.jsonl');
+        const running = Number(r.running) === 1;
+        let m = 0, last = {};
+        try { m = fs.statSync(f).mtimeMs; } catch { /* none */ }
+        if (running && m) last = lastEvent(tail(f, 65536));
+        return { id: r.id, running, lastEventAt: m, ...last };
+      });
     },
+    staleQueued: (now) => staleQueued(readLocalStorage(home) || [], now),
     memorySnapshot: async (dir) => {
       fs.mkdirSync(dir, { recursive: true });
       for (const [n, f, a] of [['ps.txt', '/bin/ps', ['-axm', '-o', 'pid,ppid,rss,command']], ['vm_stat.txt', '/usr/bin/vm_stat', []], ['swap.txt', '/usr/sbin/sysctl', ['vm.swapusage']]]) fs.writeFileSync(path.join(dir, n), (await run(f, a)).stdout);
@@ -283,6 +305,18 @@ export async function pass(opts, deps, say = () => {}) {
     if (st.stall_pending) st.stall_pending = await settleStall({ st, deps, now, t, out });
   }
 
+  // Now and then, messages Ari queued that the app never delivered: told once each, since nothing else will ever send them.
+  if (!opts.dry_run && deps.staleQueued && (!st.queue_checked_at || now - Date.parse(st.queue_checked_at) >= t.queueEvery)) {
+    st.queue_checked_at = iso(now);
+    const told = new Set(st.queue_told || []);
+    const fresh = (await Promise.resolve().then(() => deps.staleQueued(now)).catch(() => [])).filter((m) => !told.has(m.id));
+    if (fresh.length) {
+      out(`${fresh.length} queued message(s) the app never delivered`);
+      await deps.tell(`${fresh.length === 1 ? 'A message you queued was' : `${fresh.length} messages you queued were`} never delivered by the Copilot app: ${fresh.slice(0, 3).map((m) => `to ${m.session?.slice(0, 8) || '?'} on ${m.createdAt.slice(0, 10)}, "${m.text.slice(0, 80)}${m.text.length > 80 ? '…' : ''}"`).join('; ')}. Send it again, or relay it with: shepherd send <session> --as-user`).catch(() => {});
+      st.queue_told = [...told, ...fresh.map((m) => m.id)].slice(-200);
+    }
+  }
+
   if (deps.runInProgress?.()) { save(); res.action = 'hold'; res.code = 'restart-running'; out('a restart job is running; not probing'); return res; }
 
   const g = await appGeneration({ app }, deps);
@@ -300,6 +334,8 @@ export async function pass(opts, deps, say = () => {}) {
   // Only the sessions' own progress counts; the socket and window are looked at for the record, never judged.
   const prog = judgeProgress(await deps.sessionProgress(), now, t.progress);
   if (prog.stalled) failures.push('no-progress');
+  // Never quietly blind: a heartbeat that cannot read any history can never see a freeze (as from #88 until #232).
+  if (prog.blind) out('cannot judge progress: the app lists running sessions but none of their histories could be read');
   res.progress = prog; res.failures = failures;
 
   const j = judge(sameApp ? st.bad : null, failures, now, t);

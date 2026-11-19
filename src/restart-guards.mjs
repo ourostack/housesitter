@@ -56,12 +56,44 @@ export function liveQueued(value, now) {
   return ms.filter((m) => { const t = Date.parse(m?.createdAt || ''); return !(t > 0) || now - t < FRESH_MS; }).length;
 }
 
+// Queued messages the app never delivered: still in a `session-queued-restart-recovery:<id>` entry more than FRESH_MS after
+// they were typed. The guard rightly ignores them (they survive a restart), and so did everything else: on 2026-11-19 one
+// typed on 11-12 was found still waiting. Returns [{ session, id, createdAt, text }].
+export function staleQueued(rows, now) {
+  const out = [];
+  for (const r of rows || []) {
+    if (!/^session-queued-restart-recovery:[0-9a-f-]{36}/.test(r.key)) continue;
+    const o = typeof r.value === 'string' ? parse(r.value) : r.value;
+    for (const m of Array.isArray(o?.messages) ? o.messages : []) {
+      const t = Date.parse(m?.createdAt || '');
+      if (t > 0 && now - t >= FRESH_MS) out.push({ session: idIn(r.key), id: m.messageId || `${idIn(r.key)}@${m.createdAt}`, createdAt: m.createdAt, text: String(m.text || '') });
+    }
+  }
+  return out;
+}
+
 // A composer draft's text, whatever the key the web view stores it under.
 export function draftText(value) {
   const o = typeof value === 'string' ? parse(value) : value;
   const s = o?.state ?? o;
   const t = s?.promptText ?? s?.text ?? s?.prompt ?? s?.draft ?? s?.content ?? '';
   return String(t).trim();
+}
+
+// The per-session composer drafts, which the app keeps inside one `workspace-tabs` entry (state.workspaceSessions[id]
+// = { sessionId, draftPrompt, draftAttachments }) rather than under a key of their own: one { key, value } per unsent draft.
+export function tabDrafts(rows) {
+  const out = [];
+  for (const r of rows || []) {
+    if (r.key !== 'workspace-tabs') continue;
+    const o = typeof r.value === 'string' ? parse(r.value) : r.value;
+    for (const [id, w] of Object.entries(o?.state?.workspaceSessions || {})) {
+      const text = String(w?.draftPrompt || '').trim();
+      const files = Array.isArray(w?.draftAttachments) ? w.draftAttachments.length : 0;
+      if (text || files) out.push({ key: `workspace-tabs draft ${w?.sessionId || id}`, value: { draft: text || `${files} attachment(s)` } });
+    }
+  }
+  return out;
 }
 
 const idIn = (k) => (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.exec(k) || [null])[0];
@@ -172,7 +204,7 @@ export function realGuardDeps({ app, now = () => Date.now(), localStorage = read
     } catch { /* null holds */ }
     const ls = localStorage();
     if (queued && ls) queued = [...queued, ...ls.filter((x) => /^session-queued-restart-recovery:/.test(x.key))];
-    return { sessions, queued: ls ? queued : null, drafts: ls ? ls.filter((x) => /draft/i.test(x.key)) : null, automations, now: t };
+    return { sessions, queued: ls ? queued : null, drafts: ls ? [...ls.filter((x) => /draft/i.test(x.key)), ...tabDrafts(ls)] : null, automations, now: t };
   };
   const state = async () => {
     const trees = {};

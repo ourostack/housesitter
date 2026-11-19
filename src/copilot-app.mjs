@@ -9,7 +9,7 @@
 //      history. What is still working at the quit is recorded as interrupted, and its resume message says which lanes it
 //      had said were running.
 //   2. Quit: through the app's own Quit menu item with hackamore (which refuses while a person is using the Mac), or
-//      SIGTERM to the exact pid with --sigterm. Wait until every process of the app has exited.
+//      SIGTERM to the exact pid with --sigterm, or when hackamore sees no Quit menu item (the app's UI is frozen). Wait until every process of the app has exited.
 //   3. Relaunch: open -a, then wait until the app answers on its local socket.
 //   4. After: every session that was working, was interrupted by the quit, or was named with --also (and is not named with --skip) gets one resume
 //      message through the app's socket, unless something already continued it. Each one must then take a turn. Shepherd's resume() sends and checks them and keeps the record its six-hour health watch follows.
@@ -284,7 +284,11 @@ export async function plan(opts, deps) {
   else {
     const ls = await deps.hk(['ls', app]);
     const item = ls.code === 0 ? quitItem(ls.json) : null;
-    quit = item ? { method: 'menu', item, via: deps.hackamore.join(' '), gate: ls.json?.state?.gate || undefined } : { method: 'unavailable', why: ls.code === 0 ? `hackamore sees no Quit menu item in ${app}` : `hackamore ls ${app} failed: ${ls.text}` };
+    // A running app whose menu bar hackamore cannot read is not answering its UI (a frozen web view): the menu quit can never
+    // work, so SIGTERM to the exact pid is the only way out. Without this a frozen app could not be restarted unattended.
+    if (item) quit = { method: 'menu', item, via: deps.hackamore.join(' '), gate: ls.json?.state?.gate || undefined };
+    else if (ls.code === 0 && main) quit = { method: 'sigterm', pid: main.pid, fallback: `hackamore sees no Quit menu item in ${app} (its UI is not answering): SIGTERM instead` };
+    else quit = { method: 'unavailable', why: ls.code === 0 ? `hackamore sees no Quit menu item in ${app}` : `hackamore ls ${app} failed: ${ls.text}` };
   }
   return {
     app, bundle: dir, pid: main?.pid || null, running: Boolean(main), family: main ? family(procs, main.pid, dir).length : 0,
@@ -296,7 +300,7 @@ export async function plan(opts, deps) {
     resume_enabled: Boolean(opts.resume),
     steps: [
       `ask ${busy.length} working session(s) to reach a safe point (ready, or defer with the lanes they have running); wait until all are ready, up to ${Math.round(((opts.t?.settleMax) ?? T.settleMax) / 60000)} min`,
-      quit.method === 'menu' ? `quit with hackamore: do menu "${quit.item}"` : quit.method === 'sigterm' ? `quit with SIGTERM to pid ${quit.pid}` : `cannot quit: ${quit.why}`,
+      quit.method === 'menu' ? `quit with hackamore: do menu "${quit.item}"` : quit.method === 'sigterm' ? `quit with SIGTERM to pid ${quit.pid}${quit.fallback ? ` (${quit.fallback})` : ''}` : `cannot quit: ${quit.why}`,
       `wait until all ${main ? family(procs, main.pid, dir).length : 0} process(es) of ${app} have exited`,
       `relaunch: open -a "${app}", wait for its socket`,
       opts.resume ? `resume ${targets.length} session(s) (more if the restart interrupts others), then verify each took a turn` : 'no resume (add --resume)',
@@ -350,8 +354,11 @@ async function restartSteps(opts, deps, log) {
     const by = firstAskedAt + t.settleMax;
     const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by, stallSec: Math.round(t.settle / 1000), why: opts.why, what: opts.what }), 30000).then((r) => ({ id: s.id, ...r }))));
     step('asked to reach a safe point', { asked: asked.length, accepted: sent.filter((r) => r.ok).length, refused: sent.filter((r) => !r.ok).map((r) => `${short(r.id)}: ${r.error || r.reply}`), ceiling: new Date(by).toISOString() });
-    // A session that did not take the message has nothing to answer: it counts from the ask like the rest.
-    const st = new Map(asked.map((s) => [s.id, { askedAt: firstAskedAt, outcome: null, deferred: null, next: null }]));
+    // A session that did not take the message has nothing to answer: it counts from the ask like the rest. When none took it,
+    // the app is not answering (a frozen app refuses every send): nobody can reach a safe point, so waiting only delays the fix.
+    const unreachable = !sent.some((r) => r.ok);
+    if (unreachable) step('no session took the message: the app is not answering, so the restart does not wait', { refused: sent.length });
+    const st = new Map(asked.map((s) => [s.id, { askedAt: firstAskedAt, outcome: unreachable ? 'unreachable' : null, deferred: null, next: null }]));
     let beat = deps.now();
     for (let open = asked.map((s) => s.id); open.length; open = open.filter((id) => !st.get(id).outcome)) {
       await deps.sleep(Math.min(5000, Math.max(250, t.recheckMin / 4)));
@@ -378,10 +385,10 @@ async function restartSteps(opts, deps, log) {
     const of = (...k) => asked.filter((s) => k.includes(st.get(s.id).outcome)).map((s) => s.id);
     report.settled = of('idle', 'ready');
     report.said_ready = of('ready');
-    report.interrupted_at_quit = of('stalled', 'capped');
+    report.interrupted_at_quit = of('stalled', 'capped', 'unreachable');
     for (const s of asked) if (st.get(s.id).deferred && st.get(s.id).outcome !== 'ready') lanes.set(s.id, { lanes: st.get(s.id).deferred.lanes, minutes: st.get(s.id).deferred.minutes });
     report.deferred_at_quit = [...lanes].map(([id, l]) => ({ id, ...l }));
-    step('settle ended', { settled: report.settled.length, said_ready: report.said_ready.length, went_quiet: of('stalled').map(short), out_of_time: of('capped').map(short), still_deferring: report.deferred_at_quit.map((d) => `${short(d.id)}: ${d.lanes} lanes`) });
+    step('settle ended', { settled: report.settled.length, said_ready: report.said_ready.length, went_quiet: of('stalled').map(short), ...(of('unreachable').length ? { unreachable: of('unreachable').map(short) } : {}), out_of_time: of('capped').map(short), still_deferring: report.deferred_at_quit.map((d) => `${short(d.id)}: ${d.lanes} lanes`) });
   }
 
   if (opts.safe_point) {
@@ -397,14 +404,14 @@ async function restartSteps(opts, deps, log) {
   const familyPids = family(psAtQuit, mainBefore.pid, dir);
   const cmdAt = new Map(psAtQuit.map((x) => [x.pid, x.command]));
   let q;
-  if (opts.sigterm) { deps.kill(mainBefore.pid, 'SIGTERM'); q = { ok: true, method: 'sigterm', pid: mainBefore.pid }; } else q = await hackamoreQuit(deps, app, { personWaitMs: t.person, log });
+  if (p.quit.method === 'sigterm') { deps.kill(mainBefore.pid, 'SIGTERM'); q = { ok: true, method: 'sigterm', pid: mainBefore.pid, ...(p.quit.fallback ? { fallback: p.quit.fallback } : {}) }; } else q = await hackamoreQuit(deps, app, { personWaitMs: t.person, log });
   if (!q.ok) {
     // The app is untouched: tell the sessions that were asked to stop that nothing happened.
     const cancel = await Promise.all(asked.map((x) => sendTo(deps, x.id, cancelText({ why: opts.why }), 30000)));
     step('restart called off: told the sessions to carry on', { told: cancel.filter((r) => r.ok).length, of: asked.length });
     return fail('quit', q.why);
   }
-  step('quit sent', { method: q.method, ...(q.item ? { item: q.item } : {}) });
+  step('quit sent', { method: q.method, ...(q.item ? { item: q.item } : {}), ...(q.fallback ? { why: q.fallback } : {}) });
   // A pid counts only while it still runs the command it ran at the quit: pids get reused.
   const ownsPid = (x) => (new Set(familyPids).has(x.pid) && x.command === cmdAt.get(x.pid)) || x.command.includes(`${dir}/Contents/`);
   const alive = async () => (await deps.ps()).filter(ownsPid).map((x) => x.pid);

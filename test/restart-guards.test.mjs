@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { openRequests, backgroundOf, liveQueued, draftText, holds, compareStates, gitState, FRESH_MS } from '../src/restart-guards.mjs';
+import { openRequests, backgroundOf, liveQueued, draftText, tabDrafts, staleQueued, holds, compareStates, gitState, FRESH_MS } from '../src/restart-guards.mjs';
 import { pass } from '../src/app-bloat.mjs';
 
 const ev = (type, data = {}, extra = {}) => JSON.stringify({ type, data, timestamp: '2026-11-18T10:00:00Z', id: Math.random().toString(36), ...extra });
@@ -153,4 +153,25 @@ test('a dry run records nothing and starts nothing', async () => {
   assert.equal((await pass({ dry_run: true }, d)).action, 'would-restart');
   assert.equal(calls.length, 0);
   assert.equal(d.readState(), null);
+});
+
+test('per-session drafts inside workspace-tabs are drafts; empty ones are not', () => {
+  const tabs = { key: 'workspace-tabs', value: JSON.stringify({ state: { workspaceSessions: {
+    'aaaaaaaa-1111-2222-3333-444444444444': { sessionId: 'aaaaaaaa-1111-2222-3333-444444444444', draftPrompt: 'otherwise, half a thought', draftAttachments: [] },
+    'bbbbbbbb-1111-2222-3333-444444444444': { sessionId: 'bbbbbbbb-1111-2222-3333-444444444444', draftPrompt: '  ', draftAttachments: [] },
+    'cccccccc-1111-2222-3333-444444444444': { sessionId: 'cccccccc-1111-2222-3333-444444444444', draftPrompt: '', draftAttachments: [{ name: 'shot.png' }] },
+  } }, version: 5 }) };
+  const d = tabDrafts([tabs, { key: 'other', value: '{}' }]);
+  assert.deepEqual(d.map((x) => x.key.slice(-36, -28)), ['aaaaaaaa', 'cccccccc']);
+  const h = holds({ sessions: [], queued: [], drafts: d, automations: [], now: 0 });
+  assert.deepEqual(h.map((x) => [x.guard, x.session?.slice(0, 8)]), [['draft', 'aaaaaaaa'], ['draft', 'cccccccc']], 'the restart holds for them');
+});
+
+test('a queued message still undelivered a day after it was typed is stale; a fresh one is not', () => {
+  const now = Date.parse('2026-11-19T05:00:00Z');
+  const rows = [{ key: 'session-queued-restart-recovery:34c6f98e-cbf9-44e5-ae9a-d0c524a64f08:main', value: JSON.stringify({ messages: [
+    { text: 'was not me!!!', createdAt: '2026-11-12T21:31:55.895Z', messageId: 'm1' },
+    { text: 'just now', createdAt: '2026-11-19T04:50:00Z', messageId: 'm2' },
+  ] }) }, { key: 'session-queued-restart-recovery-steering-cancellations', value: '{}' }];
+  assert.deepEqual(staleQueued(rows, now), [{ session: '34c6f98e-cbf9-44e5-ae9a-d0c524a64f08', id: 'm1', createdAt: '2026-11-12T21:31:55.895Z', text: 'was not me!!!' }]);
 });
