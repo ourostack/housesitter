@@ -141,7 +141,7 @@ export function realHeartbeatDeps({ home = os.homedir(), copilotHome, hackamore,
     // Every session the app lists, with whether it says it is running and when its history last changed (a stat, never a read).
     sessionProgress: async () => {
       const rows = await d.sql('SELECT id, is_running AS running FROM sessions WHERE archived_at IS NULL');
-      return rows.map((r) => { let m = 0; try { m = fs.statSync(path.join(d.copilotHome, 'session-state', r.id, 'events.jsonl')).mtimeMs; } catch { /* none */ } return { id: r.id, running: Number(r.running) === 1, lastEventAt: m }; });
+      return rows.map((r) => { let m = 0; try { m = fs.statSync(path.join(d.home, 'session-state', r.id, 'events.jsonl')).mtimeMs; } catch { /* none */ } return { id: r.id, running: Number(r.running) === 1, lastEventAt: m }; });
     },
     memorySnapshot: async (dir) => {
       fs.mkdirSync(dir, { recursive: true });
