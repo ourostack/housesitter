@@ -2388,11 +2388,12 @@ class StreamerStaysUp(unittest.TestCase):
 
     def setUp(self):
         self.etc = scratch()
+        W.HOME = scratch()
 
     def test_set_in_override_d_read_back_and_kvmd_restarted_once(self):
         os.makedirs(os.path.join(self.etc, "override.d"))
         ran = []
-        run = lambda argv, **k: ran.append(argv)
+        run = lambda argv, **k: (ran.append(argv), types.SimpleNamespace(returncode=0))[1]
         self.assertFalse(W.streamer_forever_set(self.etc))
         self.assertIn("set and read back; kvmd restarted", W.streamer_forever(run=run, etc=self.etc))
         with open(os.path.join(self.etc, "override.d", W.STREAMER_FILE)) as f:
@@ -2402,11 +2403,21 @@ class StreamerStaysUp(unittest.TestCase):
         self.assertEqual(len(ran), 1, "kvmd restarts only when the setting changed")
         self.assertIn("restart kvmd", ran[0][-1])
 
+    def test_a_restart_that_did_not_happen_is_said_and_owed(self):
+        os.makedirs(os.path.join(self.etc, "override.d"))
+        self.assertIn("NOT applied yet", W.streamer_forever(run=lambda argv, **k: types.SimpleNamespace(returncode=1), etc=self.etc))
+
+        def timeout(argv, **k):
+            raise subprocess.TimeoutExpired(argv, 120)
+        self.assertIn("NOT applied yet", W.streamer_forever(run=timeout, etc=self.etc), "set already, but the restart is still owed")
+        self.assertIn("kvmd restarted", W.streamer_forever(run=lambda argv, **k: types.SimpleNamespace(returncode=0), etc=self.etc))
+        self.assertEqual(W.streamer_forever(run=lambda argv, **k: types.SimpleNamespace(returncode=1), etc=self.etc), "stays up (forever: true, read back)")
+
     def test_override_yaml_appended_unless_it_has_its_own_kvmd_section(self):
         ov = os.path.join(self.etc, "override.yaml")
         with open(ov, "w") as f:
             f.write("vnc:\n    keymap: /usr/share/kvmd/keymaps/en-us")
-        self.assertIn("set and read back", W.streamer_forever(run=lambda *a, **k: None, etc=self.etc))
+        self.assertIn("set and read back", W.streamer_forever(run=lambda *a, **k: types.SimpleNamespace(returncode=0), etc=self.etc))
         with open(ov) as f:
             self.assertTrue(f.read().startswith("vnc:\n    keymap: /usr/share/kvmd/keymaps/en-us\nkvmd:\n"))
         other = scratch()

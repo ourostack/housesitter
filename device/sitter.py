@@ -474,13 +474,16 @@ def streamer_forever(run=subprocess.run, etc=None):
     where kvmd has one; else appended to override.yaml when that has no kvmd section of its own; else it says what to
     add by hand."""
     etc = etc or KVMD_ETC
-    if streamer_forever_set(etc):
+    pending = os.path.join(HOME, "streamer-restart.pending")
+    if streamer_forever_set(etc) and not os.path.exists(pending):
         return "stays up (forever: true, read back)"
     d, ov = os.path.join(etc, "override.d"), os.path.join(etc, "override.yaml")
     if not os.path.isdir(etc):
         return "n/a (no %s: not kvmd)" % etc
     try:
-        if os.path.isdir(d):
+        if streamer_forever_set(etc):
+            pass  # set before; only kvmd's restart is still owed
+        elif os.path.isdir(d):
             with open(os.path.join(d, STREAMER_FILE), "w") as f:
                 f.write(STREAMER_YAML)
         else:
@@ -497,8 +500,18 @@ def streamer_forever(run=subprocess.run, etc=None):
         return "NOT set: %s" % str(e)[:120]
     if not streamer_forever_set(etc):
         return "NOT set: it did not read back from %s" % etc
-    run(["sh", "-c", "if command -v systemctl >/dev/null && systemctl is-enabled kvmd >/dev/null 2>&1; then systemctl restart kvmd; "
-         "else for s in /etc/init.d/S*kvmd; do [ -x \"$s\" ] && \"$s\" restart; done; fi; true"], capture_output=True, timeout=120)
+    # Owed until a restart succeeds: a later harden restarts kvmd even though the setting already reads back.
+    os.makedirs(HOME, mode=0o700, exist_ok=True)
+    open(pending, "w").close()
+    try:
+        r = run(["sh", "-c", "r=1; if command -v systemctl >/dev/null && systemctl is-enabled kvmd >/dev/null 2>&1; then systemctl restart kvmd && r=0; "
+                 "else for s in /etc/init.d/S*kvmd /etc/init.d/S*kvmd.sh; do [ -x \"$s\" ] && \"$s\" restart && r=0; done; fi; exit $r"], capture_output=True, timeout=120)
+        ok = getattr(r, "returncode", 1) == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if not ok:
+        return "NOT applied yet: set and read back, but kvmd didn't restart; housesitter adopt tries again (or restart kvmd)"
+    os.remove(pending)
     return "stays up (forever: true, set and read back; kvmd restarted)"
 
 
@@ -3521,7 +3534,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "watcher": st.get("watcher"), "emails_today": emails_today(st.get("ledger"), now),
-              "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(), "streamer_forever": streamer_forever_set(), "setup": setup,
+              "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(), "streamer_forever": streamer_forever_set() and not os.path.exists(os.path.join(HOME, "streamer-restart.pending")), "setup": setup,
               "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "watched_by": bool((cfg.get("watched_by") or {}).get("url")) or bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
