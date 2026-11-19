@@ -17,6 +17,10 @@
 //   outbox  through the sitter's GitHub gists, from anywhere with GitHub: ~2-4 s an action.
 // type() refuses anything that looks like a password or token. The Mac's password is typed only by the sitter.
 
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { absPoint, imageSize, keyNames, looksSecret } from './keys.mjs';
 import { connect, httpsRequest, withWarm } from './kvmd.mjs';
 import { macConfig, secretStore } from './config.mjs';
@@ -31,7 +35,30 @@ export function registerTransport(kind, factory) { transports.set(kind, factory)
 
 // ---------- direct: kvmd over HTTPS ----------
 
-export function directTransport(client, { via = `direct ${client.base}` } = {}) {
+// Every snapshot asks kvmd the same plain thing. Asking for a preview size is a different request each time, and on
+// the GL.iNet Comet kvmd's streamer restarted around changing snapshot requests; each start takes video-encoder memory,
+// which ran out (2026-11-19). So the picture is shrunk here, on the Mac, never by kvmd.
+export const SNAPSHOT_PATH = '/api/streamer/snapshot?allow_offline=1';
+
+// A JPEG at most maxWidth wide, with macOS's own sips; the picture as it is elsewhere, or if that fails.
+export function shrinkJpeg(image, maxWidth, { run = spawnSync, platform = process.platform } = {}) {
+  let size;
+  try { size = imageSize(image); } catch { return image; }
+  if (!maxWidth || size.width <= maxWidth || platform !== 'darwin' || !(image[0] === 0xff && image[1] === 0xd8)) return image;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'housesitter-shot-'));
+  try {
+    const src = path.join(dir, 'in.jpg');
+    const out = path.join(dir, 'out.jpg');
+    fs.writeFileSync(src, image);
+    const r = run('/usr/bin/sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '80', '--resampleWidth', String(Math.round(maxWidth)), src, '--out', out], { encoding: 'utf8', timeout: 20000 });
+    const small = r.status === 0 && fs.existsSync(out) ? fs.readFileSync(out) : null;
+    return small && small[0] === 0xff && small[1] === 0xd8 ? small : image;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export function directTransport(client, { via = `direct ${client.base}`, shrink = shrinkJpeg } = {}) {
   let real = null;
   const realSize = async () => {
     if (real) return real;
@@ -43,14 +70,13 @@ export function directTransport(client, { via = `direct ${client.base}` } = {}) 
   return {
     via,
     async screenshot({ maxWidth } = {}) {
-      const q = maxWidth ? `&preview=1&preview_max_width=${maxWidth}&preview_quality=80` : '';
-      const r = await withWarm(client.warm, () => client.raw('GET', `/api/streamer/snapshot?allow_offline=1${q}`, { timeoutMs: 15000 }));
+      const r = await withWarm(client.warm, () => client.raw('GET', SNAPSHOT_PATH, { timeoutMs: 15000 }));
       if (r.status !== 200) throw new Refusal('action-failed', `snapshot -> HTTP ${r.status}${r.status === 503 ? ' (no video client: the encoder is idle; GLKVM starts it only while something watches)' : ''}`);
       // A GL-RM1PE (V1.7.1) at 2560x1440 answers 200 with raw H.264 instead of a JPEG (seen 2026-11-08).
       if (!(r.body?.[0] === 0xff && r.body?.[1] === 0xd8) && r.body?.[0] !== 0x89) throw new Refusal('action-failed', 'snapshot -> not a JPEG (raw H.264: this KVM needs a frame decoded on the device; the sitter does that)');
-      const size = imageSize(r.body);
-      if (!maxWidth) real = size;
-      return { image: r.body, ...size, real: (await realSize()) || size };
+      real = real || imageSize(r.body);
+      const image = shrink(r.body, maxWidth);
+      return { image, ...imageSize(image), real: (await realSize()) || real };
     },
     async click({ x, y, w, h, button = 'left', count = 1 }) {
       const [tx, ty] = absPoint(x, y, w, h);
