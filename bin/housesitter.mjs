@@ -288,6 +288,8 @@ async function restartCopilot() {
     const bloat = await Bloat.pass(opts, Bloat.realBloatDeps({
       state: stateDir, cfgLoad: () => loadConfig(), copilot: { runInProgress: Copilot.runInProgress, stateDir: () => stateDir },
       busy: async () => (await Copilot.snapshot(cdeps, undefined, Copilot.skipOf({}, cdeps))).filter((x) => x.state === 'busy').length,
+      app: cdeps,
+      resumeRecord: () => Rec.readJson(path.join(cdeps.shepherdState, 'resume-last.json'), null),
       detach: (why) => Copilot.detach({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), args: ['restart-copilot', '--resume', '--why', why], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() } }),
     }), (l) => { if (!json && !opt.quiet) console.log(l); });
     r.app_bloat = bloat;
