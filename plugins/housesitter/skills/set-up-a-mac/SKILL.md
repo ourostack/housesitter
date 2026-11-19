@@ -59,10 +59,12 @@ Stuck means one of three things: the screen hasn't changed in the step's wait ti
 
 Before the owner moves my HDMI and USB-C, they tell me. Then:
 
-1. I `peer_send` Ouroboros (`now: true`): while I'm away, the reference Mac is unwatched. Nobody unlocks it after a restart, so it shouldn't restart until I'm back. I note the time.
-2. **Setup mode on** (the rule above). The sitter knows one Mac at a time, so its password and the reference Mac's taught screens would otherwise apply to the new Mac; setup mode stops it acting by itself.
-3. After the move, `sitter_look` must show a different Mac: a Setup Assistant pane, a new login window, a new wallpaper. If it doesn't, I stop and tell the owner.
-4. When the cables go back, setup mode is already off (step 7). I look and confirm it's the reference Mac, and that `sitter_status` shows setup mode off and the password verified. If the password isn't verified, I arm and teach it as in step 7 at the reference Mac's next restart, or ask the owner to. Then I tell Ouroboros its watch has resumed.
+1. **I answer the owner, in that same exchange, asking for two clicks on the laptop itself before I start:** "When <mac> asks 'Allow accessory to connect?' on its own screen, click Allow; it's for the KVM. Then on <mac>: System Settings > Displays > GLKVM > 'Mirror for Built-in Display' (or Cmd+F1 on the laptop's own keyboard). Without mirroring, the KVM gets an empty extended display and I can't see what I'm doing. macOS remembers it for that display, so later runs won't need it." These are the only physical steps after the cables. I can't do them: the prompt shows only on the built-in screen, and the KVM's keyboard sends a plain F1, not the laptop's brightness-down key the mirroring shortcut needs.
+2. I `peer_send` Ouroboros (`now: true`): while I'm away, the reference Mac is unwatched. Nobody unlocks it after a restart, so it shouldn't restart until I'm back. I note the time.
+3. **Setup mode on** (the rule above). The sitter knows one Mac at a time, so its password and the reference Mac's taught screens would otherwise apply to the new Mac; setup mode stops it acting by itself.
+4. After the move, `sitter_look` must show a different Mac: a Setup Assistant pane, a new login window, a new wallpaper. If it doesn't, I stop and tell the owner.
+5. **No visible effect means an extended display.** If a laptop shows a desktop with only wallpaper (often dimmed), a menu bar and no windows, and one key or click changes nothing on the picture, my input is landing on the built-in screen, which I can't see (the mouse maps to the main display). I don't try more keys. I tell the owner once: "<mac> isn't mirrored yet: System Settings > Displays > GLKVM > 'Mirror for Built-in Display', or close the lid with power connected." I never change the displays myself; a person at the Mac does (docs/hardware.md).
+6. When the cables go back, setup mode is already off (step 7). I look and confirm it's the reference Mac, and that `sitter_status` shows setup mode off and the password verified. If the password isn't verified, I arm and teach it as in step 7 at the reference Mac's next restart, or ask the owner to. Then I tell Ouroboros its watch has resumed.
 
 ## Where am I?
 
@@ -173,12 +175,14 @@ This needs step 4's kit, so that this Mac has Housesitter's command line and the
 
 **Done when:** my notes record that this Mac's FileVault screen was taught and the sitter's try reached the desktop.
 
-First, setup mode off (`sitter_setup_mode` with `on: false`): from here the sitter keeps this Mac alive, and its armed try below types only with setup mode off.
+First, **check that mirroring stuck**, so any later recovery (FileVault, a login window) shows on the KVM's picture. In System Settings > Displays, GLKVM must read "Mirror for Built-in Display". If it doesn't, I tell the owner once, as in Moving the cables, and go on.
+
+Then setup mode off (`sitter_setup_mode` with `on: false`): from here the sitter keeps this Mac alive, and its armed try below types only with setup mode off.
 
 Teaching needs `operator: true`. Without it, I ask the owner to run `housesitter unlock <reference_mac> --trial`, restart the Mac, and at FileVault run `housesitter learn-prompt <reference_mac> --i-see-the-field --filevault`. Their housesitter config knows the KVM by the reference Mac's name. Then I watch.
 
 1. I arm one supervised try: `<sitter> password-trial`. `<sitter>` is `HOUSESITTER_SITTER_CMD`, by default `python3 /etc/kvmd/user/housesitter/sitter.py`.
 2. I restart the Mac: Apple menu › Restart…, then Restart.
-3. When `sitter_look` shows the FileVault password field, within 15 minutes of the boot, I run `<sitter> learn-prompt --filevault taught by Housesitter during setup, field seen on the KVM`.
+3. If the KVM's picture stays dark for 2 minutes after the boot while the Mac is on, FileVault is drawing only on the built-in screen. I tell the owner once: "Close <mac>'s lid with power connected, so the KVM's display is its only one." When `sitter_look` shows the FileVault password field, within 15 minutes of the boot, I run `<sitter> learn-prompt --filevault taught by Housesitter during setup, field seen on the KVM`.
 4. The sitter types its one armed try by itself. If the desktop follows, the password is verified. If not, it goes back to unverified, for the reference Mac too, and I tell the owner once.
 5. **I report** to the owner and Ouroboros: what's set up, what's still the owner's, how many times I needed them, and the time from the cable move to here. From now on, my usual skill applies.
