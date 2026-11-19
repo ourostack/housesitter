@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.6"
+VERSION = "0.3.7"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2080,6 +2080,8 @@ def boot_watch(cfg, kvmd, log, now=None, run=subprocess.run, secret=None):
     bcfg = dict(BOOT, **cfg.get("boot", {}))
     st = load("state.json", {"mem": None, "ledger": []})
     bw = st.get("boot") or {}
+    if setup_mode(now, log):
+        return {"setup": True, "act": None, "note": "setup mode: no boot watch, no typing at any lesson"}
     obs = {"usb": usb_last_enum(run=run), "mode": hdmi_mode(kvmd=kvmd), "kvm_boot": kvm_boot_id()}
     armed = bool(bw.get("boot_at")) and now - bw["boot_at"] <= bcfg["armed_min"] * 60000
     new_usb = bw.get("usb_seen") is not None and obs["usb"] > bw["usb_seen"]
@@ -2791,10 +2793,70 @@ def at_password_screen(st=None):
     return last.get("screen") in ("filevault", "login") or bool(boot.get("pending"))
 
 
-def hands_refusal(cfg, kvmd, st):
+# ---------- setup mode: the KVM's cables are on another Mac, being set up ----------
+# Set and cleared only by root on the KVM (`sitter.py setup-mode on --mac <label> [--hours N]` / `off`, or the plugin's
+# sitter_setup_mode tool). While on, the sitter acts on nothing by itself (no unlock, power or hang action, no typing at
+# any lesson: the lessons and the password are the usual Mac's, not this one's), and an agent's hands work on any
+# screen over SSH or MCP, never through the outbox. It turns itself off at its expiry.
+SETUP_MAX_HOURS = 24
+
+
+def setup_mode(now=None, log=None):
+    """{"mac", "until", "since"} while setup mode is on; None otherwise. An expired one is removed here."""
+    s = load("setup.json", None)
+    if not s:
+        return None
+    now = now if now is not None else int(time.time() * 1000)
+    if now < int(s.get("until") or 0):
+        return s
+    try:
+        os.remove(os.path.join(HOME, "setup.json"))
+        (log or make_logger())("setup mode for %s expired: the normal rules are back" % s.get("mac"))
+    except OSError:
+        pass
+    return None
+
+
+def set_setup_mode(argv, now=None):
+    """`setup-mode on --mac <label> [--hours N]`, `setup-mode off`, or `setup-mode` to read it. Root only, on the KVM."""
+    now = now if now is not None else int(time.time() * 1000)
+    if argv[:1] == ["off"]:
+        was = setup_mode(now)
+        try:
+            os.remove(os.path.join(HOME, "setup.json"))
+        except OSError:
+            pass
+        if was:
+            make_logger()("setup mode for %s off: the normal rules are back" % was.get("mac"))
+        return {"setup": None, "was": was}
+    if argv[:1] == ["on"]:
+        label = argv[argv.index("--mac") + 1] if "--mac" in argv[:-1] else None
+        hours = argv[argv.index("--hours") + 1] if "--hours" in argv[:-1] else "6"
+        try:
+            hours = float(hours)
+        except ValueError:
+            hours = -1
+        if not label or len(label) > 64 or not label.isprintable():
+            raise ValueError("--mac <label>: which Mac is on the cables now, one line up to 64 characters")
+        if not 0 < hours <= SETUP_MAX_HOURS:
+            raise ValueError("--hours: more than 0, at most %d" % SETUP_MAX_HOURS)
+        s = {"mac": label, "since": now, "until": now + int(hours * 3600000)}
+        os.makedirs(HOME, mode=0o700, exist_ok=True)
+        save("setup.json", s)
+        make_logger()("setup mode on for %s until %s: the sitter acts on nothing by itself; hands work on any screen over SSH or MCP" % (label, time.strftime("%Y-%m-%dT%H:%M", time.localtime(s["until"] / 1000))))
+        return {"setup": s}
+    if not argv:
+        return {"setup": setup_mode(now)}
+    raise ValueError("setup-mode on --mac <label> [--hours N, default 6, at most %d] | off" % SETUP_MAX_HOURS)
+
+
+def hands_refusal(cfg, kvmd, st, via="ssh", escape=False):
     """An agent's clicks, keys and typing go only to a desktop, read fresh from the KVM's picture right now. At a login, lock
     or FileVault screen (or anything that doesn't read as a desktop: a full-screen app hides its menu bar, so show it
-    first) only the sitter types, its own copy, at a field it can see."""
+    first) only the sitter types, its own copy, at a field it can see. In setup mode, over SSH or MCP, any screen goes,
+    except Escape off a desktop (at a login window it switches to the list of users)."""
+    if via == "ssh" and not escape and setup_mode():
+        return None
     if at_password_screen(st):
         return "the Mac is at a password screen; only the sitter types there, its own copy, at a field it can see: use unlock"
     try:
@@ -2854,7 +2916,7 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
     if name == "mac":
         # A fresh read, as for an agent's typing: the Mac's password goes only to a desktop (a sheet or sudo there);
         # at FileVault, a login or a lock screen it is unlock's, with its own gates.
-        why = hands_refusal(cfg, kvmd, st)
+        why = hands_refusal(cfg, kvmd, st, via)
         if why:
             return {"ok": False, "code": "action-unavailable", "result": "the Mac's own password is typed here only on a desktop (%s); at FileVault, a login or a lock screen, use unlock" % why}
     value = load_secret(name)
@@ -2902,7 +2964,8 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
 def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     """One command (from the inbox, or `sitter.py do` over SSH). Unlock and power ops keep the sitter's own budgets and
     checks; screenshot, click, type and key are an agent's hands and pass through, except at a password screen;
-    type_secret types the sitter's own copy of a named secret, with its own gates (type_secret, above).
+    type_secret types the sitter's own copy of a named secret, with its own gates (type_secret, above). In setup mode
+    (set only by root), hands work on any screen over SSH, and unlock and power are refused.
     Refusals use Ouro Reins' codes: action-unavailable, input-invalid, action-failed."""
     op = cmd.get("op")
     name = cfg.get("name", "mac")
@@ -2913,7 +2976,7 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     st.setdefault("ledger", [])
     a = cmd.get("args") or {}
     if op == "status":
-        return {"ok": True, "result": load("status.json", {})}
+        return {"ok": True, "result": dict(load("status.json", {}) or {}, setup=setup_mode(now, log))}
     if op == "watch_check":
         return watch_check(a, st, now, via)
     if op == "type_secret":
@@ -2932,7 +2995,7 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         return {"ok": True, "result": {"bytes": len(jpg), "file": "%s.screen.jpg.b64" % name, "real": real_size(kvmd), "frame": frame_id(frame_grid(jpg), now)},
                 "_files": {"%s.screen.jpg.b64" % name: base64.b64encode(jpg).decode("ascii")}}
     if op == "click":
-        why = hands_refusal(cfg, kvmd, st)
+        why = hands_refusal(cfg, kvmd, st, via)
         if why:
             return {"ok": False, "code": "action-unavailable", "result": why}
     if op in ("click", "scroll"):
@@ -2956,7 +3019,7 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         text = a.get("text")
         if not isinstance(text, str) or not text or len(text) > 2000:
             return {"ok": False, "code": "input-invalid", "result": "args.text: 1-2000 characters"}
-        why = hands_refusal(cfg, kvmd, st)
+        why = hands_refusal(cfg, kvmd, st, via)
         if why:
             return {"ok": False, "code": "action-unavailable", "result": why}
         kvmd.post("/hid/print?limit=0&slow=1", body=text.encode("utf-8"), timeout=120)
@@ -2966,7 +3029,7 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
             names = key_names(a.get("combo", ""))
         except ValueError as e:
             return {"ok": False, "code": "input-invalid", "result": "args.combo: %s" % e}
-        why = hands_refusal(cfg, kvmd, st)
+        why = hands_refusal(cfg, kvmd, st, via, escape="Escape" in names)
         if why:
             if "Escape" in names:
                 why += ". And never Escape there: at a login window it switches to the list of users, where no password field has focus (2026-11-08)"
@@ -2976,6 +3039,8 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         else:
             kvmd.post("/hid/events/send_shortcut?keys=%s" % ",".join(names))
         return {"ok": True, "result": "pressed %s" % "+".join(names)}
+    if op in ("unlock", "want_desktop", "power_cycle", "power_on") and setup_mode(now):
+        return {"ok": False, "code": "action-unavailable", "result": "setup mode is on for %s: the KVM's lessons, password and plug are the usual Mac's, so it unlocks and powers nothing until setup mode is off" % setup_mode(now)["mac"]}
     if op == "unlock":
         # Over SSH, you: any lesson you taught, the list of users included. Through the outbox, an agent: the FileVault
         # screen taught at a boot, and the lock screen only while unlock_lock_screen allows it.
@@ -3204,6 +3269,9 @@ def perform_notify(cfg, act, mem, obs, opener=urllib.request.urlopen):
     if act.get("recovered"):
         return notify(cfg, "%s is back" % name, "%s is healthy again (seen by its housesitter)." % name, opener=opener)
     signs = plain_signs(obs)
+    setup = setup_mode()
+    if setup:
+        return notify(cfg, "%s's KVM is setting up %s" % (name, setup["mac"]), "Setup mode is on until %s, so the sitter acts on nothing by itself.\nIt sees: %s.\nSigns: %s." % (time.strftime("%H:%M", time.localtime(setup["until"] / 1000)), act["why"].replace("<mac>", setup["mac"]), signs), opener=opener)
     stuck = {"filevault": "is stuck at FileVault", "hung": "is frozen", "off": "is off", "down": "is not answering", "unknown": "is out of sight"}.get(mem["state"], "needs you (%s)" % mem["state"])
     return notify(cfg, "%s %s" % (name, stuck), "Seen by the housesitter on its KVM.\nStuck because: %s.\nSigns: %s." % (act["why"].replace("<mac>", name), signs), opener=opener)
 
@@ -3265,13 +3333,16 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
     settle_trial(now, obs.get("screen") == "desktop", log)
     note_lock_read(st, obs, now, log)
     caps = caps_of(cfg, power)
+    setup = setup_mode(now, log)
+    if setup:
+        caps.update(unlock=False, plug=False, fingerbot=False)  # it acts on nothing by itself; it can still tell you
     if not after_boot(cfg, obs, st.get("boot"), now):
         caps["unlock"] = False
     if obs.get("eyes") == "frame":
         caps["unlock"] = False  # without OCR, only the boot watch types, and only at a field it can match
     boot = st.get("boot") or {}
     pr = seen.get("prompt") or {}
-    if (lock_allowed(cfg, now) and obs.get("eyes") == "frame" and not boot_recent(boot, now)
+    if (not setup and lock_allowed(cfg, now) and obs.get("eyes") == "frame" and not boot_recent(boot, now)
             and ((pr.get("visible") and pr.get("kind") == "lock") or (pr.get("grid") and not pr.get("visible")))):
         # unlock_lock_screen allows it right now (true, or an agent's want-desktop request stands): from the lock
         # screen or the list of users to the desktop, through every gate.
@@ -3330,7 +3401,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
               "interval_sec": cfg.get("interval_sec", 60), "budgets": budgets(st, now, dict(DEFAULTS, **cfg.get("rules", {})), dict(BOOT, **cfg.get("boot", {}))),
               "recent": [{k: e.get(k) for k in ("at", "kind", "result", "test") if k != "test" or e.get("test")} for e in (st.get("ledger") or [])[-5:]], "last_incident": st.get("last_incident"),
               "watcher": st.get("watcher"), "emails_today": emails_today(st.get("ledger"), now),
-              "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(),
+              "lock_policy": lock_policy(cfg), "ingress": {k: v for k, v in (load("ingress.json", {}) or {}).items() if k != "next"} or None, "desktop_wanted": desktop_wanted(now), "lessons": lesson_counts(), "setup": setup,
               "probes": {"health": bool((cfg.get("health") or {}).get("port") or (cfg.get("health") or {}).get("url")), "watched_by": bool((cfg.get("watched_by") or {}).get("url")) or bool((cfg.get("heartbeat") or {}).get("url"))},
               **{k: v for k, v in seen.items() if v}}
     o = cfg.get("outbox") or {}
@@ -3453,6 +3524,14 @@ def main(argv):
     if argv[:1] == ["password-hold"]:
         print(json.dumps(set_password_trust("unverified", "held by an operator")))
         return 0
+    if argv[:1] == ["setup-mode"]:
+        # Root only: whoever runs this has root on the KVM (an operator over SSH, or Housesitter on the KVM itself).
+        try:
+            print(json.dumps(set_setup_mode(argv[1:])))
+            return 0
+        except ValueError as e:
+            print("setup-mode: %s" % e, file=sys.stderr)
+            return 2
     if argv[:1] == ["password"]:
         print(json.dumps(password_gate()))
         return 0
