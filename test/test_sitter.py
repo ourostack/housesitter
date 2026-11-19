@@ -2198,7 +2198,7 @@ class NamedSecrets(unittest.TestCase):
         self.screen = bytes(2 for _ in real)
         self.assertIn("black", ask(seen=W.frame_id(self.screen, now - 1000))["result"])
         W.screen_grid = lambda kvmd, width=1280: None
-        self.assertIn("couldn't take a fresh picture", ask()["result"])
+        self.assertIn("the check picture failed", ask()["result"])
         self.assertEqual(len([p for p in self.kvmd.posts if p[0].startswith("/hid/print")]), 1, "typed once: only when nothing moved")
 
     def test_screenshot_and_look_hand_out_a_frame_id_and_nothing_is_kept(self):
@@ -2380,3 +2380,65 @@ class FrameGridWithoutFilters(unittest.TestCase):
         finally:
             W.frame_grid = orig
         self.assertIsNone(W.LAST_FRAME, "no full-size frame stays in memory")
+
+
+class StreamerStaysUp(unittest.TestCase):
+    """kvmd's streamer stays up between looks (the Comet's encoder ran out of CMA when it restarted for each picture,
+    2026-11-19), and type_secret's check picture is retried before it refuses."""
+
+    def setUp(self):
+        self.etc = scratch()
+
+    def test_set_in_override_d_read_back_and_kvmd_restarted_once(self):
+        os.makedirs(os.path.join(self.etc, "override.d"))
+        ran = []
+        run = lambda argv, **k: ran.append(argv)
+        self.assertFalse(W.streamer_forever_set(self.etc))
+        self.assertIn("set and read back; kvmd restarted", W.streamer_forever(run=run, etc=self.etc))
+        with open(os.path.join(self.etc, "override.d", W.STREAMER_FILE)) as f:
+            self.assertEqual(f.read(), "kvmd:\n    streamer:\n        forever: true\n")
+        self.assertTrue(W.streamer_forever_set(self.etc))
+        self.assertEqual(W.streamer_forever(run=run, etc=self.etc), "stays up (forever: true, read back)")
+        self.assertEqual(len(ran), 1, "kvmd restarts only when the setting changed")
+        self.assertIn("restart kvmd", ran[0][-1])
+
+    def test_override_yaml_appended_unless_it_has_its_own_kvmd_section(self):
+        ov = os.path.join(self.etc, "override.yaml")
+        with open(ov, "w") as f:
+            f.write("vnc:\n    keymap: /usr/share/kvmd/keymaps/en-us")
+        self.assertIn("set and read back", W.streamer_forever(run=lambda *a, **k: None, etc=self.etc))
+        with open(ov) as f:
+            self.assertTrue(f.read().startswith("vnc:\n    keymap: /usr/share/kvmd/keymaps/en-us\nkvmd:\n"))
+        other = scratch()
+        with open(os.path.join(other, "override.yaml"), "w") as f:
+            f.write("kvmd:\n    hid:\n        type: otg\n")
+        self.assertIn("NOT set", W.streamer_forever(run=lambda *a, **k: None, etc=other))
+        self.assertFalse(W.streamer_forever_set(other))
+
+    def test_the_check_picture_is_tried_three_times_before_it_refuses(self):
+        W.HOME = scratch()
+        key, grids = W.device_key, W.screen_grid
+        W.device_key = lambda paths=None: (b"t" * 32, "given")
+        W.store_secret("setup-password", "synthetic-value")
+        screen, tries = bytes(200 for _ in range(144)), []
+
+        def flaky(kvmd, width=1280):
+            tries.append(1)
+            if len(tries) < 3:
+                raise RuntimeError("no picture: kvmd gave no JPEG and the KVM couldn't decode a frame itself")
+            return screen
+        now = 10 ** 12
+        ask = lambda: W.handle({"op": "type_secret", "args": {"name": "setup-password", "prompt": "sudo", "seen": W.frame_id(screen, now - 1000)}}, {"name": "mini"}, FakeKvmd(), None, lambda m: None, now, W.load("state.json", {"ledger": []}))
+        try:
+            W.screen_grid = flaky
+            self.assertTrue(ask()["ok"], "the third picture worked")
+            self.assertEqual(len(tries), 3)
+            W.screen_grid = lambda kvmd, width=1280: (tries.append(1), None)[1]
+            tries.clear()
+            r = ask()
+        finally:
+            W.device_key, W.screen_grid = key, grids
+        self.assertEqual(len(tries), 3)
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertIn("the check picture failed 3 times", r["result"])
+        self.assertNotIn("the screen changed since", r["result"])

@@ -192,3 +192,11 @@ test('doctor: whether this Mac can administer the KVM, and a warning when its ad
   assert.deepEqual(wiped.m.todo.slice(0, 2).map((t) => t.cmd), ['housesitter secret mini kvm-admin', 'housesitter adopt mini']);
   assert.doesNotMatch(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status() }, now: NOW })), /KVM ADMIN/, 'status (no admin facts) is unchanged');
 });
+
+test('doctor: says when kvmd\'s streamer stops between looks, and how to keep it up', () => {
+  const off = buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status({ streamer_forever: false }) }, now: NOW });
+  assert.match(plain(off), /kvmd's streamer stops between looks/);
+  assert.ok(off.todo.some((t) => t.cmd === 'housesitter adopt mini'));
+  assert.doesNotMatch(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status({ streamer_forever: true }) }, now: NOW })), /streamer stops/);
+  assert.doesNotMatch(plain(buildDoctor({ name: 'mini', kvm: KVM, sit: { status: status() }, now: NOW })), /streamer stops/, 'an older sitter that does not say is not flagged');
+});

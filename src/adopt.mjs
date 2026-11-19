@@ -387,14 +387,14 @@ export function steps() {
     },
     {
       // After the tailnet step: away from home, the KVM may only be reached over the tailnet, so it must have joined it.
-      id: 'harden', title: "Harden the KVM: GL.iNet's cloud off (read back), and SSH, HTTP and HTTPS only from where they should come",
+      id: 'harden', title: "Harden the KVM: GL.iNet's cloud off (read back), SSH, HTTP and HTTPS only from where they should come, and kvmd's streamer kept up",
       async run(x) {
         if (x.dryRun) return { ok: true, detail: `would turn GL.iNet's cloud binding off and check it, then ${(x.location || x.mac.location || 'home') === 'home' ? 'allow SSH, HTTP and HTTPS from private addresses and the tailnet only, as at home' : 'allow SSH, HTTP and HTTPS from the tailnet only'}` };
         const hd = await x.deps.ssh(`python3 ${DIR}/sitter.py harden`);
         if (hd.status !== 0) return { ok: false, stop: true, detail: `not hardened: ${String(hd.stderr || hd.stdout).trim().slice(0, 200)}` };
         let j = {};
         try { j = JSON.parse(String(hd.stdout).trim().split('\n').at(-1)); } catch { /* shown raw */ }
-        return { ok: true, detail: j.gl_cloud ? `GL cloud ${j.gl_cloud}; ${j.ingress}` : String(hd.stdout).trim().slice(0, 200) };
+        return { ok: true, detail: j.gl_cloud ? `GL cloud ${j.gl_cloud}; ${j.ingress}${j.streamer ? `; kvmd's streamer ${j.streamer}` : ''}` : String(hd.stdout).trim().slice(0, 200) };
       },
     },
     {
