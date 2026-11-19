@@ -1,6 +1,6 @@
 // housesitter restart-copilot --heartbeat: freeze, crash and stall detection against a pretend Mac and a pretend app whose
 // socket takes the connection and never says hello, as the real app's did when its window froze.
-import { judgeProgress } from '../src/progress.mjs';
+import { judgeProgress, lastEvent } from '../src/progress.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -154,6 +154,7 @@ async function world({ sessions, hung = false, window = 'ok', stubborn = true } 
       o.beat_at = back(o.beat_at);
       if (o.bad) { o.bad.since = back(o.bad.since); o.bad.last = back(o.bad.last); }
       if (o.app) o.app.seen_at = back(o.app.seen_at);
+      o.queue_checked_at = back(o.queue_checked_at);
       fs.writeFileSync(f, JSON.stringify(o));
     }
     const lines = []; const r = await pass(w.opts, d, (l) => lines.push(l)); r.lines = lines; return r; };
@@ -177,6 +178,11 @@ test('the real sessionProgress finds each session\'s history in the app\'s home'
   assert.equal(p.length, 3);
   assert.ok(p.every((s) => s.lastEventAt > 0), JSON.stringify(p));
   assert.deepEqual(p.filter((s) => s.running).map((s) => s.id), [A]);
+  assert.equal(typeof p.find((s) => s.id === A).lastType, 'string', 'a running session carries its last event type');
+  fs.appendFileSync(path.join(home, 'session-state', A, 'events.jsonl'), `${JSON.stringify({ type: 'hook.start', data: { hookType: 'agentStop', input: { big: 'x'.repeat(100000) } } })}\n`);
+  assert.deepEqual((await d.sessionProgress()).find((s) => s.id === A).lastType, null, 'a last line longer than the tail read is unknown, never misread');
+  fs.appendFileSync(path.join(home, 'session-state', A, 'events.jsonl'), `${JSON.stringify({ type: 'hook.start', data: { hookType: 'postToolUse' } })}\n`);
+  assert.deepEqual(['hook.start', 'postToolUse'], (({ lastType, hookType }) => [lastType, hookType])((await d.sessionProgress()).find((s) => s.id === A)));
   fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -218,6 +224,16 @@ test('a fake hung app: frozen for two minutes, it is evidence, SIGTERM, SIGKILL 
   await w.done();
 });
 
+test('a queued message the app never delivered is told once, not every run', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  w.deps.staleQueued = () => [{ session: A, id: 'm1', createdAt: '2026-11-12T21:31:55.895Z', text: 'was not me!!!' }];
+  await w.beat();
+  await w.beat(31 * 60000);
+  assert.equal(w.told.length, 1, w.told.join(' | '));
+  assert.match(w.told[0], /^A message you queued was never delivered by the Copilot app: to aaaaaaaa on 2026-11-12, "was not me!!!"\. .*shepherd send/);
+  await w.done();
+});
+
 test('a slow socket and window are not a freeze: the sessions are still writing, so nothing is killed', { skip }, async () => {
   const w = await world({ sessions: sessions(), hung: true, window: 'timeout' });
   for (let i = 0; i < 6; i++) assert.equal((await w.beat(40000)).action, 'ok');
@@ -233,6 +249,32 @@ test('a quiet stretch shorter than ten minutes, or fewer than three working sess
   assert.equal(judgeProgress(mk(2, 30 * 60000), now).stalled, false);
   assert.equal(judgeProgress(mk(5, 3 * 3600000), now).stalled, false, 'sessions stuck "working" for hours were never working');
   assert.equal(judgeProgress([...mk(5, 30 * 60000), { id: 'x', running: false, lastEventAt: now - 1000 }], now).stalled, false, 'any session writing means it is alive');
+});
+
+test('sessions stuck in a hook are a freeze even while others still write (2026-11-19); hooks that wait for a person are not', () => {
+  const now = 1e12;
+  const hooked = (n, ago, hookType = 'postToolUse') => Array.from({ length: n }, (_, i) => ({ id: `h${i}`, running: true, lastEventAt: now - ago, lastType: 'hook.start', hookType }));
+  const writing = [{ id: 'w1', running: true, lastEventAt: now - 20000, lastType: 'tool.execution_start' }, { id: 'w2', running: true, lastEventAt: now - 60000, lastType: 'hook.end' }];
+  const j = judgeProgress([...hooked(21, 6 * 60000), ...writing], now);
+  assert.equal(j.stalled, true);
+  assert.equal(j.hung.length, 21);
+  assert.match(j.why, /21 sessions stuck in a hook/);
+  assert.equal(judgeProgress([...hooked(21, 4 * 60000), ...writing], now).stalled, false, 'a hook under five minutes is only slow');
+  assert.equal(judgeProgress([...hooked(2, 30 * 60000), ...writing], now).stalled, false, 'two stuck sessions are theirs, not the app');
+  assert.equal(judgeProgress([...hooked(5, 30 * 60000, 'permissionRequest'), ...writing], now).stalled, false, 'a permission request waits for a person');
+  assert.equal(judgeProgress([...hooked(5, 30 * 60000).map((s) => ({ ...s, lastType: 'tool.execution_start' })), ...writing], now).stalled, false, 'a long tool call is work');
+});
+
+test('lastEvent reads the type of the last line, and a hook\'s kind', () => {
+  assert.deepEqual(lastEvent('{"type":"a"}\n{"type":"hook.start","data":{"hookType":"agentStop"}}\n'), { lastType: 'hook.start', hookType: 'agentStop' });
+  assert.deepEqual(lastEvent('{"type":"a"}\n{"type":"tool.execution_start","data":{"hookType":"x"}}'), { lastType: 'tool.execution_start', hookType: null });
+  assert.deepEqual(lastEvent('ated tail of a line"}\n'), { lastType: null, hookType: null });
+});
+
+test('a heartbeat that cannot read any history says it is blind', () => {
+  const now = 1e12, rows = Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, running: true, lastEventAt: 0 }));
+  assert.equal(judgeProgress(rows, now).blind, true);
+  assert.equal(judgeProgress([...rows, { id: 'x', running: false, lastEventAt: now }], now).blind, false);
 });
 
 test('replay of 2026-11-15 (every session event, 21:00-23:05 UTC): the 22:27, 22:40 and 22:51 restarts would not have fired; the stop at the reboot would', () => {

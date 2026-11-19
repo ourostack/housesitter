@@ -387,6 +387,20 @@ test('restart: the run log names the sessions that defer, not just how many', { 
   assert.ok(lines.some((l) => /waiting for \d+ session\(s\): 2 deferred \(aaaaaaaa "busy a", cccccccc "busy c"\)/.test(l)), lines.filter((l) => /waiting/.test(l)).join(' | '));
 });
 
+test('restart: a frozen app (no Quit item, every settle message refused) is not waited for and is quit with SIGTERM', { skip }, async () => {
+  const w = await world({ sessions: sessions(), noQuitItem: true, appOpts: { refuse: [A, C] } });
+  w.opts.t = { ...w.opts.t, settle: 60000, settleMax: 60000 };
+  const t0 = Date.now();
+  const lines = [];
+  const r = await restart({ ...w.opts, resume: false }, w.deps, (m) => lines.push(m));
+  await w.done();
+  assert.ok(Date.now() - t0 < 10000, 'it did not sit out the 60 s quiet window for sessions that never got the message');
+  assert.ok(lines.some((l) => /no session took the message: the app is not answering/.test(l)), lines.join(' | '));
+  assert.deepEqual(w.kills[0], [100, 'SIGTERM'], 'the main process is sent SIGTERM first');
+  assert.deepEqual(r.interrupted_at_quit.sort(), [A, C]);
+  assert.ok(lines.some((l) => /quit sent.*sigterm.*its UI is not answering/.test(l)), lines.join(' | '));
+});
+
 test('plan: changes nothing and names what it would do; no Quit item or no hackamore is said plainly', { skip }, async () => {
   const w = await world({ sessions: sessions() });
   const p = await plan(w.opts, w.deps);
@@ -394,7 +408,9 @@ test('plan: changes nothing and names what it would do; no Quit item or no hacka
   assert.equal(w.opens + w.kills.length, 0);
   assert.equal(w.hk.some((x) => x.startsWith('do')), false);
   const n = await world({ sessions: sessions(), noQuitItem: true });
-  assert.match((await plan(n.opts, n.deps)).quit.why, /sees no Quit menu item/);
+  const frozen = (await plan(n.opts, n.deps)).quit;
+  assert.deepEqual([frozen.method, frozen.pid], ['sigterm', 100], 'no Quit item means the UI is not answering: SIGTERM is the way out');
+  assert.match(frozen.fallback, /sees no Quit menu item/);
   assert.equal((await plan({ ...n.opts, sigterm: true }, n.deps)).quit.method, 'sigterm');
   assert.match((await plan(n.opts, { ...n.deps, hackamore: null })).quit.why, /hackamore is not on PATH/);
   await w.done(); await n.done();
