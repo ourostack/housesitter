@@ -2269,6 +2269,10 @@ class SetupMode(unittest.TestCase):
         W.set_setup_mode(["on", "--mac", "laptop"])
         self.assertEqual(W.set_setup_mode(["off"])["was"]["mac"], "laptop")
         self.assertIsNone(W.setup_mode())
+        for bad in ("x", [1], {"mac": "laptop", "until": "soon"}):
+            W.save("setup.json", bad)
+            self.assertIsNone(W.setup_mode(), bad)
+            self.assertFalse(os.path.exists(os.path.join(W.HOME, "setup.json")), "a malformed file is removed, never a crash")
 
     def test_hands_on_any_screen_over_ssh_never_through_the_outbox_and_no_escape_off_a_desktop(self):
         k = FakeKvmd(text="Welcome Continue")
@@ -2319,5 +2323,6 @@ class SetupMode(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *a): return False
         cfg = {"name": "mini", "notify": {"kind": "webhook", "url": "https://example.invalid/hook"}}
-        W.perform_notify(cfg, {"kind": "notify", "why": "hung, and no smart plug or Fingerbot to restart it"}, {"state": "hung"}, {"video": True}, opener=lambda req, timeout=10: (sent.append(req), Resp())[1])
+        W.perform_notify(cfg, {"kind": "notify", "why": "at the FileVault screen for 10+ min. Look: housesitter status <mac>"}, {"state": "hung"}, {"video": True}, opener=lambda req, timeout=10: (sent.append(req), Resp())[1])
         self.assertIn("mini's KVM is setting up laptop", sent[0].data.decode("utf-8"))
+        self.assertIn("housesitter status mini", sent[0].data.decode("utf-8"), "commands name the sitter, not the setup label")

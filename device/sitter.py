@@ -2807,11 +2807,11 @@ def setup_mode(now=None, log=None):
     if not s:
         return None
     now = now if now is not None else int(time.time() * 1000)
-    if now < int(s.get("until") or 0):
+    if isinstance(s, dict) and isinstance(s.get("until"), (int, float)) and now < s["until"]:
         return s
     try:
         os.remove(os.path.join(HOME, "setup.json"))
-        (log or make_logger())("setup mode for %s expired: the normal rules are back" % s.get("mac"))
+        (log or make_logger())("setup mode for %s expired: the normal rules are back" % (s.get("mac") if isinstance(s, dict) else "?"))
     except OSError:
         pass
     return None
@@ -3271,7 +3271,7 @@ def perform_notify(cfg, act, mem, obs, opener=urllib.request.urlopen):
     signs = plain_signs(obs)
     setup = setup_mode()
     if setup:
-        return notify(cfg, "%s's KVM is setting up %s" % (name, setup["mac"]), "Setup mode is on until %s, so the sitter acts on nothing by itself.\nIt sees: %s.\nSigns: %s." % (time.strftime("%H:%M", time.localtime(setup["until"] / 1000)), act["why"].replace("<mac>", setup["mac"]), signs), opener=opener)
+        return notify(cfg, "%s's KVM is setting up %s" % (name, setup["mac"]), "Setup mode is on until %s, so the sitter acts on nothing by itself.\nIt sees: %s.\nSigns: %s." % (time.strftime("%H:%M", time.localtime(setup["until"] / 1000)), act["why"].replace("<mac>", name), signs), opener=opener)
     stuck = {"filevault": "is stuck at FileVault", "hung": "is frozen", "off": "is off", "down": "is not answering", "unknown": "is out of sight"}.get(mem["state"], "needs you (%s)" % mem["state"])
     return notify(cfg, "%s %s" % (name, stuck), "Seen by the housesitter on its KVM.\nStuck because: %s.\nSigns: %s." % (act["why"].replace("<mac>", name), signs), opener=opener)
 
