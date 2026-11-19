@@ -167,6 +167,19 @@ const sessions = () => [
   { id: C, title: 'busy c', mode: 'interactive', events: MID_TURN },
 ];
 
+// 2026-11-18: sessionProgress read a copilotHome the deps never carried, every stat failed into "no events", and a
+// 50-minute freeze of 23 working sessions went unseen. The stubbed worlds above never ran the real reader.
+test('the real sessionProgress finds each session\'s history in the app\'s home', { skip: !haveSqlite() }, async () => {
+  const home = fs.mkdtempSync(path.join(SCRATCH, 'hb-'));
+  makeHome(home, sessions());
+  const d = realHeartbeatDeps({ home: fs.mkdtempSync(path.join(SCRATCH, 'root-')), copilotHome: home });
+  const p = await d.sessionProgress();
+  assert.equal(p.length, 3);
+  assert.ok(p.every((s) => s.lastEventAt > 0), JSON.stringify(p));
+  assert.deepEqual(p.filter((s) => s.running).map((s) => s.id), [A]);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('a healthy app: both probes answer and nothing happens', { skip }, async () => {
   const w = await world({ sessions: sessions() });
   for (let i = 0; i < 3; i++) assert.equal((await w.beat()).action, 'ok');
