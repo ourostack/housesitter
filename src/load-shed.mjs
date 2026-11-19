@@ -30,6 +30,8 @@ export const DEFAULT_PATTERNS = [
   'mutation',
   'brand/tools/derive\\.py',
   '\\bderive\\.py\\b',
+  'brand/tools/[\\w-]+\\.py\\b',
+  'multiprocessing\\.(spawn|forkserver|resource_tracker)\\b',
   'playwright',
   '--headless',
   'headless_shell',
