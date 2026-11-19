@@ -310,36 +310,18 @@ class Glkvm(unittest.TestCase):
         self.assertTrue(os.path.exists(conf + ".orig-housesitter"))
         self.assertEqual(W.enable_api(conf), 0, "idempotent")
 
-    def test_snapshot_flips_to_mjpeg_when_handed_h264(self):
-        class K:
-            posts, n = [], 0
-            def get(self, p, timeout=15):
-                K.n += 1
-                return b"\x00\x00\x00\x01\x41" if K.n == 1 else b"\xff\xd8jpeg"
-            def post(self, p, body=None, timeout=60):
-                K.posts.append(p)
-        orig = W.time.sleep
-        W.time.sleep = lambda s: None
-        try:
-            self.assertEqual(W.snapshot_jpeg(K()), b"\xff\xd8jpeg")
-        finally:
-            W.time.sleep = orig
-        self.assertEqual(K.posts, ["/streamer/set_params?video_format=1"])
-
-    def test_snapshot_http_500_falls_through_to_the_decoded_keyframe(self):
-        class K:
-            posts = []
-            def get(self, p, timeout=15):
-                raise RuntimeError("kvmd GET /streamer/snapshot -> HTTP 500")
-            def post(self, p, body=None, timeout=60):
-                K.posts.append(p)
-        orig = W.time.sleep
-        W.time.sleep = lambda s: None
-        try:
+    def test_handed_h264_or_http_500_it_decodes_a_keyframe_and_never_touches_the_streamer(self):
+        for answer in (b"\x00\x00\x00\x01\x41", RuntimeError("kvmd GET /streamer/snapshot -> HTTP 500")):
+            class K:
+                posts = []
+                def get(self, p, timeout=15):
+                    if isinstance(answer, Exception):
+                        raise answer
+                    return answer
+                def post(self, p, body=None, timeout=60):
+                    K.posts.append(p)
             self.assertEqual(W.snapshot_jpeg(K(), frame=lambda k: b"\xff\xd8frame"), b"\xff\xd8frame")
-        finally:
-            W.time.sleep = orig
-        self.assertEqual(K.posts, ["/streamer/set_params?video_format=1", "/streamer/set_params?video_format=0"])
+            self.assertEqual(K.posts, [], "no set_params: changing the streamer restarts it")
 
     def test_shrink_yuv420_keeps_every_nth_pixel_and_both_chroma_planes(self):
         w, h = 8, 4
@@ -2522,3 +2504,62 @@ class TheKvmCantSeeTheScreen(unittest.TestCase):
         finally:
             W.frame_grid = orig
         self.assertEqual(W.parse_frame_id(r["result"]["frame"])[2], "offline")
+
+
+class SnapshotsNeverRestartTheStreamer(unittest.TestCase):
+    """Every snapshot the sitter takes asks kvmd the same thing and never changes the streamer: a change restarts it, and
+    each start takes video-encoder memory from CMA, which ran out on the Comet (41 starts in 5 minutes, 2026-11-19)."""
+
+    def test_every_snapshot_request_uses_identical_streamer_params(self):
+        W.HOME = scratch()
+        key = W.device_key
+        W.device_key = lambda paths=None: (b"t" * 32, "given")
+
+        class K(FakeKvmd):
+            def get(self, path, timeout=15):
+                self.calls.append(path)
+                return b"\xff\xd8snapshot\xff\xd9"
+        k = K()
+        try:
+            for width in (320, 640, 1280, 1920):
+                W.handle({"op": "screenshot", "args": {"width": width}}, {"name": "mini"}, k, None, lambda m: None, 10 ** 12, {})
+            W.screen_grid(k)
+            W.screen_grid(k, width=640)
+            W.snapshot_jpeg(k)
+        finally:
+            W.device_key = key
+        snaps = [c for c in k.calls if c.startswith("/streamer/snapshot")]
+        self.assertEqual(len(snaps), 7)
+        self.assertEqual(set(snaps), {"/streamer/snapshot?allow_offline=1"})
+        self.assertFalse([p for p, _ in k.posts if "set_params" in p], k.posts)
+
+    def test_resizing_is_ours_without_any_ffmpeg_filter(self):
+        sof = lambda w, h: b"\xff\xd8" + bytes([0xFF, 0xC0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3]) + bytes(9) + b"\xff\xd9"
+        calls = []
+        run = lambda argv, **k: (calls.append(argv), types.SimpleNamespace(stdout=b"\xff\xd8small\xff\xd9"))[1]
+        self.assertEqual(W.shrink_jpeg(sof(2560, 1440), 1280, run=run), b"\xff\xd8small\xff\xd9")
+        self.assertEqual(calls[0][calls[0].index("-lowres") + 1], "1")
+        W.shrink_jpeg(sof(2560, 1440), 320, run=run)
+        self.assertEqual(calls[1][calls[1].index("-lowres") + 1], "3")
+        for argv in calls:
+            self.assertFalse([a for a in argv if a in ("-vf", "-lavfi", "-filter_complex", "-pix_fmt", "-s") or a.startswith("-filter")], argv)
+        self.assertEqual(W.shrink_jpeg(sof(1280, 720), 1280, run=run), sof(1280, 720), "already fits: as it is")
+        self.assertEqual(len(calls), 2)
+        broken = lambda argv, **k: types.SimpleNamespace(stdout=b"")
+        self.assertEqual(W.shrink_jpeg(sof(2560, 1440), 640, run=broken), sof(2560, 1440), "a failed shrink keeps the picture")
+
+    def test_streamer_restarts_are_counted_at_each_look(self):
+        st = {}
+        self.assertIsNone(W.note_streamer(st, 0, None), "no /proc: it can't tell")
+        self.assertEqual(W.note_streamer(st, 0, [100]), 0)
+        self.assertEqual(W.note_streamer(st, 60000, [100]), 0)
+        self.assertEqual(W.note_streamer(st, 120000, [205]), 1)
+        self.assertEqual(W.note_streamer(st, 180000, []), 1, "stopped is not a start")
+        self.assertEqual(W.note_streamer(st, 240000, [311]), 2)
+        self.assertEqual(W.note_streamer(st, 120000 + 3600000, [311]), 1, "an hour later the first has aged out")
+        proc = scratch()
+        for pid, comm in ((7, "ustreamer"), (8, "kvmd"), (9, "ustreamer")):
+            os.makedirs(os.path.join(proc, str(pid)))
+            with open(os.path.join(proc, str(pid), "comm"), "w") as f:
+                f.write(comm + "\n")
+        self.assertEqual(W.ustreamer_pids(proc), [7, 9])

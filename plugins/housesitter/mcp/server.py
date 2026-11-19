@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.6.41"
+VERSION = "0.6.42"
 PROTOCOL = "2025-06-18"
 LONG_OPS = ("type", "type_secret", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
