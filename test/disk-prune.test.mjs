@@ -2,7 +2,7 @@
 // worktree that a session uses, a process has open, or that changed in the last day is never removed, whatever its name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CACHES, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
+import { CACHES, DP, floorOf, marginOf, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
 
 const DAY = 24 * 3600000, GIB = 1073741824;
 const NOW = Date.parse('2026-11-16T12:00:00Z');
@@ -356,7 +356,7 @@ test('real regenIn: dependency folders are listed once (nested ones folded in), 
 // and WebKit again, and the next pass deleted them again. A cache that comes back is in use, and stays.
 test('a cache removed on one pass and back on the next is kept, and that is said once', async () => {
   const pw = '/h/Library/Caches/ms-playwright';
-  const f = fake({ caches: [pw] });
+  const f = fake({ caches: [pw], freeGib: 30 });
   await pass({}, f.d);
   assert.deepEqual(f.log.cache, [pw]);
   f.d.now = () => NOW + 2 * 3600000;
@@ -384,17 +384,43 @@ test('a cache a running process has open is kept', async () => {
 
 test('a cache unused through the window is still removed when the floor needs it; a dry run records nothing', async () => {
   const pw = '/h/Library/Caches/ms-playwright';
-  const f = fake({ caches: [pw] });
+  const f = fake({ caches: [pw], freeGib: 30 });
   f.log.state = { caches: { [pw]: { removedAt: NOW - 8 * DAY } } };
   await pass({}, f.d);
   assert.deepEqual(f.log.cache, [pw]);
   assert.equal(f.log.state.caches[pw].removedAt, NOW);
-  const g = fake({ caches: [pw] });
+  const g = fake({ caches: [pw], freeGib: 30 });
   await pass({ dry_run: true }, g.d);
   assert.equal(g.log.state.caches, undefined);
   assert.equal(whyKeepCache({ open: false, removedAt: NOW - 8 * DAY }, NOW), null);
   assert.match(whyKeepCache({ open: false, removedAt: NOW - 6 * DAY }, NOW), /came back/);
   assert.match(whyKeepCache({ open: true }, NOW), /open/);
+});
+
+// 2026-11-19 13:40Z: a pass wiped ms-playwright for the first time, so nothing yet said it came back.
+test('Playwright browsers survive a pass that is not urgent, even the first one', async () => {
+  const pw = '/h/Library/Caches/ms-playwright', gh = '/h/.cache/gh';
+  const f = fake({ caches: [pw, gh], freeGib: 175 });
+  const said = [];
+  await pass({ force: true }, f.d, (l) => said.push(l));
+  assert.deepEqual(f.log.cache, [gh]);
+  assert.match(said.join('\n'), /kept cache .*ms-playwright.*costs every lane/);
+});
+
+test('the floor is a share of the volume, so a 926 GiB disk with 190 GiB free is left alone', async () => {
+  const size = 926 * GIB;
+  assert.equal(floorOf({ ...DP }, size), Math.round(size * 0.2));
+  assert.equal(floorOf({ ...DP }, undefined), 500 * GIB);
+  assert.equal(floorOf({ ...DP, floor: 7 }, size), 7);
+  assert.equal(marginOf({ ...DP }, size), Math.round(size * 0.05));
+  const f = fake({ caches: ['/h/.cache/gh'], freeGib: 190 });
+  const u = f.d.usage; f.d.usage = () => ({ ...u(), size });
+  assert.equal((await pass({}, f.d)).action, 'ok');
+  assert.deepEqual(f.log.cache, []);
+  const g = fake({ caches: ['/h/.cache/gh'], freeGib: 150 });
+  const v = g.d.usage; g.d.usage = () => ({ ...v(), size });
+  await pass({}, g.d);
+  assert.deepEqual(g.log.cache, ['/h/.cache/gh']);
 });
 
 test('a pass that ends still under the floor rests an hour, unless free space is critically low', async () => {
