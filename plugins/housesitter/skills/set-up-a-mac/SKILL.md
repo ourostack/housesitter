@@ -59,7 +59,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 
 Stuck means one of three things: the screen hasn't changed in the step's wait time, the same thing failed twice, or the sitter refused my hands.
 
-- **Ouroboros**, through `peer_send` with `now: true`, for anything a signed-in Mac can do: read a code on the reference Mac, approve a device code in its signed-in browser, run one of the config's commands.
+- **Ouroboros**, through `peer_send` with `now: true`, for anything a signed-in Mac can do: read a code on the reference Mac, approve a device code this Mac can't finish itself (step 4), run one of the config's commands.
 - **The owner, at once, through `sitter_notify`**, for what only a person can do now: a passkey or QR code, an MFA number, Okta Verify, a click on the Mac itself, a screen the sitter won't let me touch. It goes straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` when the prompt is a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for the record (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
 - **Once.** One message per blocker: which Mac, what's on its screen, exactly what to do (with every value they'll need), and why. I note it and don't repeat it unless the screen changes. The same ask never goes to both of them: the copy Ouroboros gets of an owner ping is for its record only, and asks nothing of it.
 - **Then I go on.** A step left to the owner doesn't stop steps that don't need it. While I wait, I look every 10-15 s (Poll while anything runs).
@@ -167,13 +167,25 @@ I note `password: mac` the moment the change succeeds. If it fails halfway, I no
 | --- | --- |
 | `Password:` (sudo) | Notes say `mac`: fresh look, then `sitter_type_secret` `mac`, prompt "sudo Password: in Terminal running the setup command", `enter: true`, `seen`. Otherwise (`initial`, `unknown`, or no record of the change): `sitter_type` `initial_password`, then Return. |
 | `Sorry, try again.` | As in the rule on rejected passwords. If I stop, sudo's prompt times out and the kit stops; once the owner has fixed it, I run `setup_command` again. |
-| `! First copy your one-time code: XXXX-XXXX`, then `Open this URL to continue in your web browser: https://<host>/login/device` (gh) | I read the code, the host and the account (from the kit's line just above) off the screen. I press nothing. I `peer_send` Ouroboros (`now: true`): "Approve GitHub device code XXXX-XXXX for <account> at https://<host>/login/device, in your signed-in browser." If Ouroboros says Okta Verify, FastPass or a passkey needs a person (some GitHub accounts sit behind an Okta SSO that asks for it), I tell the owner once. |
-| `To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code …` (az) | The same: Ouroboros approves. If Conditional Access refuses ("device must be managed", AADSTS53000), the kit marks the step "needs a person"; I tell the owner once and let the kit go on. |
+| `! First copy your one-time code: XXXX-XXXX`, then `Open this URL to continue in your web browser: https://<host>/login/device` (gh) | I read the code, the host and the account (from the kit's line just above) off the screen, and start on it at once (Device codes, below). |
+| `To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code …` (az) | The same: Device codes, below. If Conditional Access still refuses ("device must be managed", AADSTS53000), the kit marks the step "needs a person"; I tell the owner once through `sitter_notify` and let the kit go on. |
 | A sign-in window on this Mac (and Teams, Outlook or OneDrive on first run) | Microsoft "Pick an account": the work account. A Microsoft "Enter password" page: the passkey route, as in the rule on Microsoft sign-ins. Any other site's password page: the owner's. MFA: as in step 3. |
 | A `(Y/n)` or `[y/N]` question | What `kit_readme` says. If it says nothing, Return for the default, and I note it. |
 | A macOS prompt raised by the kit's own tools (node, Terminal, ouro: "would like to access", "App Background Activity") | Allow. Anything asking for a password, admin rights or a security override, or coming from another app, I leave and report. |
 | `STOP:`, or the command ends with an error | I note the reason and tell the owner once. When it's fixed, I run it again; the kit is safe to rerun. |
 | Nothing new for 20 minutes | I tell Ouroboros what's on screen and ask what it reads as. If neither of us can tell, I tell the owner. |
+
+**Device codes.** A code lives about 15 minutes, so none is ever left waiting.
+
+- **Sign-ins that go through the owner's Microsoft account are mine to finish on this Mac.** That covers a GitHub EMU account on github.com (its login ends in a suffix like `_microsoft`), a GitHub Enterprise host (`*.ghe.com`, like microsoft.ghe.com) and `az login`.
+  1. In a second work window (cmd+n), `sitter_type` `open <the device URL>` and Return. That opens it in this Mac's own browser.
+  2. I type the code and press Continue.
+  3. I go on through Microsoft's sign-in, where the enrolled Mac is already signed in: I pick the work account, and any password page takes the passkey route.
+  4. Then Authorize (or Continue at "Are you trying to sign in to …?").
+  5. The kit's window says it's done; I close the browser tab and the second window.
+  Only a passkey, QR code or number match goes to the owner, straight through `sitter_notify` with a screenshot, never through a peer relay.
+- **Any other account** (a personal GitHub account): Ouroboros approves it in its signed-in browser (`peer_send`, `now: true`). If it reports Okta Verify, FastPass or a passkey, that goes to the owner through `sitter_notify`.
+- **Expired** (gh: "expired", `expired_token`; az: AADSTS70020 or "code expired"; the device page says the code is invalid): I rerun that step at once with `rerun_step` for a fresh code, and start on the new one.
 
 ## 5. The kit's done check
 
