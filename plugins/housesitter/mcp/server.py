@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.6.44"
+VERSION = "0.6.46"
 PROTOCOL = "2025-06-18"
 LONG_OPS = ("type", "type_secret", "notify", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
@@ -211,8 +211,9 @@ TOOLS = [
     ("sitter_click", "Click on the Mac's screen. x, y are in the pixels of a picture w by h (default 1920x1080: pass the screenshot's own size). button left, right or middle; double for a double click.",
      schema({"x": NUM, "y": NUM, "w": NUM, "h": NUM, "button": {"type": "string", "enum": ["left", "right", "middle"]}, "double": {"type": "boolean"}}, ["x", "y"]), 40000, False),
     ("sitter_type", "Type text on the Mac through the KVM's keyboard (up to 2000 characters). Never a password: use sitter_type_secret.", schema({"text": {"type": "string"}}, ["text"]), 130000, False),
-    ("sitter_type_secret", "Have the sitter type its own sealed copy of a named secret (like setup-password, apple-account or mac) into the Mac now, then Return if enter is true. Use it whenever a password prompt for a secret the sitter holds (sitter_status lists their names under secrets) is on the screen and focused; you never see the secret. prompt is one line saying which prompt you see and where; it goes in the sitter's audit log. seen is the frame id (result.frame) of the sitter_screenshot or sitter_look in which you saw the password field focused (a caret in it, a highlighted field, the prompt's words): the sitter types only if a fresh picture still matches it and it is under 30 s old. 20 an hour; never the KVM's own credentials; the Mac's password at FileVault or a lock screen is sitter_unlock's.",
-     schema({"name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"}, "prompt": {"type": "string", "maxLength": 200}, "enter": {"type": "boolean"}, "seen": {"type": "string"}}, ["name", "prompt", "seen"]), 130000, False),
+    ("sitter_type_secret", "Have the sitter type its own sealed copy of a named secret (like setup-password, apple-account or mac) into the Mac now, then Return if enter is true. Use it whenever a password prompt for a secret the sitter holds (sitter_status lists their names under secrets) is on the screen and focused; you never see the secret. prompt is one line saying which prompt you see and where; it goes in the sitter's audit log. seen is the frame id (result.frame) of the sitter_screenshot or sitter_look in which you saw the password field focused (a caret in it, a highlighted field, the prompt's words): the sitter types only if a fresh picture still matches it and it is under 30 s old. region (optional): a box around the prompt in that screenshot's pixels (left, top, right, bottom, and width, height: the screenshot's size), at least about an eighth of the screen's width by a quarter of its height; then only the picture inside it must match, so an animated wallpaper around a lock-screen dialog doesn't stop it. 20 an hour; never the KVM's own credentials; the Mac's password at FileVault or a lock screen is sitter_unlock's.",
+     schema({"name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"}, "prompt": {"type": "string", "maxLength": 200}, "enter": {"type": "boolean"}, "seen": {"type": "string"},
+             "region": {"type": "object", "properties": {k: NUM for k in ("left", "top", "right", "bottom", "width", "height")}, "required": ["left", "top", "right", "bottom", "width", "height"]}}, ["name", "prompt", "seen"]), 130000, False),
     ("sitter_setup_mode", "Setup mode, for setting up another Mac on the KVM's cables: on (with mac, a label for the Mac being set up, and hours, default 6, at most 24) or off. While on, the sitter acts on nothing by itself (no unlock, power or hang action, no typing at any taught lesson), refuses unlock and power requests, and my clicks, keys, typing and sitter_type_secret work on any screen (Setup Assistant, a login window, FileVault); Escape still only on a desktop. It turns itself off at its expiry; sitter_status shows it.",
      schema({"on": {"type": "boolean"}, "mac": {"type": "string"}, "hours": NUM}, ["on"]), 40000, False),
     ("sitter_notify", "Tell the owner now, straight to their phone through the sitter's own notify (ntfy push, its email, or a webhook), without the peer link: for what only a person can do right now (a passkey or QR code, an MFA number to match, Okta Verify, a click on the Mac itself). text is one line, at most 300 characters: the ask, and the number to match if there is one. screenshot true attaches a small picture of the screen as the KVM sees it (use it for a QR code or a number). Never a password or any secret: the sitter refuses text that holds one it keeps. 12 an hour.",
@@ -275,7 +276,7 @@ def call(name, a):
     if name == "sitter_type":
         return sitter("type", pick(a, ["text"])), []
     if name == "sitter_type_secret":
-        return sitter("type_secret", dict(pick(a, ["name", "prompt", "enter", "seen"]), by="housesitter")), []
+        return sitter("type_secret", dict(pick(a, ["name", "prompt", "enter", "seen", "region"]), by="housesitter")), []
     if name == "sitter_setup_mode":
         return sitter_setup_mode(a), []
     if name == "sitter_notify":
