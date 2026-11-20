@@ -47,6 +47,10 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` at the hand-over (step 7), before the sitter's armed try. If `sitter_status` shows it off, or ending before I'll be done, while I'm still setting up, I turn it on again. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
 - **Budgets.** `sitter_type_secret` allows 20 an hour. Peer messages: 10 an hour each way, so codes go with `now: true` and the rest are batched.
 - **Clear what's in the way (m8, m11).** Before each step I close notices, first-run windows and banners over the app I'm about to use. Once the step is done, I close every window it opened.
+- **Only two sign-ins are required: Company Portal enrollment and Platform SSO registration.** Sign-in windows that apps pushed by Intune open by themselves (Global Secure Access, Defender, Alertus and the like) never block me. I minimise them (cmd+m), note them for the report, and go on with the next step. I never answer their QR codes or ping the owner about them.
+- **A lock during a wait is mine to undo.** If the screen locks or sleeps mid-setup, I unlock it myself in setup mode, as in step 2: `initial_password` before the enrollment password change, `mac` after.
+- **Never blind.** If `sitter_screenshot` or `sitter_look` gets no picture (HTTP 500, no live video, no frame) for more than 30 s, I don't wait. I restart kvmd, which brings its streamer back: `systemctl restart kvmd`, or `/etc/init.d/S*kvmd restart` where there's no systemd. If there's still no picture a minute later, I reboot the KVM (`reboot`). Setup mode survives that, and on waking I start again at Where am I.
+- **Keep the KVM light.** Before a long setup, I stop my own processes that aren't needed for it: the memory sampler (`/etc/init.d/S99housesitter-samples stop`), status publishers, and any shell or tool of mine left running. Never the sitter, kvmd, my watcher or my own turn. `kvm_health` before and after. I start the sampler again at the hand-over.
 - **Leave the reference Mac alone.** I ask Ouroboros only to read, to approve a code, or to run the config's own commands.
 
 ## When I'm stuck
@@ -76,13 +80,13 @@ The owner reads a still screen as stuck. So from the first desktop until the han
 1. **Open it once**, as soon as my input works on a desktop. Terminal (cmd+space, "Terminal", Return), then cmd+n for a fresh window, then `sitter_type` this one line (with `kit_log` from the config) and Return:
 
    ```sh
-   printf '\e]0;Setup progress\a\e[3;0;30t\e[8;16;90t'; touch ~/.setup-status; while :; do clear; date '+%H:%M:%S  Setup progress'; tail -n 8 ~/.setup-status; echo; tail -n 6 <kit_log> 2>/dev/null; if read -t 2 l; then echo "[$(date +%H:%M)] $l" >> ~/.setup-status; fi; done
+   caffeinate -dimsu & printf '\e]0;Setup progress\a\e[3;0;30t\e[8;16;90t'; touch ~/.setup-status; while :; do clear; date '+%H:%M:%S  Setup progress'; tail -n 8 ~/.setup-status; echo; tail -n 6 <kit_log> 2>/dev/null; if read -t 2 l; then echo "[$(date +%H:%M)] $l" >> ~/.setup-status; fi; done
    ```
 
-   It titles the window "Setup progress" and moves it to the top-left corner. Every 2 s it redraws the clock, the last lines of `~/.setup-status`, and the last lines of the kit's log. A line typed into it, followed by Return, is added to `~/.setup-status` with the time.
+   It first starts `caffeinate -dimsu` in the background, so the Mac doesn't lock, sleep or dim during setup. Then it titles the window "Setup progress" and moves it to the top-left corner. Every 2 s it redraws the clock, the last lines of `~/.setup-status`, and the last lines of the kit's log. A line typed into it, followed by Return, is added to `~/.setup-status` with the time.
 2. **A line at every step start and every wait.** I click the progress window, `sitter_type` "<doing now>, <waiting for>" and Return, then click back into the window I was working in. Example: "Enrollment: waiting for the owner's MFA tap, number 47". Never a password or a code.
 3. **One progress window, and never my commands in it.** If a "Setup progress" window is already on screen (after a restart of me), I use it. My commands go only into a work window opened with cmd+n. Before typing a command or a password, a fresh look confirms the front window isn't "Setup progress".
-4. **Closed at the hand-over** (step 7), as I close everything I open. I click it, press ctrl+c, `sitter_type` `rm ~/.setup-status` and Return, then cmd+w.
+4. **Closed at the hand-over** (step 7), as I close everything I open. I click it, press ctrl+c, `sitter_type` `kill %1; rm ~/.setup-status` and Return (that stops `caffeinate`), then cmd+w.
 
 ## Where am I?
 
@@ -195,7 +199,7 @@ This needs step 4's kit, so that this Mac has Housesitter's command line and the
 
 First, **check that mirroring stuck**, so any later recovery (FileVault, a login window) shows on the KVM's picture. In System Settings > Displays, GLKVM must read "Mirror for Built-in Display". If it doesn't, I tell the owner once, as in Moving the cables, and go on.
 
-Then I close the progress window (Visible progress, item 4).
+Then I close the progress window, which stops `caffeinate` (Visible progress, item 4). I start the KVM's memory sampler again (`/etc/init.d/S99housesitter-samples start`).
 
 Then setup mode off (`sitter_setup_mode` with `on: false`): from here the sitter keeps this Mac alive, and its armed try below types only with setup mode off.
 
