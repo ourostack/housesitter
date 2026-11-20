@@ -28,7 +28,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 
 **This skill ends with the Mac's password set to `mac`.** With `enroll`, step 3's password change sets it. Without `enroll`, nothing does, so step 7 is the owner's.
 
-**My notes:** `setup-a-mac-notes.txt` in the same folder, kept with my own file tools. One line, with its time, per finished step, per message I sent, per step left to the owner, and which password the Mac has now (`initial`, `mac` or `unknown`). Plus the time the cables moved. I reread it on every wake. What the screen shows beats what the notes say.
+**My notes:** `setup-a-mac-notes.txt` in the same folder, kept with my own file tools. One line, with its time, per finished step, per message I sent, per step left to the owner, and which password the Mac has now (`initial`, `mac` or `unknown`; see the rule below). Plus the time the cables moved. I reread it on every wake. What the screen shows beats what the notes say.
 
 ## Rules
 
@@ -37,7 +37,8 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **Look before I type or press a key.** I take a fresh `sitter_screenshot` (1280 wide), open its saved picture (`image.path`), and confirm three things: the prompt's words are the ones I expect, the field I mean is focused (a blinking caret or a blue focus ring; in Terminal, the cursor right after the prompt on the last line), and nothing sits on top of it. The KVM can't read keyboard focus; only the picture tells me.
 - **`sitter_type_secret` takes `seen`.** That's the frame id from the `sitter_screenshot` or `sitter_look` I just judged. The sitter refuses if that frame is over 30 s old or the screen no longer matches it. If it refuses, I look again; I never retry blind.
 - **Never an empty Return at a `Password:` prompt, and never a key a prompt didn't ask for.** An empty Return at sudo counts as a failed try (setup lesson m2).
-- **A rejected password: I stop at once.** The only exception is when my notes say `unknown`: then I try the other one, once. sudo gives three tries, and failures can lock the account.
+- **Which password the Mac has.** Until enrollment's password change has succeeded, the Mac's login password is `initial_password`, whatever screen I start on (Setup Assistant, a login window, a desktop someone else reached). I type it with `sitter_type`. It's `mac` only once my notes record that change succeeding (step 3, item 7). No notes, or notes that don't record the change, mean `initial`. Notes say `unknown` only after a change that failed halfway; then I try `initial_password` first.
+- **A rejected password.** If `initial_password` is rejected, I try `mac` once (with `sitter_type_secret`), and if that works, I note `password: mac`. If `mac` is rejected after my notes say `mac`, or both have been rejected, I stop at once and tell the owner. sudo gives three tries, and failures can lock the account.
 - **One password prompt at a time (m7).** Before I open Terminal or start anything that asks for a password, I check whether a prompt is already waiting, and answer that one.
 - **Never press Escape at a login window.** It switches to the list of users, where no field has focus.
 - **Never use the clipboard.** No cmd+c or cmd+v. I type with `sitter_type`.
@@ -104,8 +105,8 @@ With my hands working, I answer each pane by its heading, one at a time, looking
 
 In setup mode I type here myself, after a fresh look shows the password field focused (if the list of users shows instead, I click the owner's tile and look again):
 
-- **Notes say `initial`:** `sitter_type` `initial_password`, then `sitter_key` "return".
-- **Notes say `mac` or `unknown`:** `sitter_type_secret` `mac`, prompt "<login/FileVault> password field on <mac>", `enter: true`, `seen`.
+- **Notes say `initial`, `unknown`, or don't record the change:** `sitter_type` `initial_password`, then `sitter_key` "return".
+- **Notes say `mac`:** `sitter_type_secret` `mac`, prompt "<login/FileVault> password field on <mac>", `enter: true`, `seen`.
 - **Outside setup mode, notes say `initial`:** the sitter refuses `sitter_type` at a password screen. Stuck. I tell the owner once: "<mac> is at its <login/FileVault> screen. Its password is still the setup password, `<initial_password>`, and the sitter won't type it there. Please log in once."
 - **Outside setup mode, notes say `mac`:** `sitter_unlock`. If it refuses because this screen hasn't been taught, or the password is on hold: at FileVault I do step 7's items 1 and 3 now, if `operator` is set and the sitter saw this boot less than 15 minutes ago (`learn-prompt --filevault` is refused after that). Otherwise, or at a login or lock screen, I'm stuck.
 - I never press Escape here, and I never wake the screen with keys; the sitter does that itself.
@@ -141,7 +142,7 @@ I note `password: mac` the moment the change succeeds. If it fails halfway, I no
 
 | The output shows | I do |
 | --- | --- |
-| `Password:` (sudo) | Notes say `mac` or `unknown`: fresh look, then `sitter_type_secret` `mac`, prompt "sudo Password: in Terminal running the setup command", `enter: true`, `seen`. Notes say `initial`: `sitter_type` `initial_password`, then Return. |
+| `Password:` (sudo) | Notes say `mac`: fresh look, then `sitter_type_secret` `mac`, prompt "sudo Password: in Terminal running the setup command", `enter: true`, `seen`. Otherwise (`initial`, `unknown`, or no record of the change): `sitter_type` `initial_password`, then Return. |
 | `Sorry, try again.` | As in the rule on rejected passwords. If I stop, sudo's prompt times out and the kit stops; once the owner has fixed it, I run `setup_command` again. |
 | `! First copy your one-time code: XXXX-XXXX`, then `Open this URL to continue in your web browser: https://<host>/login/device` (gh) | I read the code, the host and the account (from the kit's line just above) off the screen. I press nothing. I `peer_send` Ouroboros (`now: true`): "Approve GitHub device code XXXX-XXXX for <account> at https://<host>/login/device, in your signed-in browser." If Ouroboros says Okta Verify, FastPass or a passkey needs a person (some GitHub accounts sit behind an Okta SSO that asks for it), I tell the owner once. |
 | `To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code …` (az) | The same: Ouroboros approves. If Conditional Access refuses ("device must be managed", AADSTS53000), the kit marks the step "needs a person"; I tell the owner once and let the kit go on. |
