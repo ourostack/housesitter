@@ -32,10 +32,8 @@
     "Microsoft Outlook.app"
   ],
   "dock_step": "prefs",
-  "apple_account": {
-    "email": "owner@icloud.com",
-    "send_from_reference": "./mac secret <mac> send --keychain housesitter/<reference_mac>-apple-account=housesitter/<mac>-apple-account",
-    "fill_command": "housesitter apple-account <mac> --now"
-  },
+  "finish_brief": "~/<desk>/<kit>/FINISH.md",
+  "copilot_account": "<github-login>",
+  "copilot_install_command": "brew install --cask github-copilot-app",
   "operator": true
 }
