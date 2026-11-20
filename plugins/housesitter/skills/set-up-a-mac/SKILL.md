@@ -5,7 +5,7 @@ description: Use when the Mac on my cables is wiped, new or part-way set up (Set
 
 # Set up a Mac
 
-I take a wiped Mac from whatever screen it's on to the owner's reference setup, then hand it to my normal keep-alive duties. The owner does only what a person must: MFA taps on their phone, an Okta Verify or passkey prompt, a screen the sitter won't let me touch, moving my cables.
+I take a wiped Mac from whatever screen it's on to the owner's reference setup, then hand it to my normal keep-alive duties. The owner does only what a person must: MFA taps on their phone, an Okta Verify or passkey prompt, a screen the sitter won't let me touch, moving my cables. Apart from two up-front asks, I never block on them: what needs them waits for one sitting at the end (The owner's sitting).
 
 Every step is check-then-act: I look, decide whether the step is already done, act only if it isn't, and look again to confirm. A rerun, or a restart of the Mac, the KVM or me in the middle, is safe.
 
@@ -61,9 +61,10 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 Stuck means one of three things: the screen hasn't changed in the step's wait time, the same thing failed twice, or the sitter refused my hands.
 
 - **Ouroboros**, through `peer_send` with `now: true`, for anything a signed-in Mac can do: read a code on the reference Mac, approve a device code this Mac can't finish itself (step 4), run one of the config's commands.
-- **The owner, at once, through `sitter_notify`**, for what only a person can do now: a passkey or QR code, an MFA number, Okta Verify, a click on the Mac itself, a screen the sitter won't let me touch. It goes straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` when the prompt is a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for the record (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
-- **Once.** One message per blocker: which Mac, what's on its screen, exactly what to do (with every value they'll need), and why. I note it and don't repeat it unless the screen changes. The same ask never goes to both of them: the copy Ouroboros gets of an owner ping is for its record only, and asks nothing of it.
-- **Then I go on.** A step left to the owner doesn't stop steps that don't need it. While I wait, I look every 10-15 s (Poll while anything runs).
+- **The owner: deferred by default** (the owner: "anything that needs me, note and load together at the end of the process"). When a step needs a person (a passkey or QR code, an MFA number, Okta Verify, an Apple code Ouroboros can't read, a physical click, a screen the sitter won't let me touch), I don't wait and I don't ping. I mark it deferred: a line "DEFERRED: <step>: <what the owner does>" in the progress window (so in `~/.setup-status`) and in my notes. Then I go on with every step that doesn't depend on it. Wherever this skill says to tell or ping the owner, it means this, except for the two up-front asks below.
+- **Only two asks are up-front, because nothing proceeds without them:** the cable move's Allow and Mirror (Moving the cables), and enrollment's first sign-in (step 3, items 2 and 3: the passkey, QR code or MFA number). For those two, I go to the owner at once through `sitter_notify`, straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` for a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for its record only (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
+- **Once.** Each up-front ask and each deferred item goes out once: which Mac, what's on its screen, exactly what to do (with every value they'll need), and why. The same ask never goes to both the owner and Ouroboros.
+- **Then I go on.** A step left to the owner doesn't stop steps that don't need it. While anything runs, I look every 10-15 s (Poll while anything runs).
 
 ## Moving the cables
 
@@ -225,7 +226,15 @@ Teaching needs `operator: true`. Without it, I ask the owner to run `housesitter
 2. I restart the Mac: Apple menu › Restart…, then Restart.
 3. If the KVM's picture stays dark for 2 minutes after the boot while the Mac is on, FileVault is drawing only on the built-in screen. I tell the owner once: "Close <mac>'s lid with power connected, so the KVM's display is its only one." When `sitter_look` shows the FileVault password field, within 15 minutes of the boot, I run `<sitter> learn-prompt --filevault taught by Housesitter during setup, field seen on the KVM`.
 4. The sitter types its one armed try by itself. If the desktop follows, the password is verified. If not, it goes back to unverified, for the reference Mac too, and I tell the owner once.
-5. **I report** to the owner and Ouroboros: what's set up, what's still the owner's, how many times I needed them, and the time from the cable move to here. From now on, my usual skill applies.
+5. **I report** to the owner and Ouroboros: what's set up, what's deferred for the owner, how many times I needed them, and the time from the cable move to here. If anything is deferred, step 8 follows. Otherwise, from now on my usual skill applies.
+
+## 8. The owner's sitting
+
+**Done when:** no deferred item is left in my notes.
+
+1. **One list, once.** When every step I can do without the owner is done, I send one `sitter_notify` with the deferred items in the order they'll come up. Each says what the owner does ("Okta Verify: approve GitHub on your phone", "passkey for az login"). The full list also goes in the progress window, if it's still open, and to Ouroboros for its record.
+2. **When the owner says they're ready** (on any channel I hear), I put the prompts up one after another, so they're all done in one sitting. For each one: rerun its step (with `rerun_step` for a fresh device code), bring its window to the front, tell them in one line what's on screen, and look every 10-15 s until it's done. Then I note it done and move to the next.
+3. Anything still open after the sitting goes in my report as the owner's, with what it needs.
 
 ## Contribute back
 
