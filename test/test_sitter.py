@@ -528,6 +528,112 @@ class NotifyEmail(unittest.TestCase):
         self.assertIn("ntfy", W.SECRET_NAMES)
 
 
+class OwnerPing(unittest.TestCase):
+    """notify: an agent tells the owner now, straight through the sitter's own notify target (no peer link), one line,
+    optionally with a small picture; never through the outbox, never with a secret in it, 12 an hour."""
+    MAC = "Synthetic-Mac-Pass_123"
+    JPEG = b"\xff\xd8\xff\xe0fake-jpeg-frame\xff\xd9"
+
+    def setUp(self):
+        W.HOME = scratch()
+        self.key = W.device_key
+        W.device_key = lambda paths=None: (b"t" * 32, "given")
+        W.store_secret("mac", self.MAC)
+        self.cfg = {"name": "laptop", "notify": {"kind": "ntfy", "url": "https://ntfy.sh/t"}}
+        self.reqs, self.logs = [], []
+        jpeg = self.JPEG
+
+        class K(FakeKvmd):
+            def get(s, path, timeout=15):
+                s.calls.append(path)
+                return jpeg if path.startswith("/streamer/snapshot") else b'{"ok":true}'
+        self.kvmd = K()
+
+        class R:
+            status = 200
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+        self.op = lambda req, timeout=10: self.reqs.append(req) or R()  # noqa: E731
+
+    def tearDown(self):
+        W.device_key = self.key
+
+    def ping(self, args, via="ssh", now=10 ** 12, st=None, cfg=None):
+        st = st if st is not None else {"ledger": []}
+        return W.ping(dict(args, by="housesitter"), cfg or self.cfg, self.kvmd, st, now, via, self.logs.append, opener=self.op), st
+
+    def test_it_posts_one_line_to_the_owners_phone_and_records_it_as_an_agents_act(self):
+        rep, st = self.ping({"text": "On your phone: approve the Microsoft sign-in for laptop, number 47"})
+        self.assertTrue(rep["ok"], rep)
+        self.assertEqual(rep["result"], {"sent": "posted 200", "picture": False})
+        self.assertEqual(self.reqs[0].data, b"On your phone: approve the Microsoft sign-in for laptop, number 47")
+        self.assertEqual(self.reqs[0].headers["Title"], b"laptop: needs you")
+        e = st["ledger"][-1]
+        self.assertEqual((e["kind"], e["by"], e["result"]), ("ping", "ssh:housesitter", "posted 200"))
+        self.assertFalse(any("snapshot" in c for c in self.kvmd.calls), "no picture unless asked")
+
+    def test_a_picture_rides_as_ntfys_attachment(self):
+        rep, _ = self.ping({"text": "Scan this QR code with your phone to sign in", "screenshot": True})
+        self.assertTrue(rep["ok"], rep)
+        self.assertTrue(rep["result"]["picture"])
+        req = self.reqs[0]
+        self.assertEqual((req.get_method(), req.data), ("PUT", self.JPEG))
+        self.assertEqual(req.headers["Filename"], "screen.jpg")
+        self.assertEqual(req.headers["Message"], b"Scan this QR code with your phone to sign in")
+        W.notify({"notify": {"kind": "webhook", "url": "https://example.invalid/h"}}, "s", "b", opener=self.op, image=self.JPEG)
+        self.assertEqual(base64.b64decode(json.loads(self.reqs[1].data)["image_jpeg_b64"]), self.JPEG)
+
+    def test_a_target_that_refuses_the_picture_still_gets_the_ask(self):
+        import io
+        sent = []
+
+        class R:
+            status = 200
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+
+        def op(req, timeout=10):
+            if req.get_header("Filename"):
+                raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, io.BytesIO(b'{"error":"attachments not allowed"}'))
+            sent.append(req)
+            return R()
+        st = {"ledger": []}
+        rep = W.ping({"text": "Scan the QR code on laptop", "screenshot": True, "by": "housesitter"}, self.cfg, self.kvmd, st, 10 ** 12, "ssh", self.logs.append, opener=op)
+        self.assertTrue(rep["ok"], rep)
+        self.assertFalse(rep["result"]["picture"])
+        self.assertIn("without the picture", rep["result"]["sent"])
+        self.assertEqual(sent[0].data, b"Scan the QR code on laptop")
+        self.assertFalse(st["ledger"][-1]["picture"])
+
+    def test_never_through_the_outbox(self):
+        rep, st = self.ping({"text": "approve it"}, via="outbox")
+        self.assertEqual(rep["code"], "action-unavailable")
+        self.assertEqual((self.reqs, st["ledger"]), ([], []))
+        self.assertEqual(W.handle({"op": "notify", "args": {"text": "hi"}}, self.cfg, self.kvmd, None, self.logs.append, 1, {"ledger": []}, via="outbox")["code"], "action-unavailable")
+
+    def test_never_a_secret_the_sitter_keeps(self):
+        rep, st = self.ping({"text": "your password is %s, type it" % self.MAC})
+        self.assertEqual(rep["code"], "input-invalid")
+        self.assertNotIn(self.MAC, json.dumps(rep))
+        self.assertEqual((self.reqs, st["ledger"]), ([], []))
+
+    def test_one_line_and_somewhere_to_send_it(self):
+        for bad in ({"text": "two\nlines"}, {"text": ""}, {"text": "x" * 301}, {"text": "ok", "screenshot": "yes"}):
+            self.assertEqual(self.ping(bad)[0]["code"], "input-invalid", bad)
+        rep, _ = self.ping({"text": "approve it"}, cfg={"name": "laptop"})
+        self.assertIn("no notify target", rep["result"])
+        self.assertEqual(self.reqs, [])
+
+    def test_twelve_an_hour_and_the_rules_never_count_them(self):
+        now, st = 10 ** 12, {"ledger": []}
+        for i in range(12):
+            self.assertTrue(self.ping({"text": "ping %d" % i}, now=now + i, st=st)[0]["ok"])
+        rep, _ = self.ping({"text": "one more"}, now=now + 20, st=st)
+        self.assertIn("notify budget used", rep["result"])
+        self.assertEqual(W.budgets(st, now + 21)["notify_hour"], [12, 12])
+        self.assertEqual(W.emails_today([{"at": now, "kind": "ping", "result": "posted 200, emailed"}], now + 1), 1, "pings share notify's daily email cap")
+
+
 class JsonAgeProbe(unittest.TestCase):
     """A health probe that reads a heartbeat the Mac keeps rewriting (a secret gist, say) and counts the Mac up while
     its timestamp is fresh. Unreachable is unknown, never down."""
