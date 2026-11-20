@@ -21,9 +21,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.6.44"
+VERSION = "0.6.45"
 PROTOCOL = "2025-06-18"
-LONG_OPS = ("type", "type_secret", "unlock", "want_desktop", "power_cycle", "power_on")
+LONG_OPS = ("type", "type_secret", "notify", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
 MINI_STALE_MIN = 15
 TIMEOUT_META = "ouro.bot/timeoutMs"
@@ -215,6 +215,8 @@ TOOLS = [
      schema({"name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"}, "prompt": {"type": "string", "maxLength": 200}, "enter": {"type": "boolean"}, "seen": {"type": "string"}}, ["name", "prompt", "seen"]), 130000, False),
     ("sitter_setup_mode", "Setup mode, for setting up another Mac on the KVM's cables: on (with mac, a label for the Mac being set up, and hours, default 6, at most 24) or off. While on, the sitter acts on nothing by itself (no unlock, power or hang action, no typing at any taught lesson), refuses unlock and power requests, and my clicks, keys, typing and sitter_type_secret work on any screen (Setup Assistant, a login window, FileVault); Escape still only on a desktop. It turns itself off at its expiry; sitter_status shows it.",
      schema({"on": {"type": "boolean"}, "mac": {"type": "string"}, "hours": NUM}, ["on"]), 40000, False),
+    ("sitter_notify", "Tell the owner now, straight to their phone through the sitter's own notify (ntfy push, its email, or a webhook), without the peer link: for what only a person can do right now (a passkey or QR code, an MFA number to match, Okta Verify, a click on the Mac itself). text is one line, at most 300 characters: the ask, and the number to match if there is one. screenshot true attaches a small picture of the screen as the KVM sees it (use it for a QR code or a number). Never a password or any secret: the sitter refuses text that holds one it keeps. 12 an hour.",
+     schema({"text": {"type": "string", "maxLength": 300}, "screenshot": {"type": "boolean"}}, ["text"]), 130000, False),
     ("sitter_key", "Press a key or combination on the Mac, like \"cmd+space\", \"return\" or \"ctrl+alt+delete\".", schema({"combo": {"type": "string"}}, ["combo"]), 40000, False),
     ("sitter_scroll", "Scroll on the Mac: dx, dy wheel steps (negative dy is up), optionally at x, y first (same pixels as sitter_click).",
      schema({"dx": NUM, "dy": NUM, "x": NUM, "y": NUM, "w": NUM, "h": NUM}, ["dx", "dy"]), 40000, False),
@@ -276,6 +278,8 @@ def call(name, a):
         return sitter("type_secret", dict(pick(a, ["name", "prompt", "enter", "seen"]), by="housesitter")), []
     if name == "sitter_setup_mode":
         return sitter_setup_mode(a), []
+    if name == "sitter_notify":
+        return sitter("notify", dict(pick(a, ["text", "screenshot"]), by="housesitter")), []
     if name == "sitter_key":
         return sitter("key", pick(a, ["combo"])), []
     if name == "sitter_scroll":

@@ -20,7 +20,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 | `account` | `full_name` and `short_name` for the Mac account. |
 | `region` | The country or region Setup Assistant asks for. |
 | `enroll` | Optional Microsoft work enrollment: `work_email`, and `install_command`, which installs Company Portal from Terminal. |
-| `setup_command` | The owner's one-line setup command. `kit_readme` says what it asks for; `rerun_step` reruns one of its steps. |
+| `setup_command` | The owner's one-line setup command. `kit_readme` says what it asks for; `rerun_step` reruns one of its steps; `kit_log` is the log it writes (like `~/Library/Logs/laptop-bootstrap.log`). |
 | `apple_account` | `email`; `send_from_reference`, run on the reference Mac to send the Apple Account password into this Mac's own Keychain; `fill_command`, run on this Mac to type it from there. |
 | `microsoft_password_secret` | Optional, absent by default: the name of a secret sealed on the KVM that is the owner's Microsoft password. Only then do I type a Microsoft password. |
 | `operator` | `true` if the owner lets me arm and teach the sitter as their operator (step 7). Otherwise those commands are the owner's. |
@@ -35,7 +35,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 
 - **Passwords go only through `sitter_type_secret`.** The one exception is `initial_password`, which I type with `sitter_type` wherever the Mac asks for its own password before enrollment has changed it. I never know `mac`'s value, and I never type it any other way.
 - **`mac` goes only to the Mac's own prompts:** sudo after the change, the new value in enrollment's password change, a macOS password dialog, FileVault and lock screens. Never a sign-in page (Microsoft, GitHub, Okta, Apple or any other site): those are the owner's.
-- **Microsoft sign-ins get no typed password or secret by default.** That covers Company Portal, Platform SSO registration, and the first runs of Teams, Outlook and OneDrive. At a password page I choose "Sign in another way", then the passkey or QR option ("Face, fingerprint, PIN or security key", "Use a passkey"). Then I send the owner one ping with what's on screen: the QR code (the screenshot) or the number to match. Only if the config names `microsoft_password_secret` do I type that secret with `sitter_type_secret` instead.
+- **Microsoft sign-ins get no typed password or secret by default.** That covers Company Portal, Platform SSO registration, and the first runs of Teams, Outlook and OneDrive. At a password page I choose "Sign in another way", then the passkey or QR option ("Face, fingerprint, PIN or security key", "Use a passkey"). Then I send the owner one ping with what's on screen (`sitter_notify` with `screenshot: true`: the QR code, or the number to match). Only if the config names `microsoft_password_secret` do I type that secret with `sitter_type_secret` instead.
 - **Look before I type or press a key.** I take a fresh `sitter_screenshot` (1280 wide), open its saved picture (`image.path`), and confirm three things: the prompt's words are the ones I expect, the field I mean is focused (a blinking caret or a blue focus ring; in Terminal, the cursor right after the prompt on the last line), and nothing sits on top of it. The KVM can't read keyboard focus; only the picture tells me.
 - **`sitter_type_secret` takes `seen`.** That's the frame id from the `sitter_screenshot` or `sitter_look` I just judged. The sitter refuses if that frame is over 30 s old or the screen no longer matches it. If it refuses, I look again; I never retry blind.
 - **Never an empty Return at a `Password:` prompt, and never a key a prompt didn't ask for.** An empty Return at sudo counts as a failed try (setup lesson m2).
@@ -47,6 +47,10 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` at the hand-over (step 7), before the sitter's armed try. If `sitter_status` shows it off, or ending before I'll be done, while I'm still setting up, I turn it on again. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
 - **Budgets.** `sitter_type_secret` allows 20 an hour. Peer messages: no cap of our own; each goes out at once, and only GitHub's rate limit can make one wait.
 - **Clear what's in the way (m8, m11).** Before each step I close notices, first-run windows and banners over the app I'm about to use. Once the step is done, I close every window it opened.
+- **Only two sign-ins are required: Company Portal enrollment and Platform SSO registration.** Sign-in windows that apps pushed by Intune open by themselves (Global Secure Access, Defender, Alertus and the like) never block me. I minimise them (cmd+m), note them for the report, and go on with the next step. I never answer their QR codes or ping the owner about them.
+- **A lock during a wait is mine to undo.** If the screen locks or sleeps mid-setup, I unlock it myself in setup mode, as in step 2: `initial_password` before the enrollment password change, `mac` after.
+- **Never blind.** If `sitter_screenshot` or `sitter_look` gets no picture (HTTP 500, no live video, no frame) for more than 30 s, I don't wait. I restart kvmd, which brings its streamer back: `systemctl restart kvmd`, or `/etc/init.d/S*kvmd restart` where there's no systemd. If there's still no picture a minute later, I reboot the KVM (`reboot`). Setup mode survives that, and on waking I start again at Where am I.
+- **Keep the KVM light.** Before a long setup, I stop my own processes that aren't needed for it: the memory sampler (`/etc/init.d/S99housesitter-samples stop`), status publishers, and any shell or tool of mine left running. Never the sitter, kvmd, my watcher or my own turn. `kvm_health` before and after. I start the sampler again at the hand-over.
 - **Leave the reference Mac alone.** I ask Ouroboros only to read, to approve a code, or to run the config's own commands.
 
 ## When I'm stuck
@@ -54,8 +58,8 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 Stuck means one of three things: the screen hasn't changed in the step's wait time, the same thing failed twice, or the sitter refused my hands.
 
 - **Ouroboros**, through `peer_send` with `now: true`, for anything a signed-in Mac can do: read a code on the reference Mac, approve a device code in its signed-in browser, run one of the config's commands.
-- **The owner**, for what only a person can do: an MFA number, Okta Verify FastPass, a passkey, a screen the sitter won't let me touch, the cables. On Telegram or Teams if I have it; otherwise a `peer_send` with `now: true` asking Ouroboros to pass it on (for a Microsoft owner, as a Teams ping).
-- **Once.** One message per blocker: which Mac, what's on its screen, exactly what to do (with every value they'll need), and why. I note it and don't repeat it unless the screen changes. The same thing never goes to both of them at once.
+- **The owner, at once, through `sitter_notify`**, for what only a person can do now: a passkey or QR code, an MFA number, Okta Verify, a click on the Mac itself, a screen the sitter won't let me touch. It goes straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` when the prompt is a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for the record (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
+- **Once.** One message per blocker: which Mac, what's on its screen, exactly what to do (with every value they'll need), and why. I note it and don't repeat it unless the screen changes. The same ask never goes to both of them: the copy Ouroboros gets of an owner ping is for its record only, and asks nothing of it.
 - **Then I go on.** A step left to the owner doesn't stop steps that don't need it. While I wait, I look every 2 minutes.
 
 ## Moving the cables
@@ -68,6 +72,21 @@ Before the owner moves my HDMI and USB-C, they tell me. Then:
 4. After the move, `sitter_look` must show a different Mac: a Setup Assistant pane, a new login window, a new wallpaper. If it doesn't, I stop and tell the owner.
 5. **No visible effect means an extended display.** If a laptop shows a desktop with only wallpaper (often dimmed), a menu bar and no windows, and one key or click changes nothing on the picture, my input is landing on the built-in screen, which I can't see (the mouse maps to the main display). I don't try more keys. I tell the owner once: "<mac> isn't mirrored yet: System Settings > Displays > GLKVM > 'Mirror for Built-in Display', or close the lid with power connected." I never change the displays myself; a person at the Mac does (docs/hardware.md).
 6. When the cables go back, setup mode is already off (step 7). I look and confirm it's the reference Mac, and that `sitter_status` shows setup mode off and the password verified. If the password isn't verified, I arm and teach it as in step 7 at the reference Mac's next restart, or ask the owner to. Then I tell Ouroboros its watch has resumed.
+
+## Visible progress
+
+The owner reads a still screen as stuck. So from the first desktop until the hand-over, the Mac shows a small window that changes by itself every 2 seconds, and the screen never sits still for more than 10 seconds. Before the first desktop (Setup Assistant, a login window), each pane I answer moves the screen.
+
+1. **Open it once**, as soon as my input works on a desktop. Terminal (cmd+space, "Terminal", Return), then cmd+n for a fresh window, then `sitter_type` this one line (with `kit_log` from the config) and Return:
+
+   ```sh
+   caffeinate -dimsu & printf '\e]0;Setup progress\a\e[3;0;30t\e[8;16;90t'; touch ~/.setup-status; while :; do clear; date '+%H:%M:%S  Setup progress'; tail -n 8 ~/.setup-status; echo; tail -n 6 <kit_log> 2>/dev/null; if read -t 2 l; then echo "[$(date +%H:%M)] $l" >> ~/.setup-status; fi; done
+   ```
+
+   It first starts `caffeinate -dimsu` in the background, so the Mac doesn't lock, sleep or dim during setup. Then it titles the window "Setup progress" and moves it to the top-left corner. Every 2 s it redraws the clock, the last lines of `~/.setup-status`, and the last lines of the kit's log. A line typed into it, followed by Return, is added to `~/.setup-status` with the time.
+2. **A line at every step start and every wait.** I click the progress window, `sitter_type` "<doing now>, <waiting for>" and Return, then click back into the window I was working in. Example: "Enrollment: waiting for the owner's MFA tap, number 47". Never a password or a code.
+3. **One progress window, and never my commands in it.** If a "Setup progress" window is already on screen (after a restart of me), I use it. My commands go only into a work window opened with cmd+n. Before typing a command or a password, a fresh look confirms the front window isn't "Setup progress".
+4. **Closed at the hand-over** (step 7), as I close everything I open. I click it, press ctrl+c, `sitter_type` `kill %1; rm ~/.setup-status` and Return (that stops `caffeinate`), then cmd+w.
 
 ## Where am I?
 
@@ -119,7 +138,7 @@ In setup mode I type here myself, after a fresh look shows the password field fo
 
 **Done when:** in Terminal, `profiles status -type enrollment` reads "MDM enrollment: Yes", and my notes say `password: mac`.
 
-1. **Install Company Portal** if Spotlight (cmd+space, "Company Portal") doesn't find it. In Terminal (cmd+space, "Terminal", Return), `sitter_type` `enroll.install_command`, Return. At `Password:`, `sitter_type` `initial_password`, Return. Done when the command ends without an error.
+1. **Install Company Portal** if Spotlight (cmd+space, "Company Portal") doesn't find it. In a Terminal work window (cmd+space, "Terminal", Return, then cmd+n), `sitter_type` `enroll.install_command`, Return. At `Password:`, `sitter_type` `initial_password`, Return. Done when the command ends without an error.
 2. **Sign in.** Company Portal, Sign In. Email field focused: `sitter_type` `work_email`, Return. At Microsoft's "Enter password" page, I take the passkey route from the rule above: "Sign in another way", then the passkey or QR option, and one ping to the owner with what's on screen. With `microsoft_password_secret` set, I type that secret instead, after a fresh look, with `enter: true` and `seen`.
 3. **The passkey or MFA.** After the passkey ping, I look every 30 s for up to 5 minutes. If the QR code expires, I start the passkey option again once and ping once more; after that, stuck. At "Approve sign in request", with a number if number matching is on, I tell the owner once: "On your phone: approve the Microsoft sign-in for <mac> (enrolling it), number <n>." I look every 30 s for up to 5 minutes. On "We didn't hear from you" or "Request denied", I press "Send another request" once and tell the owner once more, with the new number. After that, stuck. At "Stay signed in?": Yes.
 4. **Device management profile.** Begin; Continue through "Review privacy"; Download profile. System Settings opens at Device Management: Install, then Install. At "Enter your password to allow this": `sitter_type` `initial_password`, Return.
@@ -138,7 +157,7 @@ I note `password: mac` the moment the change succeeds. If it fails halfway, I no
 
 **Done when:** the kit has finished, with its `Timing and result` table on screen, and I've noted each step's result.
 
-1. **Terminal.** If a Terminal window already shows the kit's output, I use it and open no other. Otherwise cmd+space, "Terminal", Return.
+1. **Terminal.** If a Terminal work window already shows the kit's output, I use it and open no other. Otherwise cmd+space, "Terminal", Return, then cmd+n for a work window.
 2. `sitter_type` `setup_command`, Return.
 3. I look every 1-2 minutes and act on what's at the bottom:
 
@@ -179,6 +198,8 @@ This needs step 4's kit, so that this Mac has Housesitter's command line and the
 **Done when:** my notes record that this Mac's FileVault screen was taught and the sitter's try reached the desktop.
 
 First, **check that mirroring stuck**, so any later recovery (FileVault, a login window) shows on the KVM's picture. In System Settings > Displays, GLKVM must read "Mirror for Built-in Display". If it doesn't, I tell the owner once, as in Moving the cables, and go on.
+
+Then I close the progress window, which stops `caffeinate` (Visible progress, item 4). I start the KVM's memory sampler again (`/etc/init.d/S99housesitter-samples start`).
 
 Then setup mode off (`sitter_setup_mode` with `on: false`): from here the sitter keeps this Mac alive, and its armed try below types only with setup mode off.
 

@@ -11,7 +11,7 @@ from plugin_base import slurp, FLEET, IN, OUT, PLUGIN, ROOT, PluginCase, iso
 
 SERVER = os.path.join(PLUGIN, "mcp", "server.py")
 TOOLS = {"sitter_status", "sitter_look", "sitter_screenshot", "sitter_unlock", "sitter_want_desktop", "sitter_power_cycle", "sitter_power_on",
-         "sitter_click", "sitter_type", "sitter_type_secret", "sitter_setup_mode", "sitter_key", "sitter_scroll", "peer_send", "peer_bring_back_ouroboros", "peer_inbox", "kvm_health"}
+         "sitter_click", "sitter_type", "sitter_type_secret", "sitter_setup_mode", "sitter_notify", "sitter_key", "sitter_scroll", "peer_send", "peer_bring_back_ouroboros", "peer_inbox", "kvm_health"}
 JPEG = b"\xff\xd8\xff\xe0fake-jpeg-frame\xff\xd9"
 
 
@@ -79,6 +79,8 @@ class McpTest(PluginCase):
             ("sitter_type", {"text": "Activity Monitor"}, "type", {"text": "Activity Monitor"}),
             ("sitter_type_secret", {"name": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True, "seen": "f1.1.x.y"}, "type_secret",
              {"name": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True, "seen": "f1.1.x.y", "by": "housesitter"}),
+            ("sitter_notify", {"text": "On your phone: approve the sign-in, number 47", "screenshot": True}, "notify",
+             {"text": "On your phone: approve the sign-in, number 47", "screenshot": True, "by": "housesitter"}),
             ("sitter_key", {"combo": "cmd+space"}, "key", {"combo": "cmd+space"}),
             ("sitter_scroll", {"dx": 0, "dy": -3, "x": 100, "y": 200}, "scroll", {"dx": 0, "dy": -3, "x": 100, "y": 200}),
             ("sitter_unlock", {}, "unlock", {}),
