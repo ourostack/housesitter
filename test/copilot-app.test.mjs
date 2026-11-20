@@ -260,6 +260,7 @@ test('restart: the Quit menu call carries the person\'s --why, or the scheduled 
   delete w2.opts.why;
   assert.equal((await restart(w2.opts, w2.deps)).ok, true);
   assert.match(w2.whys[0], /scheduled restart-copilot job.*Ari/);
+  w.done(); w2.done();
 });
 
 test('restart: waits while someone is using the Mac, then quits; never quits over them', { skip }, async () => {
