@@ -6,6 +6,9 @@ import sys
 
 JPEG = b"\xff\xd8\xff\xe0fake-jpeg-frame\xff\xd9"
 
+if sys.argv[1] == "peer-verify":
+    print(json.dumps({"verified": False, "authorized": False, "reason": "unsigned"}))
+    sys.exit(0)
 if sys.argv[1] != "do":
     with open(os.environ["FAKE_SITTER_LOG"], "a") as f:
         f.write(json.dumps({"argv1": sys.argv[1], "op": None, "args": sys.argv[2:]}) + "\n")

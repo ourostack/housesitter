@@ -1,6 +1,10 @@
 // Arrival day against a pretend KVM: every step, and where each secret goes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { loadKey, signMac } from '../src/peer-sign.mjs';
 import { adopt, defaultRefs, fakeDeps, newPassword, parseIfconfig } from '../src/adopt.mjs';
 
 const run = async (opts = {}, extra = {}, flags = { notify: 'ntfy' }) => {
@@ -170,4 +174,26 @@ test('--email without a token says how to get one; two addresses or a webhook ar
   assert.match(two.results.at(-1).detail, /one address/);
   const hook = await adoptWith(null, { notify: 'https://example.com/hook', email: 'a@example.com' });
   assert.match(hook.results.at(-1).detail, /works through ntfy/);
+});
+
+test('adopt seals this Mac\'s peer key on the KVM with your standing authorization beside it, and the key never rides in argv', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-peerkey-'));
+  const configFile = path.join(dir, 'config.json');
+  fs.writeFileSync(configFile, JSON.stringify({ peer: { standing_auth: { by: 'Ari', on: '2026-11-20', ops: ['root-key', 'seal-secret'], quote: 'kvm has standing auth' } } }));
+  const f = fakeDeps({ apiClosed: false });
+  const x = { name: 'studio', mac: { name: 'studio', kvm: { endpoints: [] }, user_names: ['Ada'] }, refs: defaultRefs('studio'), address: null, dryRun: false, outbox: false, say: () => {}, deps: f.deps, notify: 'ntfy', configFile };
+  const results = await adopt(x);
+  const r = results.find((e) => e.id === 'peer-key');
+  assert.ok(r?.ok, JSON.stringify(r));
+  assert.match(r.detail, /root-key and seal-secret are authorized|root-key and seal-secret/);
+  const k = loadKey(dir);
+  assert.equal(fs.statSync(path.join(dir, 'peer-key.json')).mode & 0o777, 0o600);
+  for (const c of f.s.ssh) assert.ok(!c.includes(k.key), 'the key is on stdin, never in a command line');
+  assert.ok(f.s.ssh.some((c) => c.endsWith('sitter.py peer-trust add')));
+});
+
+test('peer signatures match the shared vectors', async () => {
+  const v = JSON.parse(fs.readFileSync(new URL('../spec/peer-sign-cases.json', import.meta.url), 'utf8'));
+  for (const c of v.cases) assert.equal(signMac(v.key, c.msg), c.mac, c.name);
+  assert.throws(() => signMac(v.key, { ...v.cases[0].msg, from: 'a\nb' }), /newline/);
 });

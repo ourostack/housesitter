@@ -146,6 +146,7 @@ const VERBS = [
   [`peer flush mini --now ${WHY.join(' ')}`, 'peer flush', { mac: 'mini', now: true }],
   ['peer watch mini --agent ouroboros --every 60 --ouro /tmp/ouro', 'peer watch', { mac: 'mini', agent: 'ouroboros', every: '60', ouro: '/tmp/ouro' }],
   [`peer drill gist outage --minutes 60 ${WHY.join(' ')}`, 'peer drill', { label: 'gist outage', minutes: '60' }],
+  [`peer authorize mini --by Ari ${WHY.join(' ')}`, 'peer authorize', { mac: 'mini', by: 'Ari' }],
   ['restart-copilot --resume-only --watch --also Foo --also Bar --skip Baz --heartbeat --mac mini --hackamore {"a":1}', 'restart-copilot', { 'resume-only': true, watch: true, also: ['Foo', 'Bar'], skip: ['Baz'], heartbeat: true, mac: 'mini', hackamore: '{"a":1}' }],
   [`deploy shepherd --ref v0.3.1 --clone /tmp/c ${WHY.join(' ')}`, 'deploy', { name: 'shepherd', ref: 'v0.3.1', clone: '/tmp/c' }],
   ['hold --quiet', 'hold', { quiet: true }],

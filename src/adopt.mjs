@@ -19,6 +19,8 @@ import { classifyScreen } from './screen.mjs';
 import { DIR, knownHostsPath, sshKeyPath, sshRunner } from './sitter.mjs';
 import { fakeWorld } from './fake.mjs';
 import * as O from './outbox.mjs';
+import * as PS from './peer-sign.mjs';
+import os from 'node:os';
 
 export const DEVICE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'device');
 const GL_OUIS = ['94:83:c4', 'e4:95:6e'];
@@ -63,6 +65,21 @@ async function storeSecret(x, name, value) {
   const r = await x.deps.ssh(`python3 ${DIR}/sitter.py store-secret ${name}`, value);
   if (r.status !== 0) return { ok: false, detail: `store-secret ${name} failed: ${String(r.stderr).slice(0, 160)}` };
   try { return { ok: true, ...JSON.parse(String(r.stdout).trim().split('\n').at(-1)) }; } catch { return { ok: false, detail: 'store-secret gave no receipt' }; }
+}
+
+// Seal this Mac's peer-link key on the KVM, with the owner's standing authorization (config peer.standing_auth) beside it,
+// so a signed request for a privileged op needs no one at a console. Used by the adopt step and `peer authorize`.
+export const peerKid = () => `mac-${os.hostname().replace(/\.local$/, '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20) || 'controller'}`;
+export async function pushPeerTrust(x) {
+  const dir = path.dirname(x.configFile);
+  const k = PS.ensureKey(dir, peerKid());
+  let sa = null;
+  try { sa = JSON.parse(fs.readFileSync(x.configFile, 'utf8')).peer?.standing_auth || null; } catch { /* none recorded */ }
+  const r = await x.deps.ssh(`python3 ${DIR}/sitter.py peer-trust add`, JSON.stringify({ kid: k.kid, key: k.key, mac: os.hostname(), ...(sa ? { standing_auth: sa } : {}) }));
+  if (r.status !== 0) return { ok: false, detail: `peer-trust failed: ${String(r.stderr).slice(0, 160)}` };
+  let out = {};
+  try { out = JSON.parse(String(r.stdout).trim().split('\n').at(-1)); } catch { return { ok: false, detail: 'peer-trust gave no receipt' }; }
+  return { ok: true, kid: k.kid, ops: sa?.ops || [], ...out };
 }
 
 export function steps() {
@@ -322,6 +339,16 @@ export function steps() {
       },
     },
     {
+      id: 'peer-key', title: "This Mac's signing key onto the sitter, so what it sends on the peer link is trusted as yours",
+      async run(x) {
+        if (!x.configFile) return { ok: true, skipped: true, detail: 'skipped (no config file to keep the key beside)' };
+        if (x.dryRun) return { ok: true, detail: 'would seal a signing key for this Mac on the sitter, with your standing authorization (peer.standing_auth) beside it' };
+        const r = await pushPeerTrust(x);
+        if (!r.ok) return r;
+        return { ok: true, detail: r.ops.length ? `key ${r.kid} sealed; signed requests for ${r.ops.join(' and ')} are authorized by your standing word, no console confirmation` : `key ${r.kid} sealed; no standing authorization recorded yet (housesitter peer authorize), so privileged asks still wait for you` };
+      },
+    },
+    {
       id: 'plug-password', title: "The smart plug's own password onto the sitter",
       async run(x) {
         if (!x.mac.power?.auth) return { ok: true, skipped: true, detail: x.mac.power ? 'skipped (the plug has no password)' : 'skipped (no plug yet: housesitter plug <mac> adopt, once it is on the Mac\'s cord)' };
@@ -451,6 +478,7 @@ export function fakeDeps({ apiClosed = true, comet = true } = {}) {
         s.ssh.push(cmd.replace(/tskey-[\w-]+/g, 'tskey-…'));
         if (!s.rootKeys.length) return { status: 255, stdout: '', stderr: 'Permission denied (publickey)' };
         if (cmd.includes('enable-api')) { w.st.apiClosed = false; return { status: 0, stdout: '{"opened_blocks": 1}\n', stderr: '' }; }
+        if (/sitter\.py peer-trust add$/.test(cmd)) { const a = JSON.parse(input || '{}'); return { status: 0, stdout: `${JSON.stringify({ kid: a.kid, keys: [a.kid], standing_auth: a.standing_auth || null })}\n`, stderr: '' }; }
         const m = cmd.match(/sitter\.py store-secret (\w+)$/);
         if (m) { s.secretsOnKvm[m[1]] = input; return { status: 0, stdout: `${JSON.stringify({ stored: m[1], bound_to: 'hardware' })}\n`, stderr: '' }; }
         if (cmd.startsWith('if test -d /run/systemd/system; then echo')) return { status: 0, stdout: `${s.init}\n`, stderr: '' };

@@ -18,6 +18,8 @@
 //       "tailscale": { "tag": "tag:kvm", "hostname": "kvm-studio", "authkey": "keychain:housesitter/tailnet-kvm" },
 //       "controllers": ["aris-mac-mini", "laptop"] } } }          // the Macs that each hold the KVM's admin password and a root key; doctor warns under two
 //
+//   "peer": { "user": "…", "standing_auth": { "by": "Ari", "on": "2026-11-20", "ops": ["root-key", "seal-secret"], "quote": "…" } }  // housesitter peer authorize
+//
 // Top level, beside "macs": "launchd_disabled": ["<label>", …], the launchd jobs `housesitter hold` keeps off.
 //
 // Secret references (never the secret itself): keychain:<service>[/<account>] (macOS Keychain), env:<NAME>,
