@@ -67,7 +67,7 @@ Stuck means one of three things: the screen hasn't changed in the step's wait ti
 
 - **Ouroboros**, through `peer_send` with `now: true`, for anything a signed-in Mac can do: read a code on the reference Mac, approve a device code this Mac can't finish itself (step 5), run one of the config's commands.
 - **The owner: deferred by default** (the owner: "anything that needs me, note and load together at the end of the process"). When a step needs a person (a passkey or QR code, an MFA number, Okta Verify, an Apple code Ouroboros can't read, a physical click, a screen the sitter won't let me touch), I don't wait and I don't ping. I mark it deferred: a line "DEFERRED: <step>: <what the owner does>" in the progress window (so in `~/.setup-status`) and in my notes. Then I go on with every step that doesn't depend on it. Wherever this skill says to tell or ping the owner, it means this, except for the two up-front asks below.
-- **Only these asks are up-front, because nothing proceeds without them:** the cable move's Allow and Mirror (Moving the cables); enrollment's first sign-in (step 3, items 2 and 3: the passkey, QR code or MFA number); and any person step in a sign-in the hand-off waits on (the Copilot app's first sign-in in step 4, the kit's first GitHub sign-in in step 5). For those, I go to the owner at once through `sitter_notify`, straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` for a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for its record only (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
+- **Only these asks are up-front, because nothing proceeds without them:** the cable move's Allow and Mirror (Moving the cables); enrollment's first sign-in (step 3, items 2 and 3: the passkey, QR code or MFA number), and any person step in its compliance items (step 3, item 8); and any person step in a sign-in the hand-off waits on (the Copilot app's first sign-in in step 4, the kit's first GitHub sign-in in step 5). For those, I go to the owner at once through `sitter_notify`, straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` for a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for its record only (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
 - **Once.** Each up-front ask and each deferred item goes out once: which Mac, what's on its screen, exactly what to do (with every value they'll need), and why. The same ask never goes to both the owner and Ouroboros.
 - **Then I go on.** A step left to the owner doesn't stop steps that don't need it. While anything runs, I look every 10-15 s (Poll while anything runs).
 
@@ -145,7 +145,9 @@ In setup mode I type here myself, after a fresh look shows the password field fo
 
 ## 3. Work enrollment (only if `enroll` is set)
 
-**Done when:** in Terminal, `profiles status -type enrollment` reads "MDM enrollment: Yes", my notes say `password: mac`, and `app-sso platform -s` shows `"registrationCompleted" : true`. Platform SSO comes before steps 4 and 5: it makes Microsoft sign-in work in every browser on the Mac without a passkey, which every later device code depends on.
+**Done when, first and above all:** Company Portal > Devices > this Mac > Check status reports no action items, and access is allowed. "MDM enrollment: Yes" is not done: a Mac with action items left never becomes compliant, and loses its enrollment (2026-11-20). Nothing after this step starts until Check status is clean.
+
+**Also:** in Terminal, `profiles status -type enrollment` reads "MDM enrollment: Yes", my notes say `password: mac`, and `app-sso platform -s` shows `"registrationCompleted" : true`. Platform SSO comes before steps 4 and 5: it makes Microsoft sign-in work in every browser on the Mac without a passkey, which every later device code depends on.
 
 1. **Install Company Portal** if Spotlight (cmd+space, "Company Portal") doesn't find it. In a Terminal work window (cmd+space, "Terminal", Return, then cmd+n), `sitter_type` `enroll.install_command`, Return. At `Password:`, `sitter_type` `initial_password`, Return. Done when the command ends without an error.
 2. **Sign in.** Company Portal, Sign In. Email field focused: `sitter_type` `work_email`, Return. At Microsoft's "Enter password" page, I take the passkey route from the rule above: "Sign in another way", then the passkey or QR option, and one ping to the owner with what's on screen. With `microsoft_password_secret` set, I type that secret instead, after a fresh look, with `enter: true` and `seen`.
@@ -162,6 +164,13 @@ In setup mode I type here myself, after a fresh look shows the password field fo
 I note `password: mac` the moment the change succeeds. If it fails halfway, I note `password: unknown` and tell the owner once.
 
 7. **Platform SSO registration, right after the change and before step 4.** It arrives when Intune delivers its profile, as a "Registration Required" notification; I don't wait idly for it. If it isn't there, I look for it in System Settings > Users & Groups and Company Portal, and check `app-sso platform -s` in a work window every 10-15 s. When it's there: click it, then Register. A Microsoft sign-in follows (items 2 and 3 again). At "enter your Mac password", the password the Mac has now (the rule above; `mac` after the change).
+
+8. **Compliance, before anything else.** Company Portal > Devices > this Mac > Check status. I copy its action-items message word for word into my notes and the progress window. Then I do each item, for example:
+   - register the Mac with the work account, through "Registration required" or Edge's "Set up your device to get access";
+   - update macOS to the version it names (Software Update, and the restart: I unlock in setup mode);
+   - turn on what it names (FileVault, a firewall).
+
+   Then Check status again. I repeat until it reports no action items and access allowed. An item that needs a person is an up-front ask: nothing proceeds without it.
 
 ## 4. The Copilot app
 
@@ -210,7 +219,7 @@ Right after Platform SSO, as early as it can be, because the hand-off (step 6) n
 
 1. **Stop the kit's first pass**, so only one kit runs: in its Terminal window, at a moment it isn't at a password prompt, ctrl+c. Its steps are safe to rerun, and the brief reruns them. I leave the window open.
 2. In the Copilot app, a new session. If it asks for a folder: the owner's home folder, or the folder `finish_brief` is in. I click its message box, and a fresh look confirms the caret is there.
-3. I `sitter_type` one line, then Return: "Finish setting up this Mac by following <finish_brief>. Housesitter on the KVM has done <the steps done, from my notes> and hands over to you now. Keep the 'Setup progress' window open. Run anything that needs sudo in a Terminal window, not your own shell: Housesitter types the password there." Then I note "handed off".
+3. I `sitter_type` one line, then Return: "Finish setting up this Mac by following <finish_brief>. Housesitter on the KVM has done <the steps done, from my notes> and hands over to you now. Keep the 'Setup progress' window open. Run anything that needs sudo in a Terminal window, not your own shell: Housesitter types the password there. Your done check starts with Company Portal > Devices > this Mac > Check status showing no action items." Then I note "handed off".
 4. **Hands off.** From here the local agent drives. The finish brief covers:
    - the kit's remaining steps and their device codes (Microsoft-backed ones finished in the Mac's own browser);
    - the apps Intune assigned but hasn't pushed (Company Portal > Apps);
@@ -225,7 +234,7 @@ Right after Platform SSO, as early as it can be, because the hand-off (step 6) n
   - a password prompt only the sitter can answer (sudo, a macOS password sheet), with `sitter_type_secret` as before;
   - an unlock if the screen locks.
 - If the screen stays still for a minute with no line in `~/.setup-status` saying why, I type one line into the app's session asking what it's waiting for, then take my hands off again.
-- **Finished** when `~/.setup-status` holds the local agent's report, with its done check passing except for the items it lists for the owner. Then step 7, then step 8 if anything is listed.
+- **Finished** when Company Portal's Check status for this Mac still shows no action items, and access allowed (the first item of every done check; I look at it myself), and `~/.setup-status` holds the local agent's report, with its done check passing except for the items it lists for the owner. Then step 7, then step 8 if anything is listed.
 
 ## 7. Hand over to keep-alive
 
@@ -247,7 +256,7 @@ Teaching needs `operator: true`. Without it, I ask the owner to run `housesitter
 
 ## 8. The owner's sitting
 
-**Done when:** no deferred item is left in my notes, and the Dock and /Applications match the reference.
+**Done when:** Company Portal's Check status for this Mac shows no action items, no deferred item is left in my notes, and the Dock and /Applications match the reference.
 
 1. **One list, once.** When everything that doesn't need the owner is done, I send one `sitter_notify` with the deferred items in the order they'll come up: mine, and the local agent's in `~/.setup-status` (its `DEFERRED:` lines, or a section for the owner). Each says what the owner does ("Okta Verify: approve GitHub on your phone", "passkey for az login"). The full list also goes in the progress window, if it's still open, and to Ouroboros for its record.
 2. **When the owner says they're ready** (on any channel I hear), the prompts go up one after another, so they're all done in one sitting. One line from me in the app's session asks the local agent to bring each up: rerunning its step (with `rerun_step` for a fresh device code) and bringing its window to the front. I tell the owner in one line what's on screen, type only passwords the sitter holds, and look every 10-15 s until it's done. Then I note it done and move to the next.
