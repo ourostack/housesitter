@@ -103,6 +103,7 @@ export function decide({ now, bootAt, marker, explicit = false, state = {}, wind
 export const filledText = ({ at, reason }) => `Housesitter filled the Apple Account password prompt ${reason} (${hhmm(at)}). Tell the owner once, in one line, such as: "filled the Apple Account password prompt ${reason}".`;
 export const codeText = ({ at }) => `The Apple Account password prompt was filled at ${hhmm(at)} and Apple then asked for a verification code from another device. I typed nothing more and will not try to get around it. Tell the owner once that the code is needed.`;
 export const rejectedText = ({ at }) => `The Apple Account password prompt was filled at ${hhmm(at)} and the prompt is still asking. I will not retry (a wrong password counts against the account). Tell the owner once: it needs a look, and the stored password may be out of date (housesitter secret <mac> apple-account).`;
+const hackWhy = (v) => `Housesitter's apple-account job, which Ari set up, fills the Apple Account prompt ${v.reason || 'when asked'}`;
 export const leftAloneText = ({ at, why }) => `An Apple Account password prompt appeared at ${hhmm(at)} and was left alone: ${why}. Tell the owner once; it is the owner's to answer, or run housesitter apple-account <mac> --now.`;
 export const missingText = ({ at, ref }) => `An Apple Account password prompt appeared at ${hhmm(at)}, but no password is stored at ${ref}. Tell the owner once: run housesitter secret <mac> apple-account.`;
 
@@ -143,7 +144,7 @@ export async function attempt({ mac, explicit = false }, deps) {
     }
     return { status: 'failed', why: `no password stored at ${appleRef(mac)}` };
   }
-  const typed = await deps.hk(['do', 'type_secret', JSON.stringify({ keychain_item: accountName(mac), element: screen.field }), '--app', APP]);
+  const typed = await deps.hk(['do', 'type_secret', JSON.stringify({ keychain_item: accountName(mac), element: screen.field }), '--app', APP, '--why', hackWhy(v)]);
   if (typed.code !== 0) {
     const code = codeOf(typed);
     // Someone is at the Mac: not a failure, try again next time round.
@@ -152,7 +153,7 @@ export async function attempt({ mac, explicit = false }, deps) {
   }
   deps.audit({ at: iso(now), event: 'typed', mac, boot: iso(bootAt || now), why: v.why });
   const go = screen.buttons.find((b) => /^(continue|next|sign in)$/i.test(String(b.label).trim()));
-  const sent = go ? await deps.hk(['do', 'click', JSON.stringify({ element: go.ref }), '--app', APP]) : await deps.hk(['do', 'press_key', JSON.stringify({ key: 'return' }), '--app', APP]);
+  const sent = go ? await deps.hk(['do', 'click', JSON.stringify({ element: go.ref }), '--app', APP, '--why', hackWhy(v)]) : await deps.hk(['do', 'press_key', JSON.stringify({ key: 'return' }), '--app', APP, '--why', hackWhy(v)]);
   if (sent.code !== 0 && codeOf(sent) !== 'person-active') deps.audit({ at: iso(now), event: 'submit-refused', mac, why: codeOf(sent) || `exit ${sent.code}` });
   await deps.sleep(deps.settleMs ?? 12000);
   const after = await deps.hk(['ls', APP]);

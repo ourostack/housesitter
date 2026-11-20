@@ -229,14 +229,17 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ho
 
 // ---------- the steps ----------
 
-async function hackamoreQuit(deps, app, { personWaitMs, log }) {
+// Hackamore's others-see actions need --why. A restart someone asked for forwards their words; a scheduled one names its job.
+export const hackamoreWhy = (why) => String(why || '').trim() || "Housesitter's scheduled restart-copilot job, which Ari installed on this Mac to restart the app after plugin or macOS updates";
+
+async function hackamoreQuit(deps, app, { personWaitMs, log, why }) {
   const ls = await deps.hk(['ls', app]);
   if (ls.code !== 0 || !ls.json) return { ok: false, why: `hackamore ls ${app} failed: ${ls.text || `exit ${ls.code}`}` };
   const item = quitItem(ls.json);
   if (!item) return { ok: false, why: `hackamore sees no Quit menu item in ${app} (it may be protected or have no menu bar)` };
   const input = JSON.stringify({ item, app });
   for (const end = deps.now() + personWaitMs; ;) {
-    const r = await deps.hk(['do', 'menu', input]);
+    const r = await deps.hk(['do', 'menu', input, '--why', hackamoreWhy(why)]);
     if (r.code === 0) return { ok: true, method: 'menu', item };
     const code = r.json?.code || null;
     if (code === 'person-active' && deps.now() < end) { log(`someone is using the Mac; waiting to quit ${app} (hackamore: ${r.json?.problem || code})`); await deps.sleep(10000); continue; }
@@ -257,12 +260,12 @@ async function readDialog(deps, app) {
 }
 
 // Press the Quit button of a confirmation the app put up after the Quit menu item (each label once).
-async function answerQuitDialog(deps, app, answered) {
+async function answerQuitDialog(deps, app, answered, why) {
   const d = await readDialog(deps, app);
   const b = (d.quit || []).find((e) => !answered.includes(e.label));
   if (!b) return { pressed: null };
   answered.push(b.label);
-  const r = await deps.hk(['do', 'click', JSON.stringify({ element: b.ref, app })]);
+  const r = await deps.hk(['do', 'click', JSON.stringify({ element: b.ref, app }), '--why', hackamoreWhy(why)]);
   return { pressed: r.code === 0 ? b.label : null, why: r.code === 0 ? null : r.text };
 }
 
@@ -404,7 +407,7 @@ async function restartSteps(opts, deps, log) {
   const familyPids = family(psAtQuit, mainBefore.pid, dir);
   const cmdAt = new Map(psAtQuit.map((x) => [x.pid, x.command]));
   let q;
-  if (p.quit.method === 'sigterm') { deps.kill(mainBefore.pid, 'SIGTERM'); q = { ok: true, method: 'sigterm', pid: mainBefore.pid, ...(p.quit.fallback ? { fallback: p.quit.fallback } : {}) }; } else q = await hackamoreQuit(deps, app, { personWaitMs: t.person, log });
+  if (p.quit.method === 'sigterm') { deps.kill(mainBefore.pid, 'SIGTERM'); q = { ok: true, method: 'sigterm', pid: mainBefore.pid, ...(p.quit.fallback ? { fallback: p.quit.fallback } : {}) }; } else q = await hackamoreQuit(deps, app, { personWaitMs: t.person, log, why: opts.why });
   if (!q.ok) {
     // The app is untouched: tell the sessions that were asked to stop that nothing happened.
     const cancel = await Promise.all(asked.map((x) => sendTo(deps, x.id, cancelText({ why: opts.why }), 30000)));
@@ -422,7 +425,7 @@ async function restartSteps(opts, deps, log) {
     await deps.sleep(1000);
     left = await alive();
     // The app asks its window to confirm a quit; if a dialog with a Quit button is up, press it.
-    if (left.length && q.method === 'menu' && deps.now() >= next) { next = deps.now() + t.dialog; const d = await answerQuitDialog(deps, app, answered); if (d.pressed) step('the app asked to confirm the quit; answered it', { button: d.pressed, via: 'hackamore' }); }
+    if (left.length && q.method === 'menu' && deps.now() >= next) { next = deps.now() + t.dialog; const d = await answerQuitDialog(deps, app, answered, opts.why); if (d.pressed) step('the app asked to confirm the quit; answered it', { button: d.pressed, via: 'hackamore' }); }
   }
   if (left.length) {
     // The app did not finish the quit by itself. Its window confirms a quit and waits for the answer (strings in the app:

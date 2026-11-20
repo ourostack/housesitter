@@ -77,7 +77,7 @@ async function world({ sessions, appOpts = {}, quit = 'menu', person = 0, stubbo
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-restart-'));
   makeHome(home, sessions);
   const app = await startApp(home, appOpts);
-  const w = { home, app, procs: [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }, { pid: 101, ppid: 100, command: 'runtime --server' }], hk: [], kills: [], opens: 0, personLeft: person };
+  const w = { home, app, procs: [{ pid: 100, ppid: 1, command: `${BUNDLE}/Contents/MacOS/fake` }, { pid: 101, ppid: 100, command: 'runtime --server' }], hk: [], whys: [], kills: [], opens: 0, personLeft: person };
   // Everything the deps write (resumed.json, resume-only.json) and read (the skip list) lives in this folder, never in the real ones.
   const real = realDeps({ copilotHome: home, home: path.join(home, 'user-home'), state: path.join(home, 'state'), config: path.join(home, 'restart-copilot.json') });
   w.deps = {
@@ -91,6 +91,7 @@ async function world({ sessions, appOpts = {}, quit = 'menu', person = 0, stubbo
     hk: async (argv) => {
       w.hk.push(argv.slice(0, 2).join(' '));
       if (argv[0] === 'ls') return { code: 0, json: noQuitItem ? { actions: [] } : { actions: [{ name: 'menu', input: { properties: { item: { enum: ['App > Quit Fake'] } } } }] } };
+      if (argv[0] === 'do') { const i = argv.indexOf('--why'); if (i < 0 || !argv[i + 1]) return { code: 1, json: { code: 'why-needed', problem: 'hackamore: do: other people will see this as the person\'s, so it needs --why' } }; w.whys.push(argv[i + 1]); }
       if (w.personLeft-- > 0) return { code: 2, json: { code: 'person-active', problem: 'someone is using this Mac' } };
       if (!stubborn) w.procs = [];
       return { code: 0, json: {} };
@@ -247,6 +248,19 @@ test('restart: the only session not resumed was archived on purpose, so the rest
   assert.match(text, new RegExp(`archived, not resumed: ${A.slice(0, 8)}`));
   assert.doesNotMatch(text, /\n  not resumed:/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('restart: the Quit menu call carries the person\'s --why, or the scheduled job\'s own', { skip }, async () => {
+  const w = await world({ sessions: sessions() });
+  w.opts.why = 'Ari asked me to restart for Remote access';
+  const r = await restart(w.opts, w.deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(w.whys, ['Ari asked me to restart for Remote access']);
+  const w2 = await world({ sessions: sessions() });
+  delete w2.opts.why;
+  assert.equal((await restart(w2.opts, w2.deps)).ok, true);
+  assert.match(w2.whys[0], /scheduled restart-copilot job.*Ari/);
+  w.done(); w2.done();
 });
 
 test('restart: waits while someone is using the Mac, then quits; never quits over them', { skip }, async () => {
