@@ -2192,7 +2192,8 @@ class NamedSecrets(unittest.TestCase):
         st = W.load("state.json", {})
         e = st["ledger"][-1]
         self.assertEqual((e["kind"], e["secret"], e["prompt"], e["by"], e["result"]), ("type_secret", "setup-password", "sudo password prompt in Terminal", "ssh:housesitter", "typed setup-password and Return"))
-        for where in (line, json.dumps(r), json.dumps(st)):
+        # The ledger's ids are random hex, which may hold any two digits: they're left out of the length check.
+        for where in (line, json.dumps(r), json.dumps([{k: v for k, v in x.items() if k != "id"} for x in st["ledger"]])):
             self.assertNotIn(self.VALUE, where)
             self.assertNotIn(str(len(self.VALUE)), where, "not even its length")
         self.kvmd.posts = []
@@ -2669,3 +2670,68 @@ class SnapshotsNeverRestartTheStreamer(unittest.TestCase):
             with open(os.path.join(proc, str(pid), "comm"), "w") as f:
                 f.write(comm + "\n")
         self.assertEqual(W.ustreamer_pids(proc), [7, 9])
+
+
+class TypeSecretRegion(unittest.TestCase):
+    """At the macOS lock-screen dialog, an animated wallpaper changed 5-18 of the 144 cells between screenshot and type
+    (2026-11-19), so type_secret refused five times. A region around the prompt compares only that."""
+    # 1280x720 screenshot; the dialog in the middle, about 400x250 pixels.
+    REGION = {"left": 440, "top": 235, "right": 840, "bottom": 485, "width": 1280, "height": 720}
+
+    def setUp(self):
+        W.HOME = scratch()
+        self.key, self.grids = W.device_key, W.screen_grid
+        W.device_key = lambda paths=None: (b"t" * 32, "given")
+        W.store_secret("setup-password", "synthetic-value")
+        self.seen = bytes((i * 37) % 200 + 20 for i in range(144))
+        self.fresh = self.seen
+        W.screen_grid = lambda kvmd, width=1280: self.fresh
+
+    def tearDown(self):
+        W.device_key, W.screen_grid = self.key, self.grids
+
+    def ask(self, region=None):
+        k = FakeKvmd()
+        args = {"name": "setup-password", "prompt": "the lock screen's password dialog", "seen": W.frame_id(self.seen, 10 ** 12 - 1000)}
+        if region is not None:
+            args["region"] = region
+        r = W.handle({"op": "type_secret", "args": args}, {"name": "mini"}, k, None, lambda m: None, 10 ** 12, W.load("state.json", {"ledger": []}))
+        return r, [p for p in k.posts if p[0].startswith("/hid/print")]
+
+    def wallpaper_moves(self, cells):
+        self.fresh = bytes((b + 90) % 256 if i in cells else b for i, b in enumerate(self.seen))
+
+    def test_the_region_covers_the_prompt_and_is_never_one_cell(self):
+        cells = W.region_cells(self.REGION)
+        self.assertGreaterEqual(len(cells), W.FRAME_REGION_MIN_CELLS)
+        self.assertTrue(all(W.central_cell(i) for i in cells))
+        for bad in ({"left": 640, "top": 360, "right": 660, "bottom": 380, "width": 1280, "height": 720},  # one cell at most
+                    {"left": 900, "top": 100, "right": 800, "bottom": 400, "width": 1280, "height": 720},  # inside out
+                    {"left": 0, "top": 0, "right": 2000, "bottom": 400, "width": 1280, "height": 720},     # off the picture
+                    {"left": 0, "top": 0, "right": 100}, "box"):
+            r, typed = self.ask(bad)
+            self.assertEqual(r["code"], "input-invalid", bad)
+            self.assertEqual(typed, [])
+
+    def test_an_animated_wallpaper_outside_the_region_does_not_stop_it(self):
+        edges = [i for i in range(144) if not W.central_cell(i)][:18]
+        self.wallpaper_moves(edges)
+        r, typed = self.ask()
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertIn("at the screen's edges, outside its central 60%", r["result"])
+        self.assertIn("pass region", r["result"])
+        r, typed = self.ask(self.REGION)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(typed), 1)
+
+    def test_a_change_inside_the_region_still_refuses(self):
+        inside = W.region_cells(self.REGION)
+        self.wallpaper_moves(inside[:1])
+        r, typed = self.ask(self.REGION)
+        self.assertEqual(r["code"], "action-unavailable")
+        self.assertIn("parts of the region you gave changed", r["result"])
+        self.assertEqual(typed, [])
+        # A change in the middle of the screen, without a region: no hint about the edges.
+        self.wallpaper_moves([i for i in range(144) if W.central_cell(i)][:6])
+        r, _ = self.ask()
+        self.assertNotIn("edges", r["result"])
