@@ -775,11 +775,12 @@ async function peerCmd() {
   if (name === 'authorize') {
     // Your standing word, in the config; the KVM reads it from peer-trust.json, put there over root SSH like any secret.
     const cfg = loadConfig();
-    const macName = rest[0] || (Object.keys(cfg.macs || {}).length === 1 ? Object.keys(cfg.macs)[0] : null);
+    const macName = rest[0];
     need(macName, 'housesitter peer authorize <mac> [--by <you>] [--quote "<your words>"]');
+    const mac = macConfig(macName); // an unknown Mac refuses here, before anything is recorded or sent
     const sa = { by: opt.by || 'Ari', on: new Date().toISOString().slice(0, 10), ops: PeerSign.PEER_OPS, quote: opt.quote || 'standing authorization for signed peer requests' };
     saveConfig({ ...cfg, peer: { ...(cfg.peer || {}), standing_auth: sa } });
-    const x = { name: macName, mac: macConfig(macName), configFile: configPath(), deps: realDeps(macName, { secrets: secretStore(), saveMac: (fn) => updateMac(macName, fn) }) };
+    const x = { name: macName, mac, configFile: configPath(), deps: realDeps(macName, { secrets: secretStore(), saveMac: (fn) => updateMac(macName, fn) }) };
     const r = await pushPeerTrust(x);
     json ? emit({ ok: r.ok, standing_auth: sa, ...r }) : say(r.ok ? `recorded: ${sa.by} authorizes signed requests for ${sa.ops.join(' and ')}; key ${r.kid} is on the KVM` : `recorded in the config, but the KVM did not take it: ${r.detail}`);
     return r.ok ? 0 : 1;
