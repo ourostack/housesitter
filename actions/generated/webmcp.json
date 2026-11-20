@@ -1,9 +1,10 @@
 {
-  "generator": "ouro-actions 0.16.0",
+  "generator": "ouro-actions 1.4.1",
   "set": "housesitter",
   "tools": [
     {
       "name": "status",
+      "title": "Status",
       "description": "Read the Mac's KVM and sitter state: whether the KVM is reached, what the video and keyboard show, and the sitter's state. Changes nothing.",
       "inputSchema": {
         "type": "object",
@@ -18,6 +19,7 @@
     },
     {
       "name": "look",
+      "title": "Look",
       "description": "Take one look at the Mac's screen through its KVM and report what the sitter sees. Changes nothing.",
       "inputSchema": {
         "type": "object",
