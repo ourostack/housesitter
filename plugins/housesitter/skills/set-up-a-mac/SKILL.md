@@ -7,7 +7,7 @@ description: Use when the Mac on my cables is wiped, new or part-way set up (Set
 
 I take a wiped Mac from whatever screen it's on to the owner's reference setup, then hand it to my normal keep-alive duties. The owner does only what a person must: MFA taps on their phone, an Okta Verify or passkey prompt, a screen the sitter won't let me touch, moving my cables. Apart from a few up-front asks, I never block on them: what needs them waits for one sitting at the end (The owner's sitting).
 
-**I start it; the Mac's own agent finishes it.** I'm slow: every click is a full model turn on a 1 GB KVM, and the owner reads five still seconds as death. So I drive only what nothing on the Mac can do yet: Setup Assistant, the accessory Allow and Mirror, enrollment, the password change, Platform SSO, the Copilot app's install and first sign-in, and the kit's first pass. Then I type one prompt into the Mac's own Copilot app, pointing at the owner's finish brief, and take my hands off (step 6). That agent finishes everything else at full speed. From then on I watch, keep the progress window up, and type only what the sitter alone holds.
+**I start it; the Mac's own agent finishes it.** I'm slow: every click is a full model turn on a 1 GB KVM, and the owner reads five still seconds as death. So I drive only what nothing on the Mac can do yet: Setup Assistant, the accessory Allow and Mirror, enrollment and its compliance items, the password change, Platform SSO, and the kit's first pass. Then I type the owner's finish command in Terminal, which starts an agent on the Mac itself, and take my hands off (step 5). That agent finishes everything else at full speed. From then on I watch, keep the progress window up, and type only what the sitter alone holds.
 
 Every step is check-then-act: I look, decide whether the step is already done, act only if it isn't, and look again to confirm. A rerun, or a restart of the Mac, the KVM or me in the middle, is safe.
 
@@ -25,14 +25,12 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 | `setup_command` | The owner's one-line setup command. `kit_readme` says what it asks for; `rerun_step` reruns one of its steps; `kit_log` is the log it writes (like `~/Library/Logs/laptop-bootstrap.log`). |
 | `reference_dock`, `reference_apps`, `dock_step` | What done looks like: the reference Mac's Dock, in order (app names), and the apps it has in /Applications. `dock_step` is the kit's step that sets the Dock (like `prefs`), rerun with `rerun_step`. |
 | `microsoft_password_secret` | Optional, absent by default: the name of a secret sealed on the KVM that is the owner's Microsoft password. Only then do I type a Microsoft password. |
-| `finish_brief` | The owner's brief for the agent in the Mac's own Copilot app, as a path on the Mac (like `~/personal-desk/agent-capacity/mac-mini-work-machine-setup/laptop/FINISH.md`). The kit's first pass must bring it to the Mac. |
-| `copilot_account` | The GitHub account the Copilot app signs in with first. |
-| `copilot_install_command` | How to install the Copilot app if Company Portal doesn't list it (like `brew install --cask github-copilot-app`, once the kit's first pass has installed Homebrew). |
-| `operator` | `true` if the owner lets me arm and teach the sitter as their operator (step 7). Otherwise those commands are the owner's. |
+| `finish_command` | The owner's one line that starts the agent which finishes the setup on the Mac itself (like `bash ~/personal-desk/agent-capacity/mac-mini-work-machine-setup/laptop/finish.sh`, which runs the Copilot CLI on the gh sign-in the kit's first pass made, from the owner's brief). The kit's first pass must bring it to the Mac. |
+| `operator` | `true` if the owner lets me arm and teach the sitter as their operator (step 6). Otherwise those commands are the owner's. |
 
 **Secrets on the KVM:** only `mac`, the Mac's own login password after enrollment's password change. It is never a Microsoft password: the owner's Microsoft password may differ, and they may sign in with a passkey. Nothing else is sealed here unless the config names it; sealing needs root. I never take a password over the peer link. One-time codes (an Apple two-factor code) are fine.
 
-**This skill ends with the Mac's password set to `mac`.** With `enroll`, step 3's password change sets it. Without `enroll`, nothing does, so step 7 is the owner's.
+**This skill ends with the Mac's password set to `mac`.** With `enroll`, step 3's password change sets it. Without `enroll`, nothing does, so step 6 is the owner's.
 
 **My notes:** `setup-a-mac-notes.txt` in the same folder, kept with my own file tools. One line, with its time, per finished step, per message I sent, per step left to the owner, and which password the Mac has now (`initial`, `mac` or `unknown`; see the rule below). Plus the time the cables moved. I reread it on every wake. What the screen shows beats what the notes say.
 
@@ -49,12 +47,13 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **One password prompt at a time (m7).** Before I open Terminal or start anything that asks for a password, I check whether a prompt is already waiting, and answer that one.
 - **Never press Escape at a login window.** It switches to the list of users, where no field has focus.
 - **Never use the clipboard.** No cmd+c or cmd+v. I type with `sitter_type`.
-- **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` at the hand-over (step 7), before the sitter's armed try. If `sitter_status` shows it off, or ending before I'll be done, while I'm still setting up, I turn it on again. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
+- **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` at the hand-over (step 6), before the sitter's armed try. If `sitter_status` shows it off, or ending before I'll be done, while I'm still setting up, I turn it on again. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
 - **Budgets.** `sitter_type_secret` allows 20 an hour. Peer messages: no cap of our own; each goes out at once, and only GitHub's rate limit can make one wait.
-- **Poll while anything runs.** Until the hand-off (step 6), while a command, an install, a sign-in or a restart is under way, I take a `sitter_look` every 10-15 s. I answer at once any prompt that's mine: sudo's `Password:`, a macOS password or authentication sheet, an "Allow" for the kit's own tools. I never wait for a peer message or for the owner to notice a prompt.
+- **Poll while anything runs.** Until the hand-off (step 5), while a command, an install, a sign-in or a restart is under way, I take a `sitter_look` every 10-15 s. I answer at once any prompt that's mine: sudo's `Password:`, a macOS password or authentication sheet, an "Allow" for the kit's own tools. I never wait for a peer message or for the owner to notice a prompt.
 - **Clear what's in the way (m8, m11).** Until the hand-off, before each step I close notices, first-run windows and banners over the app I'm about to use. Once the step is done, I close every window it opened.
-- **A tidy desktop.** Until the hand-off, after each numbered step, I clear every notification and banner: I click the clock in the menu bar to open Notification Center, then Clear All on each group, then close it. I close finished windows as I go. On the desktop stay only the progress window and the active Terminal work window.
-- **The only sign-ins I need: Company Portal enrollment, Platform SSO registration, the Copilot app's first sign-in and the kit's first GitHub sign-in.** Sign-in windows that apps pushed by Intune open by themselves (Global Secure Access, Defender, Alertus and the like) never block me. I minimise them (cmd+m), note them for the report, and go on with the next step. I never answer their QR codes or ping the owner about them.
+- **A tidy desktop.** Until the hand-off, after each numbered step, I clear every notification and banner: each banner with its own X, one by one. I close finished windows as I go. On the desktop stay only the progress window and the active Terminal work window.
+- **Never wipe notifications to clear them.** No deleting or editing the notification database (`group.com.apple.usernoted`), no killing `usernoted` or `NotificationCenter`. On 2026-11-20 a wipe of that database deleted Platform SSO's "Registration Required" notification, the only way to Intune's last action item. Banners go only with each one's X.
+- **The only sign-ins I need: Company Portal enrollment, Platform SSO registration and the kit's first GitHub sign-in.** Sign-in windows that apps pushed by Intune open by themselves (Global Secure Access, Defender, Alertus and the like) never block me. I minimise them (cmd+m), note them for the report, and go on with the next step. I never answer their QR codes or ping the owner about them.
 - **A lock during a wait is mine to undo.** If the screen locks or sleeps mid-setup, I unlock it myself in setup mode, as in step 2: `initial_password` before the enrollment password change, `mac` after.
 - **Never blind.** If `sitter_screenshot` or `sitter_look` gets no picture (HTTP 500, no live video, no frame) for more than 30 s, I don't wait. I restart kvmd, which brings its streamer back: `systemctl restart kvmd`, or `/etc/init.d/S*kvmd restart` where there's no systemd. If there's still no picture a minute later, I reboot the KVM (`reboot`). Setup mode survives that, and on waking I start again at Where am I.
 - **Keep the KVM light.** Before a long setup, I stop my own processes that aren't needed for it: the memory sampler (`/etc/init.d/S99housesitter-samples stop`), status publishers, and any shell or tool of mine left running. Never the sitter, kvmd, my watcher or my own turn. `kvm_health` before and after. I start the sampler again at the hand-over.
@@ -65,9 +64,9 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 
 Stuck means one of three things: the screen hasn't changed in the step's wait time, the same thing failed twice, or the sitter refused my hands.
 
-- **Ouroboros**, through `peer_send` with `now: true`, for anything a signed-in Mac can do: read a code on the reference Mac, approve a device code this Mac can't finish itself (step 5), run one of the config's commands.
+- **Ouroboros**, through `peer_send` with `now: true`, for anything a signed-in Mac can do: read a code on the reference Mac, approve a device code this Mac can't finish itself (step 4), run one of the config's commands.
 - **The owner: deferred by default** (the owner: "anything that needs me, note and load together at the end of the process"). When a step needs a person (a passkey or QR code, an MFA number, Okta Verify, an Apple code Ouroboros can't read, a physical click, a screen the sitter won't let me touch), I don't wait and I don't ping. I mark it deferred: a line "DEFERRED: <step>: <what the owner does>" in the progress window (so in `~/.setup-status`) and in my notes. Then I go on with every step that doesn't depend on it. Wherever this skill says to tell or ping the owner, it means this, except for the two up-front asks below.
-- **Only these asks are up-front, because nothing proceeds without them:** the cable move's Allow and Mirror (Moving the cables); enrollment's first sign-in (step 3, items 2 and 3: the passkey, QR code or MFA number); and any person step in a sign-in the hand-off waits on (the Copilot app's first sign-in in step 4, the kit's first GitHub sign-in in step 5). For those, I go to the owner at once through `sitter_notify`, straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` for a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for its record only (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
+- **Only these asks are up-front, because nothing proceeds without them:** the cable move's Allow and Mirror (Moving the cables); enrollment's first sign-in (step 3, items 2 and 3: the passkey, QR code or MFA number), and any person step in its compliance items (step 3, item 8); and any person step in the kit's first GitHub sign-in (step 4), which the hand-off waits on. For those, I go to the owner at once through `sitter_notify`, straight to their phone (ntfy push, and its email): one line with the ask and the number to match, plus `screenshot: true` for a QR code or a number. In the same turn I `peer_send` Ouroboros the same line for its record only (not `now`), and I don't wait on it. Only if `sitter_notify` refuses (no notify target, its budget used) do I use Telegram or Teams, or ask Ouroboros (`now: true`) to pass it on.
 - **Once.** Each up-front ask and each deferred item goes out once: which Mac, what's on its screen, exactly what to do (with every value they'll need), and why. The same ask never goes to both the owner and Ouroboros.
 - **Then I go on.** A step left to the owner doesn't stop steps that don't need it. While anything runs, I look every 10-15 s (Poll while anything runs).
 
@@ -80,7 +79,7 @@ Before the owner moves my HDMI and USB-C, they tell me. Then:
 3. **Setup mode on** (the rule above). The sitter knows one Mac at a time, so its password and the reference Mac's taught screens would otherwise apply to the new Mac; setup mode stops it acting by itself.
 4. After the move, `sitter_look` must show a different Mac: a Setup Assistant pane, a new login window, a new wallpaper. If it doesn't, I stop and tell the owner.
 5. **No visible effect means an extended display.** If a laptop shows a desktop with only wallpaper (often dimmed), a menu bar and no windows, and one key or click changes nothing on the picture, my input is landing on the built-in screen, which I can't see (the mouse maps to the main display). I don't try more keys. I tell the owner once: "<mac> isn't mirrored yet: System Settings > Displays > GLKVM > 'Mirror for Built-in Display', or close the lid with power connected." I never change the displays myself; a person at the Mac does (docs/hardware.md).
-6. When the cables go back, setup mode is already off (step 7). I look and confirm it's the reference Mac, and that `sitter_status` shows setup mode off and the password verified. If the password isn't verified, I arm and teach it as in step 7 at the reference Mac's next restart, or ask the owner to. Then I tell Ouroboros its watch has resumed.
+6. When the cables go back, setup mode is already off (step 6). I look and confirm it's the reference Mac, and that `sitter_status` shows setup mode off and the password verified. If the password isn't verified, I arm and teach it as in step 6 at the reference Mac's next restart, or ask the owner to. Then I tell Ouroboros its watch has resumed.
 
 ## Visible progress
 
@@ -93,9 +92,9 @@ The owner reads a still screen as stuck. So from the first desktop until the han
    ```
 
    It first starts `caffeinate -dimsu` in the background, so the Mac doesn't lock, sleep or dim during setup. Then it titles the window "Setup progress" and moves it to the top-left corner. Every 2 s it redraws the clock, the last lines of `~/.setup-status`, and the last lines of the kit's log. A line typed into it, followed by Return, is added to `~/.setup-status` with the time.
-2. **A line at every step start and every wait,** until the hand-off (then the local agent writes them). I click the progress window, `sitter_type` "<doing now>, <waiting for>" and Return, then click back into the window I was working in. Example: "Enrollment: waiting for the owner's MFA tap, number 47". Never a password or a code.
+2. **A line at every step start and every wait,** until the hand-off (then the finishing agent writes them). I click the progress window, `sitter_type` "<doing now>, <waiting for>" and Return, then click back into the window I was working in. Example: "Enrollment: waiting for the owner's MFA tap, number 47". Never a password or a code.
 3. **One progress window, and never my commands in it.** If a "Setup progress" window is already on screen (after a restart of me), I use it. My commands go only into a work window opened with cmd+n. Before typing a command or a password, a fresh look confirms the front window isn't "Setup progress".
-4. **Closed at the hand-over** (step 7), as I close everything I open. I click it, press ctrl+c, `sitter_type` `kill %1; rm ~/.setup-status` and Return (that stops `caffeinate`), then cmd+w.
+4. **Closed at the hand-over** (step 6), as I close everything I open. I click it, press ctrl+c, `sitter_type` `kill %1; rm ~/.setup-status` and Return (that stops `caffeinate`), then cmd+w.
 
 ## Where am I?
 
@@ -115,7 +114,7 @@ With my hands working, I answer each pane by its heading, one at a time, looking
 | Accessibility, Data & Privacy | Not Now; Continue. |
 | Wi-Fi network, How Do You Connect? | Ethernet if offered. A Wi-Fi password isn't mine to type: if Wi-Fi is the only way, that's stuck. |
 | Transfer Your Information, Migration Assistant | Not Now, or Set up as new. |
-| Sign In with Your Apple Account | Set Up Later, then Skip. It goes to the owner's sitting (step 8). |
+| Sign In with Your Apple Account | Set Up Later, then Skip. It goes to the owner's sitting (step 7). |
 | Terms and Conditions | Agree, then Agree in the sheet. |
 | Create a Mac Account | Full name `full_name`. Account name `short_name` (cmd+a first if it differs). Password and Verify: `initial_password` with `sitter_type`, a fresh look before each field. Hint empty. Continue. |
 | Enable Location Services, Select Your Time Zone | Continue with what's shown. |
@@ -138,14 +137,16 @@ In setup mode I type here myself, after a fresh look shows the password field fo
 - **Notes say `initial`, `unknown`, or don't record the change:** `sitter_type` `initial_password`, then `sitter_key` "return".
 - **Notes say `mac`:** `sitter_type_secret` `mac`, prompt "<login/FileVault> password field on <mac>", `enter: true`, `seen`.
 - **Outside setup mode, notes say `initial`:** the sitter refuses `sitter_type` at a password screen. Stuck. I tell the owner once: "<mac> is at its <login/FileVault> screen. Its password is still the setup password, `<initial_password>`, and the sitter won't type it there. Please log in once."
-- **Outside setup mode, notes say `mac`:** `sitter_unlock`. If it refuses because this screen hasn't been taught, or the password is on hold: at FileVault I do step 7's items 1 and 3 now, if `operator` is set and the sitter saw this boot less than 15 minutes ago (`learn-prompt --filevault` is refused after that). Otherwise, or at a login or lock screen, I'm stuck.
+- **Outside setup mode, notes say `mac`:** `sitter_unlock`. If it refuses because this screen hasn't been taught, or the password is on hold: at FileVault I do step 6's items 1 and 3 now, if `operator` is set and the sitter saw this boot less than 15 minutes ago (`learn-prompt --filevault` is refused after that). Otherwise, or at a login or lock screen, I'm stuck.
 - I never press Escape here, and I never wake the screen with keys; the sitter does that itself.
 
 **Done when:** a desktop with a menu bar.
 
 ## 3. Work enrollment (only if `enroll` is set)
 
-**Done when:** in Terminal, `profiles status -type enrollment` reads "MDM enrollment: Yes", my notes say `password: mac`, and `app-sso platform -s` shows `"registrationCompleted" : true`. Platform SSO comes before steps 4 and 5: it makes Microsoft sign-in work in every browser on the Mac without a passkey, which every later device code depends on.
+**Done when, first and above all:** Company Portal > Devices > this Mac > Check status reports no action items, and access is allowed. "MDM enrollment: Yes" is not done: a Mac with action items left never becomes compliant, and loses its enrollment (2026-11-20). Nothing after this step starts until Check status is clean.
+
+**Also:** in Terminal, `profiles status -type enrollment` reads "MDM enrollment: Yes", my notes say `password: mac`, and `app-sso platform -s` shows `"registrationCompleted" : true`. Platform SSO comes before step 4: it makes Microsoft sign-in work in every browser on the Mac without a passkey, which every later device code depends on.
 
 1. **Install Company Portal** if Spotlight (cmd+space, "Company Portal") doesn't find it. In a Terminal work window (cmd+space, "Terminal", Return, then cmd+n), `sitter_type` `enroll.install_command`, Return. At `Password:`, `sitter_type` `initial_password`, Return. Done when the command ends without an error.
 2. **Sign in.** Company Portal, Sign In. Email field focused: `sitter_type` `work_email`, Return. At Microsoft's "Enter password" page, I take the passkey route from the rule above: "Sign in another way", then the passkey or QR option, and one ping to the owner with what's on screen. With `microsoft_password_secret` set, I type that secret instead, after a fresh look, with `enter: true` and `seen`.
@@ -161,20 +162,18 @@ In setup mode I type here myself, after a fresh look shows the password field fo
 
 I note `password: mac` the moment the change succeeds. If it fails halfway, I note `password: unknown` and tell the owner once.
 
-7. **Platform SSO registration, right after the change and before step 4.** It arrives when Intune delivers its profile, as a "Registration Required" notification; I don't wait idly for it. If it isn't there, I look for it in System Settings > Users & Groups and Company Portal, and check `app-sso platform -s` in a work window every 10-15 s. When it's there: click it, then Register. A Microsoft sign-in follows (items 2 and 3 again). At "enter your Mac password", the password the Mac has now (the rule above; `mac` after the change).
+7. **Platform SSO registration, right after the change and before step 4.** It arrives when Intune delivers its profile, as a "Registration Required" notification; I don't wait idly for it. If it isn't there, I look for it in System Settings > Users & Groups and Company Portal, and check `app-sso platform -s` in a work window every 10-15 s. If "Registration Required" is missing although `app-sso platform -s` shows the extension configured but not registered, I restart the agent that posts it: `killall AppSSOAgent` in a work window (macOS starts it again, and it posts the notification again). When it's there: click it, then Register. A Microsoft sign-in follows (items 2 and 3 again). At "enter your Mac password", the password the Mac has now (the rule above; `mac` after the change).
 
-## 4. The Copilot app
+8. **Compliance, before anything else.** Company Portal > Devices > this Mac > Check status. I copy its action-items message word for word into my notes and the progress window. Then I do each item, for example:
+   - register the Mac with the work account, through "Registration required" or Edge's "Set up your device to get access";
+   - update macOS to the version it names (Software Update, and the restart: I unlock in setup mode);
+   - turn on what it names (FileVault, a firewall).
 
-Right after Platform SSO, as early as it can be, because the hand-off (step 6) needs it.
+   Then Check status again. I repeat until it reports no action items and access allowed. An item that needs a person is an up-front ask: nothing proceeds without it.
 
-**Done when:** the GitHub Copilot app is in /Applications, open, and signed in as `copilot_account`.
+## 4. The kit's first pass
 
-1. **Install it.** Company Portal > Apps: if it lists GitHub Copilot, Install, then look every 10-15 s until it's in /Applications. If it isn't listed, `copilot_install_command` in a work window. If that needs Homebrew and there's none yet, I do step 5 first and come back.
-2. **First sign-in.** Open it and Sign in, as `copilot_account`. If it needs a person (a passkey, Okta Verify), that's an up-front ask: `sitter_notify` at once, with a screenshot.
-
-## 5. The kit's first pass
-
-**Done when:** the kit's first pass has brought `finish_brief` to the Mac (`ls <finish_brief>` in a second work window finds it). The kit goes on in its own window; from the hand-off, that's the local agent's.
+**Done when:** the kit's first pass has brought `finish_command`'s script to the Mac (`ls` of it in a second work window finds it). The kit goes on in its own window; from the hand-off, that's the finishing agent's.
 
 1. **Terminal.** If a Terminal work window already shows the kit's output, I use it and open no other. Otherwise cmd+space, "Terminal", Return, then cmd+n for a work window.
 2. `sitter_type` `setup_command`, Return.
@@ -204,14 +203,14 @@ Right after Platform SSO, as early as it can be, because the hand-off (step 6) n
 - **Any other account** (a personal GitHub account): Ouroboros approves it in its signed-in browser (`peer_send`, `now: true`). If it reports Okta Verify, FastPass or a passkey, that goes to the owner through `sitter_notify`.
 - **Expired** (gh: "expired", `expired_token`; az: AADSTS70020 or "code expired"; the device page says the code is invalid): I rerun that step at once with `rerun_step` for a fresh code, and start on the new one.
 
-## 6. Hand off to the Mac's own agent
+## 5. Hand off to the finishing agent
 
-**Done when:** my notes say "handed off". After a wake I never send the prompt again.
+**Done when:** my notes say "handed off". After a wake I start `finish_command` again only if its window shows it ended without its report.
 
-1. **Stop the kit's first pass**, so only one kit runs: in its Terminal window, at a moment it isn't at a password prompt, ctrl+c. Its steps are safe to rerun, and the brief reruns them. I leave the window open.
-2. In the Copilot app, a new session. If it asks for a folder: the owner's home folder, or the folder `finish_brief` is in. I click its message box, and a fresh look confirms the caret is there.
-3. I `sitter_type` one line, then Return: "Finish setting up this Mac by following <finish_brief>. Housesitter on the KVM has done <the steps done, from my notes> and hands over to you now. Keep the 'Setup progress' window open. Run anything that needs sudo in a Terminal window, not your own shell: Housesitter types the password there." Then I note "handed off".
-4. **Hands off.** From here the local agent drives. The finish brief covers:
+1. **Stop the kit's first pass**, so only one kit runs: in its Terminal window, at a moment it isn't at a password prompt, ctrl+c. Its steps are safe to rerun, and the finishing agent reruns them.
+2. In that window, `sitter_type` `finish_command` and Return, then I note "handed off". Its first sudo asks for the Mac's password once: I type it (`sitter_type_secret` `mac`, with `seen`). No Copilot app sign-in is needed: it runs on the gh sign-in the kit's first pass made.
+3. I tell the finishing agent nothing more; the owner's brief says what to do, and that its done check starts with Company Portal > Devices > this Mac > Check status showing no action items. If the brief doesn't say so, I add that to my notes for the owner's report.
+4. **Hands off.** From here the finishing agent drives. The finish brief covers:
    - the kit's remaining steps and their device codes (Microsoft-backed ones finished in the Mac's own browser);
    - the apps Intune assigned but hasn't pushed (Company Portal > Apps);
    - making the Dock and /Applications match `reference_dock` and `reference_apps`, as far as it can without the owner;
@@ -220,14 +219,14 @@ Right after Platform SSO, as early as it can be, because the hand-off (step 6) n
 
 **After the hand-off, I only watch:**
 
-- A look every 10-15 s. The progress window stays up, and the local agent adds its lines to `~/.setup-status`.
+- A look every 10-15 s. The progress window stays up, and the finishing agent adds its lines to `~/.setup-status`.
 - **The only things I still type:**
   - a password prompt only the sitter can answer (sudo, a macOS password sheet), with `sitter_type_secret` as before;
   - an unlock if the screen locks.
-- If the screen stays still for a minute with no line in `~/.setup-status` saying why, I type one line into the app's session asking what it's waiting for, then take my hands off again.
-- **Finished** when `~/.setup-status` holds the local agent's report, with its done check passing except for the items it lists for the owner. Then step 7, then step 8 if anything is listed.
+- If the screen stays still for a minute with no line in `~/.setup-status` saying why, I read the last lines of the finish window. If it's at a prompt that's mine (a password), I answer it. If it has ended without its report, I run `finish_command` again in the same window.
+- **Finished** when Company Portal's Check status for this Mac still shows no action items, and access allowed (the first item of every done check; I look at it myself), and `~/.setup-status` holds the finishing agent's report, with its done check passing except for the items it lists for the owner. Then step 6, then step 7 if anything is listed.
 
-## 7. Hand over to keep-alive
+## 6. Hand over to keep-alive
 
 **Done when:** my notes record that this Mac's FileVault screen was taught and the sitter's try reached the desktop.
 
@@ -243,15 +242,15 @@ Teaching needs `operator: true`. Without it, I ask the owner to run `housesitter
 2. I restart the Mac: Apple menu › Restart…, then Restart.
 3. If the KVM's picture stays dark for 2 minutes after the boot while the Mac is on, FileVault is drawing only on the built-in screen. I tell the owner once: "Close <mac>'s lid with power connected, so the KVM's display is its only one." When `sitter_look` shows the FileVault password field, within 15 minutes of the boot, I run `<sitter> learn-prompt --filevault taught by Housesitter during setup, field seen on the KVM`.
 4. The sitter types its one armed try by itself. If the desktop follows, the password is verified. If not, it goes back to unverified, for the reference Mac too, and I tell the owner once.
-5. **I report** to the owner and Ouroboros. I never call it done while the Dock or /Applications differs from the reference; until the owner's sitting is over, I name each difference instead. The report says what's set up, what's deferred for the owner, how many times I needed them, and the time from the cable move to here. If anything is deferred, step 8 follows. Otherwise, from now on my usual skill applies.
+5. **I report** to the owner and Ouroboros. I never call it done while the Dock or /Applications differs from the reference; until the owner's sitting is over, I name each difference instead. The report says what's set up, what's deferred for the owner, how many times I needed them, and the time from the cable move to here. If anything is deferred, step 7 follows. Otherwise, from now on my usual skill applies.
 
-## 8. The owner's sitting
+## 7. The owner's sitting
 
-**Done when:** no deferred item is left in my notes, and the Dock and /Applications match the reference.
+**Done when:** Company Portal's Check status for this Mac shows no action items, no deferred item is left in my notes, and the Dock and /Applications match the reference.
 
-1. **One list, once.** When everything that doesn't need the owner is done, I send one `sitter_notify` with the deferred items in the order they'll come up: mine, and the local agent's in `~/.setup-status` (its `DEFERRED:` lines, or a section for the owner). Each says what the owner does ("Okta Verify: approve GitHub on your phone", "passkey for az login"). The full list also goes in the progress window, if it's still open, and to Ouroboros for its record.
-2. **When the owner says they're ready** (on any channel I hear), the prompts go up one after another, so they're all done in one sitting. One line from me in the app's session asks the local agent to bring each up: rerunning its step (with `rerun_step` for a fresh device code) and bringing its window to the front. I tell the owner in one line what's on screen, type only passwords the sitter holds, and look every 10-15 s until it's done. Then I note it done and move to the next.
-3. **Then the reference check.** Once the sitting is over (the Apple Account signed in, so App Store apps can arrive), one line from me in the app's session asks the local agent to rerun its Dock and /Applications check against `reference_dock` and `reference_apps` and to fix what differs. I call the setup done only when they match.
+1. **One list, once.** When everything that doesn't need the owner is done, I send one `sitter_notify` with the deferred items in the order they'll come up: mine, and the finishing agent's in `~/.setup-status` (its `DEFERRED:` lines, or a section for the owner). Each says what the owner does ("Okta Verify: approve GitHub on your phone", "passkey for az login"). The full list also goes in the progress window, if it's still open, and to Ouroboros for its record.
+2. **When the owner says they're ready** (on any channel I hear), the prompts go up one after another, so they're all done in one sitting. I bring each up: rerunning its step in a work window (with `rerun_step` for a fresh device code) and bringing its window to the front. I tell the owner in one line what's on screen, type only passwords the sitter holds, and look every 10-15 s until it's done. Then I note it done and move to the next.
+3. **Then the reference check.** Once the sitting is over (the Apple Account signed in, so App Store apps can arrive), I run `finish_command` again, so the finishing agent reruns its Dock and /Applications check against `reference_dock` and `reference_apps` and fixes what differs. I call the setup done only when they match.
 4. Anything still open after that goes in my report as the owner's, with what it needs.
 
 ## Contribute back
