@@ -48,15 +48,15 @@ class WatchTest(PluginCase):
         wake = [json.loads(ln) for ln in self.lines if json.loads(ln).get("event") == "wake"]
         self.assertEqual([(w["source"], w["id"], w["ok"]) for w in wake], [("peer", "peer-aa01", True)])
 
-    def test_it_flushes_the_queued_peer_messages_when_they_are_due(self):
-        peer.send("first", ts=self.now)
-        q = peer.send("queued", ts=self.now + 30)
+    def test_it_sends_what_githubs_rate_limit_kept_queued_once_the_wait_is_over(self):
+        self.gh.patch_fail.append((429, {"Retry-After": "120"}, "rate limit"))
+        q = peer.send("queued", ts=self.now)
         self.assertEqual(q["status"], "queued")
         patches = lambda: [r for r in self.gh.requests if r["method"] == "PATCH"]
         self.now += 60
         self.w.tick()
-        self.assertEqual(len(patches()), 1)  # not due yet
-        self.now += 301
+        self.assertEqual(len(patches()), 1)  # GitHub's wait isn't over: nothing more written
+        self.now += 61
         self.w.tick()
         self.assertEqual(len(patches()), 2)
         self.assertEqual(set(patches()[1]["body"]["files"]), {q["file"]})

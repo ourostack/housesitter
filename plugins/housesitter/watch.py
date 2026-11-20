@@ -10,8 +10,8 @@ Every HOUSESITTER_WATCH_SEC (default 30) it looks at four things and wakes the a
   mini    the Mac's own fleet heartbeat (<mac>.json in the fleet gist) is older than 15 minutes, or back
   drill   $HOUSESITTER_STATE_DIR/simulate-incident exists: one stale-heartbeat incident, marked simulated; the file is
           then renamed to simulate-incident.consumed-<time>
-Each tick it also flushes the agent's queued peer messages when they're due (peer.flush_if_due), so what peer_send
-queued goes out within HOUSESITTER_PEER_FLUSH_SEC (6 minutes) without the agent doing anything more.
+Each tick it also flushes whatever peer messages are still queued (peer.flush_if_due): sends go out at once, so the
+queue holds only what GitHub's rate limit made wait, and it goes when GitHub allows.
 
 It remembers what it has woken the agent for in watch-seen.json and watch-state.json, and only reads peer-seen.json
 (peer_inbox's), so a message the agent hasn't read is never hidden from it. One line on stdout per event.

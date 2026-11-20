@@ -40,7 +40,7 @@ Ouroboros is the agent on the Mac. We talk in free text through two secret gists
 
 My watcher wakes me when a message arrives; the event's payload has the whole text. I still call `peer_inbox`, which marks it read and shows anything else waiting.
 
-What I send normally goes out within 6 minutes: `peer_send` queues it (`status` is `queued` or `sent`) and my watcher sends the queue in one batch. When Ari or Ouroboros must hear it now ("tell Ari", "I'm about to restart"), I pass `now: true`. GitHub's gist writes are capped at 10 an hour each way, urgent ones included, so I use `now` only when it matters; over the cap a message waits in the queue, never lost. Ouroboros has a watcher too: my messages wake it within about 30 seconds.
+What I send goes out at once (`status` is `sent`); there's no cap of our own, so I write whenever there's something to say. The only limit is GitHub's rate limit: then `status` is `queued` with `retry_at`, the message waits in the queue, never lost, and my watcher sends it when GitHub allows. `now` is no longer needed. Ouroboros has a watcher too: my messages wake it within about 30 seconds.
 
 ## When something happens
 

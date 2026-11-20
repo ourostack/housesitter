@@ -6,13 +6,13 @@
 // {v: 1, id, at, from, to, text, re?}. A read is conditional (ETag; 304: nothing new) and returns the messages not yet
 // in the seen-set, oldest first.
 //
-// GitHub allows about 100 gist writes an hour per user, shared by the whole fleet, so sending is batched: a message
-// goes into a durable queue (peer-outbox.jsonl) and a flush writes everything queued, and deletes the sender's own
-// files older than 24 hours, in one PATCH. A flush happens at most once every HOUSESITTER_PEER_FLUSH_SEC (default 360)
-// after the last one, at once for an urgent message (now), and never more than HOUSESITTER_PEER_MAX_PER_HOUR (default
-// 10) times in any 60 minutes; over the cap, messages wait in the queue and peer-log.jsonl gets a peer-cap line.
-// send tries a flush; inbox, `housesitter peer flush` and `housesitter peer watch` (src/peer-watch.mjs) flush whatever
-// is due.
+// No cap and no batching of our own (the owner, 2026-11-19: "set no caps unless there is some fundamental limit"): a
+// message goes into a durable queue (peer-outbox.jsonl) and out at once, everything queued, with the deletion of the
+// sender's own files older than 24 hours, in one PATCH. The only limit is GitHub's: when it answers a write with a rate
+// limit (429, or 403 with Retry-After, x-ratelimit-reset or "rate limit" in its message), the messages stay queued, the
+// wait is logged (peer-wait in peer-log.jsonl) and nothing is written until then. send flushes; inbox,
+// `housesitter peer flush` and `housesitter peer watch` (src/peer-watch.mjs) flush whatever is still queued.
+// HOUSESITTER_PEER_FLUSH_SEC and HOUSESITTER_PEER_MAX_PER_HOUR are no longer read.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -24,12 +24,19 @@ export const O_TO_H = 'd10a53ca03a65b26aa2a4bbb96cec03d';
 export const H_TO_O = '94a9ee97baab459bb32a37d6dbb7c52d';
 export const KEEP_MS = 24 * 3600 * 1000;
 export const SEEN_MAX = 500;
-export const FLUSH_SEC = 360;
-export const MAX_PER_HOUR = 10;
 // The peer gists' owner. Without GH_TOKEN the link uses gh's token for this login, not gh's active account: GitHub
 // limits gist reads per token, and another account's token may be spent (2026-11-10, on another account).
 export const OWNER = 'arimendelow';
 const NAME = /^(\d{8})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{8}\.json$/;
+
+// When GitHub's rate limit lets us write again (ms), for an error from a write; null when it isn't a rate limit. Its
+// Retry-After first, then x-ratelimit-reset (epoch seconds), else a minute.
+export function rateLimitedUntil(e, now) {
+  const limited = e?.status === 429 || (e?.status === 403 && (e.retryAfter != null || e.reset != null || /rate limit/i.test(e.message || '')));
+  if (!limited) return null;
+  const at = e.retryAfter != null ? now + e.retryAfter * 1000 : e.reset != null ? e.reset * 1000 : now + 60e3;
+  return Math.max(at, now + 1000);
+}
 
 export const stamp = (ms) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -131,9 +138,10 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
     try { return fn(); } finally { release(); }
   };
 
-  // Write the queue to the out gist in one PATCH, with the deletions of files over a day old, if it's due (now: at
-  // once) and the hourly cap allows. A failed PATCH leaves the messages queued and throws; it counts against the cap.
-  async function flush({ now = false } = {}) {
+  // Write the queue to the out gist in one PATCH, with the deletions of files over a day old, unless GitHub asked us to
+  // wait. GitHub's rate limit keeps the messages queued until the time it gave; any other failed PATCH throws, and the
+  // messages stay queued for the next flush.
+  async function flush() {
     const ts = clock();
     fs.mkdirSync(dir, { recursive: true });
     const release = lock(path.join(dir, 'peer-flush.lock'), { wait: false, staleMs: 120000 });
@@ -142,18 +150,7 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
       const queue = withQueueLock(readQueue);
       if (!queue.length) return { ok: true, sent: [], queued: 0 };
       const st = readJson(flushFile, {}) || {};
-      const writes = [].concat(st.writes || []).filter((w) => typeof w === 'number' && ts - w < 3600e3).sort((a, b) => a - b);
-      const every = Math.max(0, int(env.HOUSESITTER_PEER_FLUSH_SEC, FLUSH_SEC)) * 1000;
-      if (!now && typeof st.last === 'number' && ts - st.last < every) return { ok: true, sent: [], queued: queue.length, next_flush_at: iso(st.last + every) };
-      const cap = Math.max(1, int(env.HOUSESITTER_PEER_MAX_PER_HOUR, MAX_PER_HOUR));
-      if (writes.length >= cap) {
-        const nextAllowed = iso(writes[writes.length - cap] + 3600e3);
-        if (typeof st.cap_logged !== 'number' || ts - st.cap_logged >= 60e3) {
-          log({ at: iso(ts), event: 'peer-cap', queued: queue.length, next_allowed_at: nextAllowed });
-          writeJson(flushFile, { ...st, writes, cap_logged: ts });
-        }
-        return { ok: true, sent: [], queued: queue.length, capped: true, next_allowed_at: nextAllowed };
-      }
+      if (typeof st.retry_at === 'number' && ts < st.retry_at) return { ok: true, sent: [], queued: queue.length, rate_limited: true, retry_at: iso(st.retry_at) };
       let pruned = [];
       try {
         const g = (await gist(outGist)).body;
@@ -161,9 +158,16 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
       } catch { /* pruning is housekeeping: a failed read never stops a message */ }
       const files = Object.fromEntries(pruned.map((n) => [n, null]));
       for (const e of queue) files[e.file] = { content: JSON.stringify(e.msg) };
-      writeJson(flushFile, { ...st, writes: [...writes, ts] });
-      await req('PATCH', `${api}/gists/${outGist}`, { body: { files } });
-      writeJson(flushFile, { ...st, writes: [...writes, ts], last: ts });
+      try {
+        await req('PATCH', `${api}/gists/${outGist}`, { body: { files } });
+      } catch (e) {
+        const until = rateLimitedUntil(e, ts);
+        if (until == null) throw e;
+        writeJson(flushFile, { last: st.last, retry_at: until });
+        log({ at: iso(ts), event: 'peer-wait', queued: queue.length, retry_at: iso(until), status: e.status, why: e.message.slice(0, 200) });
+        return { ok: true, sent: [], queued: queue.length, rate_limited: true, retry_at: iso(until) };
+      }
+      writeJson(flushFile, { last: ts });
       const done = new Set(queue.map((e) => e.msg.id));
       const left = withQueueLock(() => {
         const rest = readQueue().filter((e) => !done.has(e.msg.id));
@@ -173,7 +177,7 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
         return rest;
       });
       for (const e of queue) log({ dir: 'sent', gist: outGist, file: e.file, msg: e.msg });
-      log({ dir: 'flush', gist: outGist, at: iso(ts), files: queue.map((e) => e.file), pruned, urgent: Boolean(now) });
+      log({ dir: 'flush', gist: outGist, at: iso(ts), files: queue.map((e) => e.file), pruned });
       return { ok: true, sent: queue.map((e) => e.msg.id), queued: left.length, pruned };
     } finally {
       release();
@@ -196,9 +200,9 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
         try { fs.writeSync(fd, `${JSON.stringify({ file, msg })}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
       });
       let r;
-      try { r = await flush({ now }); } catch (e) { r = { error: e.message }; } // it stays queued for the next flush
+      try { r = await flush(); } catch (e) { r = { error: e.message }; } // it stays queued for the next flush
       const out = { ok: true, id, at: msg.at, file, to, status: (r.sent || []).includes(id) ? 'sent' : 'queued' };
-      for (const k of ['pruned', 'queued', 'next_flush_at', 'capped', 'next_allowed_at', 'busy', 'error']) if (k in r) out[k] = r[k];
+      for (const k of ['pruned', 'queued', 'rate_limited', 'retry_at', 'busy', 'error']) if (k in r) out[k] = r[k];
       return out;
     },
     // The peer's messages not yet read with inbox, without marking them; a conditional GET against etag (from an
@@ -214,7 +218,7 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
       fs.mkdirSync(dir, { recursive: true });
       let flushed = {};
       if (mark) { try { flushed = await flush(); } catch (e) { flushed = { error: e.message }; } }
-      const outbox = flushed.sent?.length || flushed.error || flushed.capped ? { outbox: Object.fromEntries(Object.entries(flushed).filter(([k]) => k !== 'ok')) } : {};
+      const outbox = flushed.sent?.length || flushed.error || flushed.rate_limited ? { outbox: Object.fromEntries(Object.entries(flushed).filter(([k]) => k !== 'ok')) } : {};
       const etagFile = path.join(dir, 'peer-etag.json');
       const seenFile = path.join(dir, 'peer-seen.json');
       const etags = readJson(etagFile, {}) || {};

@@ -528,7 +528,12 @@ async function main() {
     return r.ok ? 0 : 1;
   }
   if (cmd === 'apple-account') return appleAccount();
-  if (cmd === 'peer' && ['flush', 'watch'].includes(name)) requireMac(rest[0]);
+  if (cmd === 'peer' && ['flush', 'watch'].includes(name)) {
+    // With exactly one Mac in the config, it is the one: `housesitter peer flush` needs no name.
+    const known = Object.keys(loadConfig().macs || {});
+    if (!rest[0] && known.length === 1) rest = [known[0], ...rest.slice(1)];
+    requireMac(rest[0]);
+  }
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
   if (cmd === 'steer') return steerCmd();
@@ -764,9 +769,8 @@ async function peerCmd() {
   let user;
   try { user = loadConfig().peer?.user; } catch { user = undefined; }
   const p = Peer.peer({ dir: path.dirname(configPath()), user });
-  const waiting = (r) => (r.capped ? `the hourly cap is reached; it goes out after ${r.next_allowed_at}`
-    : r.error ? `it goes out at the next flush (${r.error})`
-    : r.next_flush_at ? `it goes out by ${r.next_flush_at}` : 'it goes out at the next flush');
+  const waiting = (r) => (r.rate_limited ? `GitHub asked us to wait; it goes out after ${r.retry_at}`
+    : r.error ? `it goes out at the next flush (${r.error})` : 'it goes out at the next flush');
   if (name === 'send') {
     const text = rest.join(' ');
     need(text, 'housesitter peer send <text> [--re <id>] [--now]');
@@ -778,7 +782,7 @@ async function peerCmd() {
   }
   if (name === 'flush') {
     const r = await p.flush({ now: !!opt.now });
-    json ? emit(r) : say(r.sent.length ? `sent ${r.sent.length} queued message${r.sent.length === 1 ? '' : 's'}` : r.queued ? `${r.queued} queued: ${waiting(r).replace(/^it goes/, 'they go')}` : 'nothing queued');
+    json ? emit(r) : say(r.sent.length ? `sent ${r.sent.length} queued message${r.sent.length === 1 ? '' : 's'}` : r.queued ? `${r.queued} queued: ${waiting(r).replace(/\bit goes/, 'they go')}` : 'nothing queued');
     return 0;
   }
   if (name === 'inbox') {

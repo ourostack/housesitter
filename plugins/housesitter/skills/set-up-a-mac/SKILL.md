@@ -45,7 +45,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **Never press Escape at a login window.** It switches to the list of users, where no field has focus.
 - **Never use the clipboard.** No cmd+c or cmd+v. I type with `sitter_type`.
 - **Setup mode, and the hands gate.** As soon as the cables are on the Mac I'm setting up, I call `sitter_setup_mode` with `on: true`, `mac: <its label>` (6 hours by default, at most 24), and `off` at the hand-over (step 7), before the sitter's armed try. If `sitter_status` shows it off, or ending before I'll be done, while I'm still setting up, I turn it on again. While it's on, `sitter_click`, `sitter_type`, `sitter_key`, `sitter_scroll` and `sitter_type_secret` work on any screen (Setup Assistant, a login window, FileVault), Escape only on a desktop, and the sitter does nothing by itself: no unlock, power or typing at the reference Mac's lessons. Without it, they work only on a desktop with its menu bar, and the sitter refuses anywhere else ("not a desktop with its menu bar", "at a password screen"). I don't work around a refusal; it's a stuck step.
-- **Budgets.** `sitter_type_secret` allows 20 an hour. Peer messages: 10 an hour each way, so codes go with `now: true` and the rest are batched.
+- **Budgets.** `sitter_type_secret` allows 20 an hour. Peer messages: no cap of our own; each goes out at once, and only GitHub's rate limit can make one wait.
 - **Clear what's in the way (m8, m11).** Before each step I close notices, first-run windows and banners over the app I'm about to use. Once the step is done, I close every window it opened.
 - **Leave the reference Mac alone.** I ask Ouroboros only to read, to approve a code, or to run the config's own commands.
 

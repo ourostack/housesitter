@@ -46,47 +46,38 @@ class PeerTest(PluginCase):
         self.assertEqual([(e["dir"], (e.get("msg") or {}).get("id")) for e in log], [("sent", r["id"]), ("flush", None)])
         self.assertEqual(self.queue(), [])
 
-    def test_sends_inside_six_minutes_queue_then_go_together_in_one_patch_with_the_deletions(self):
+    def test_a_burst_of_30_sends_goes_out_at_once_with_no_cap_or_batching(self):
         t0 = time.time()
-        first = peer.send("first", ts=t0)
-        self.assertEqual(first["status"], "sent")
-        old = "%s-0000000a.json" % peer.stamp(t0 - 25 * 3600)
-        self.gh.gists[OUT][old] = "{}"
-        later = [peer.send("later %d" % i, ts=t0 + 10 * (i + 1)) for i in range(3)]
-        self.assertEqual([r["status"] for r in later], ["queued"] * 3)
-        self.assertEqual(later[-1]["queued"], 3)
-        self.assertEqual(later[-1]["next_flush_at"], peer.iso(t0 + 360))
-        self.assertEqual(len(self.patches()), 1)  # no write inside the window
-        self.assertEqual([e["msg"]["id"] for e in self.queue()], [r["id"] for r in later])
-        self.assertEqual(peer.flush_if_due(ts=t0 + 359)["sent"], [])
-        self.assertEqual(len(self.patches()), 1)
-        r = peer.flush_if_due(ts=t0 + 361)
-        self.assertEqual(r["sent"], [x["id"] for x in later])
-        self.assertEqual(r["pruned"], [old])
-        self.assertEqual(len(self.patches()), 2)
-        files = self.patches()[1]["body"]["files"]
-        self.assertEqual(set(files), {old} | {x["file"] for x in later})
-        self.assertIsNone(files[old])
-        for x in later:
-            m = json.loads(self.gh.gists[OUT][x["file"]])
-            self.assertEqual((m["id"], m["at"]), (x["id"], x["at"]))
-        self.assertNotIn(old, self.gh.gists[OUT])
+        sent = [peer.send("news %d" % i, ts=t0 + i * 0.1) for i in range(30)]
+        self.assertEqual({r["status"] for r in sent}, {"sent"})
+        self.assertEqual(len(self.patches()), 30)
+        for r in sent:
+            self.assertEqual(json.loads(self.gh.gists[OUT][r["file"]])["id"], r["id"])
         self.assertEqual(self.queue(), [])
-        self.assertEqual(peer.flush_if_due(ts=t0 + 2000), {"ok": True, "sent": [], "queued": 0})
-        self.assertEqual(len(self.patches()), 2)  # an empty queue writes nothing
+        self.assertEqual(peer.flush(ts=t0 + 5), {"ok": True, "sent": [], "queued": 0})
 
-    def test_an_urgent_send_goes_at_once_inside_the_window_and_takes_the_queue_with_it(self):
+    def test_githubs_rate_limit_keeps_messages_queued_logs_the_wait_and_they_go_then(self):
         t0 = time.time()
-        peer.send("one", ts=t0)
-        q = peer.send("two", ts=t0 + 20)
-        u = peer.send("about to restart", now=True, ts=t0 + 30)
-        self.assertEqual((q["status"], u["status"]), ("queued", "sent"))
+        self.gh.patch_fail.append((403, {"Retry-After": "120"}, "You have exceeded a secondary rate limit"))
+        r = peer.send("signed in", ts=t0)
+        self.assertEqual((r["status"], r["rate_limited"], r["retry_at"], r["queued"]), ("queued", True, peer.iso(t0 + 120), 1))
+        q = peer.send("and enrolled", ts=t0 + 30)
+        self.assertEqual((q["status"], q["retry_at"]), ("queued", peer.iso(t0 + 120)))
+        self.assertEqual(len(self.patches()), 1, "nothing written while GitHub asked us to wait")
+        waits = [e for e in jsonl(os.path.join(self.state, "peer-log.jsonl")) if e.get("event") == "peer-wait"]
+        self.assertEqual([(e["retry_at"], e["queued"], e["status"]) for e in waits], [(peer.iso(t0 + 120), 1, 403)])
+        done = peer.flush_if_due(ts=t0 + 121)
+        self.assertEqual(done["sent"], [r["id"], q["id"]])
         self.assertEqual(len(self.patches()), 2)
-        self.assertEqual(set(self.patches()[1]["body"]["files"]), {q["file"], u["file"]})
         self.assertEqual(self.queue(), [])
-        st = json.loads(slurp(os.path.join(self.state, "peer-flush.json")))
-        self.assertEqual(st["writes"], [t0, t0 + 30])
-        self.assertEqual(st["last"], t0 + 30)
+        self.gh.patch_fail.append((429, {"X-RateLimit-Reset": str(int(t0 + 600))}, "API rate limit exceeded"))
+        self.assertEqual(peer.send("three", ts=t0 + 200)["retry_at"], peer.iso(int(t0 + 600)))
+        self.gh.patch_fail.append((403, {}, "Resource not accessible"))
+        denied = peer.send("four", ts=t0 + 601)
+        self.assertEqual(denied["status"], "queued")
+        self.assertIn("HTTP 403", denied["error"])
+        self.assertNotIn("rate_limited", denied)
+        self.assertEqual(len(peer.flush(ts=t0 + 602)["sent"]), 2)
 
     def test_a_bring_back_request_goes_at_once_as_free_text_with_do_ouro_up(self):
         r = peer.send("your daemon went quiet at 12:01; bringing it back", now=True, do="ouro-up", ts=time.time())
@@ -94,7 +85,7 @@ class PeerTest(PluginCase):
         msg = json.loads(self.patches()[0]["body"]["files"][r["file"]]["content"])
         self.assertEqual((msg["do"], msg["text"]), ("ouro-up", "your daemon went quiet at 12:01; bringing it back"))
         plain = peer.send("hello", ts=time.time())
-        self.assertNotIn("do", [e["msg"] for e in self.queue() if e["msg"]["id"] == plain["id"]][0])
+        self.assertNotIn("do", json.loads(self.gh.gists[OUT][plain["file"]]))
 
     def test_during_a_planned_drill_everything_sent_is_labelled_and_after_it_nothing_is(self):
         now = time.time()
@@ -109,41 +100,7 @@ class PeerTest(PluginCase):
         queued = [e["msg"] for e in self.queue() if e["msg"]["id"] == later["id"]]
         self.assertEqual([m["text"] for m in sent + queued], ["a real one"])
 
-    def test_the_hourly_cap_keeps_messages_queued_logs_once_a_minute_and_lets_them_go_when_it_frees(self):
-        t0 = time.time()
-        for i in range(10):
-            self.assertEqual(peer.send("urgent %d" % i, now=True, ts=t0 + i)["status"], "sent")
-        r = peer.send("eleventh", now=True, ts=t0 + 20)
-        self.assertEqual((r["status"], r["capped"], r["queued"]), ("queued", True, 1))
-        self.assertEqual(r["next_allowed_at"], peer.iso(t0 + 3600))
-        peer.send("twelfth", now=True, ts=t0 + 30)
-        self.assertTrue(peer.flush(now=True, ts=t0 + 40)["capped"])
-        self.assertEqual(len(self.patches()), 10)
-        caps = lambda: [e for e in jsonl(os.path.join(self.state, "peer-log.jsonl")) if e.get("event") == "peer-cap"]
-        self.assertEqual(len(caps()), 1)  # three refusals inside a minute: one audit line
-        self.assertEqual({k: caps()[0][k] for k in ("at", "event", "queued", "next_allowed_at")},
-                         {"at": peer.iso(t0 + 20), "event": "peer-cap", "queued": 1, "next_allowed_at": peer.iso(t0 + 3600)})
-        self.assertEqual(peer.send("thirteenth", ts=t0 + 90)["status"], "queued")  # not due yet: no refusal, no line
-        self.assertEqual(len(caps()), 1)
-        peer.send("fourteenth", now=True, ts=t0 + 95)
-        self.assertEqual([(e["queued"], e["at"]) for e in caps()], [(1, peer.iso(t0 + 20)), (4, peer.iso(t0 + 95))])
-        self.assertEqual(len(self.queue()), 4)
-        self.assertTrue(peer.flush_if_due(ts=t0 + 3599)["capped"])  # due, but the first write is not an hour old
-        self.assertEqual(len(self.patches()), 10)
-        done = peer.flush_if_due(ts=t0 + 3601)
-        self.assertEqual(len(done["sent"]), 4)
-        self.assertEqual(len(self.patches()), 11)
-        self.assertEqual(self.queue(), [])
-
-    def test_the_cadence_and_cap_come_from_the_environment(self):
-        os.environ.update({"HOUSESITTER_PEER_FLUSH_SEC": "60", "HOUSESITTER_PEER_MAX_PER_HOUR": "2"})
-        t0 = time.time()
-        peer.send("a", ts=t0)
-        self.assertEqual(peer.send("b", ts=t0 + 30)["next_flush_at"], peer.iso(t0 + 60))
-        self.assertEqual(len(peer.flush_if_due(ts=t0 + 61)["sent"]), 1)
-        self.assertTrue(peer.send("c", now=True, ts=t0 + 70)["capped"])
-
-    def test_a_failed_write_keeps_the_messages_queued_and_counts_against_the_cap(self):
+    def test_a_failed_write_keeps_the_messages_queued(self):
         os.environ["HOUSESITTER_PEER_OUT"] = "missing"
         t0 = time.time()
         r = peer.send("hello?", ts=t0)
@@ -151,24 +108,22 @@ class PeerTest(PluginCase):
         self.assertIn("HTTP 404", r["error"])
         self.assertEqual(len(self.queue()), 1)
         os.environ["HOUSESITTER_PEER_OUT"] = OUT
-        self.assertEqual(peer.flush_if_due(ts=t0 + 30)["sent"], [r["id"]])  # never flushed yet, so it's due
+        self.assertEqual(peer.flush_if_due(ts=t0 + 30)["sent"], [r["id"]])
         self.assertIn(r["file"], self.gh.gists[OUT])
-        st = json.loads(slurp(os.path.join(self.state, "peer-flush.json")))
-        self.assertEqual(st["writes"], [t0, t0 + 30])
 
     def test_queued_messages_survive_a_restart(self):
         t0 = time.time()
-        peer.send("before", ts=t0)
-        q = peer.send("queued when the process died", ts=t0 + 5)
+        self.gh.patch_fail.append((429, {"Retry-After": "1"}, "rate limit"))
+        q = peer.send("queued when the process died", ts=t0 - 5)
         self.assertEqual(q["status"], "queued")
         r = subprocess.run([sys.executable, os.path.join(PLUGIN, "peer.py"), "flush", "--now"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["sent"], [q["id"]])
         self.assertEqual(json.loads(self.gh.gists[OUT][q["file"]])["text"], "queued when the process died")
 
-    def test_inbox_flushes_what_is_due(self):
+    def test_inbox_flushes_what_is_still_queued(self):
         t0 = time.time()
-        peer.send("one", ts=t0 - 400)
+        self.gh.patch_fail.append((429, {"Retry-After": "60"}, "rate limit"))
         q = peer.send("two", ts=t0 - 300)
         self.assertEqual(q["status"], "queued")
         got = peer.inbox()
@@ -233,7 +188,7 @@ class PeerTest(PluginCase):
         msg = json.loads(self.gh.gists[OUT][sent["file"]])
         self.assertEqual((msg["text"], msg["re"]), ("hello there", "r1"))
         q = json.loads(run("send", "later").stdout)
-        self.assertEqual(q["status"], "queued")
+        self.assertEqual(q["status"], "sent")
         u = json.loads(run("send", "now", "please", "--now").stdout)
         self.assertEqual(u["status"], "sent")
         self.assertEqual(json.loads(self.gh.gists[OUT][u["file"]])["text"], "now please")

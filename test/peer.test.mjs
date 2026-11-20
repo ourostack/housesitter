@@ -18,6 +18,7 @@ fs.mkdirSync(scratchRoot, { recursive: true });
 async function fakeGists(gists) {
   const requests = [];
   const truncate = new Set();
+  const fail = []; // GitHub's answers to the next writes, like { status: 403, headers: { 'Retry-After': '120' }, message }
   const etag = (id) => `"${crypto.createHash('sha1').update(JSON.stringify(gists[id])).digest('hex')}"`;
   const server = http.createServer((req, res) => {
     let data = '';
@@ -29,6 +30,7 @@ async function fakeGists(gists) {
       const send = (code, obj, headers = {}) => { res.writeHead(code, { 'Content-Type': 'application/json', ...headers }); res.end(obj === undefined ? '' : typeof obj === 'string' ? obj : JSON.stringify(obj)); };
       if (kind === 'raw') return send(200, gists[id][file]);
       if (kind !== 'gists' || !gists[id]) return send(404, { message: 'Not Found' });
+      if (req.method === 'PATCH' && fail.length) { const f = fail.shift(); return send(f.status, { message: f.message }, f.headers || {}); }
       if (req.method === 'PATCH') {
         for (const [n, f] of Object.entries(body.files)) { if (f === null) delete gists[id][n]; else gists[id][n] = f.content; }
         return send(200, { id }, { ETag: etag(id) });
@@ -41,7 +43,7 @@ async function fakeGists(gists) {
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  return { url: `http://127.0.0.1:${server.address().port}`, requests, truncate, close: () => new Promise((r) => server.close(r)) };
+  return { url: `http://127.0.0.1:${server.address().port}`, requests, truncate, fail, close: () => new Promise((r) => server.close(r)) };
 }
 
 const setup = async (extraEnv = {}) => {
@@ -82,77 +84,45 @@ test('peer send: the first goes at once, one immutable file in the Ouroboros-to-
   await gh.close();
 });
 
-test('peer send inside six minutes queues without a write; the next flush sends them all and the deletions in one PATCH', async () => {
+test('peer: a burst of 30 sends goes out at once, each when it is sent: no cap and no batching of our own', async () => {
   const { gists, gh, p, time, patches, queue } = await setup();
   const t0 = time.now;
-  await p.send('first');
-  const old = `${stamp(t0 - 25 * 3600e3)}-0000000a.json`;
-  gists[O_TO_H][old] = '{}';
-  const later = [];
-  for (let i = 0; i < 3; i++) { time.now = t0 + 10e3 * (i + 1); later.push(await p.send(`later ${i}`)); }
-  assert.deepEqual(later.map((r) => r.status), ['queued', 'queued', 'queued']);
-  assert.equal(later[2].queued, 3);
-  assert.equal(later[2].next_flush_at, '2026-11-09T12:06:00Z');
-  assert.equal(patches().length, 1);
-  assert.deepEqual(queue().map((e) => e.msg.id), later.map((r) => r.id));
-  time.now = t0 + 359e3;
-  assert.deepEqual((await p.flush()).sent, []);
-  time.now = t0 + 361e3;
-  const r = await p.flush();
-  assert.deepEqual(r.sent, later.map((x) => x.id));
-  assert.deepEqual(r.pruned, [old]);
-  assert.equal(patches().length, 2);
-  assert.deepEqual(Object.keys(patches()[1].body.files).sort(), [old, ...later.map((x) => x.file)].sort());
-  assert.equal(patches()[1].body.files[old], null);
-  for (const x of later) assert.equal(JSON.parse(gists[O_TO_H][x.file]).at, x.at);
+  const sent = [];
+  for (let i = 0; i < 30; i++) { time.now = t0 + i * 100; sent.push(await p.send(`news ${i}`)); }
+  assert.deepEqual([...new Set(sent.map((r) => r.status))], ['sent']);
+  assert.equal(patches().length, 30);
+  for (const r of sent) assert.equal(JSON.parse(gists[O_TO_H][r.file]).id, r.id);
   assert.deepEqual(queue(), []);
-  time.now = t0 + 3600e3;
   assert.deepEqual(await p.flush(), { ok: true, sent: [], queued: 0 });
-  assert.equal(patches().length, 2);
   await gh.close();
 });
 
-test('peer send --now goes at once inside the window and takes the queue with it', async () => {
-  const { gh, p, time, patches, queue } = await setup();
-  await p.send('one');
-  time.now += 20e3;
-  const q = await p.send('two');
-  time.now += 10e3;
-  const u = await p.send('about to restart', { now: true });
-  assert.deepEqual([q.status, u.status], ['queued', 'sent']);
-  assert.equal(patches().length, 2);
-  assert.deepEqual(Object.keys(patches()[1].body.files).sort(), [q.file, u.file].sort());
-  assert.deepEqual(queue(), []);
-  await gh.close();
-});
-
-test('peer: the hourly cap keeps messages queued, logs a peer-cap line at most once a minute, and they go when it frees', async () => {
-  const { gh, dir, p, time, patches, queue, log } = await setup();
+test('peer: GitHub\'s rate limit (403 with Retry-After) keeps messages queued, logs the wait, and they go then', async () => {
+  const { gh, p, time, patches, queue, log } = await setup();
   const t0 = time.now;
-  for (let i = 0; i < 10; i++) { time.now = t0 + i * 1e3; assert.equal((await p.send(`urgent ${i}`, { now: true })).status, 'sent'); }
-  time.now = t0 + 20e3;
-  const r = await p.send('eleventh', { now: true });
-  assert.deepEqual([r.status, r.capped, r.queued, r.next_allowed_at], ['queued', true, 1, '2026-11-09T13:00:00Z']);
+  gh.fail.push({ status: 403, headers: { 'Retry-After': '120' }, message: 'You have exceeded a secondary rate limit' });
+  const r = await p.send('signed in');
+  assert.deepEqual([r.status, r.rate_limited, r.retry_at, r.queued], ['queued', true, '2026-11-09T12:02:00Z', 1]);
   time.now = t0 + 30e3;
-  await p.send('twelfth', { now: true });
-  time.now = t0 + 40e3;
-  assert.equal((await p.flush({ now: true })).capped, true);
-  assert.equal(patches().length, 10);
-  const caps = () => log().filter((e) => e.event === 'peer-cap');
-  assert.deepEqual(caps().map(({ at, event, queued, next_allowed_at }) => ({ at, event, queued, next_allowed_at })),
-    [{ at: '2026-11-09T12:00:20Z', event: 'peer-cap', queued: 1, next_allowed_at: '2026-11-09T13:00:00Z' }]);
-  time.now = t0 + 95e3;
-  await p.send('thirteenth', { now: true });
-  assert.deepEqual(caps().map((e) => [e.queued, e.at]), [[1, '2026-11-09T12:00:20Z'], [3, '2026-11-09T12:01:35Z']]);
-  assert.equal(queue().length, 3);
-  time.now = t0 + 3599e3;
-  assert.equal((await p.flush()).capped, true);
-  time.now = t0 + 3601e3;
+  const q = await p.send('and enrolled');
+  assert.deepEqual([q.status, q.retry_at], ['queued', '2026-11-09T12:02:00Z']);
+  assert.equal(patches().length, 1, 'nothing written while GitHub asked us to wait');
+  assert.deepEqual(log().filter((e) => e.event === 'peer-wait').map((e) => [e.retry_at, e.queued, e.status]), [['2026-11-09T12:02:00Z', 1, 403]]);
+  time.now = t0 + 121e3;
   const done = await p.flush();
-  assert.equal(done.sent.length, 3);
-  assert.equal(patches().length, 11);
+  assert.deepEqual(done.sent, [r.id, q.id]);
+  assert.equal(patches().length, 2);
   assert.deepEqual(queue(), []);
-  assert.ok(fs.existsSync(path.join(dir, 'peer-flush.json')));
+  // A 429 with only x-ratelimit-reset waits until that reset; a 403 that isn't a rate limit is an error, still queued.
+  gh.fail.push({ status: 429, headers: { 'X-RateLimit-Reset': String(Math.floor((t0 + 600e3) / 1000)) }, message: 'API rate limit exceeded' });
+  assert.equal((await p.send('three')).retry_at, '2026-11-09T12:10:00Z');
+  time.now = t0 + 601e3;
+  gh.fail.push({ status: 403, message: 'Resource not accessible' });
+  const denied = await p.send('four');
+  assert.equal(denied.status, 'queued');
+  assert.match(denied.error, /HTTP 403/);
+  assert.equal(denied.rate_limited, undefined);
+  assert.deepEqual((await p.flush()).sent.length, 2);
   await gh.close();
 });
 
@@ -165,21 +135,18 @@ test('peer: a failed write keeps the message queued; a fresh process (a restart)
   assert.equal(queue().length, 1);
   time.now += 30e3;
   const again = make();
-  assert.deepEqual((await again.flush()).sent, [r.id]); // never flushed yet, so it's due
+  assert.deepEqual((await again.flush()).sent, [r.id]);
   assert.equal(JSON.parse(gists[O_TO_H][r.file]).text, 'hello?');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'peer-flush.json'), 'utf8')).writes.length, 2);
   await gh.close();
 });
 
-test('peer inbox flushes what is due; a peek does not', async () => {
+test('peer inbox flushes what is still queued; a peek does not', async () => {
   const { gists, gh, p, time, patches } = await setup();
-  await p.send('one');
-  time.now += 60e3;
+  gh.fail.push({ status: 429, headers: { 'Retry-After': '60' }, message: 'rate limit' });
   const q = await p.send('two');
-  time.now += 60e3;
+  time.now += 61e3;
   await p.inbox({ mark: false });
   assert.equal(patches().length, 1);
-  time.now += 300e3;
   const got = await p.inbox();
   assert.deepEqual(got.outbox.sent, [q.id]);
   assert.ok(gists[O_TO_H][q.file]);
@@ -222,14 +189,16 @@ test('housesitter peer send, flush and inbox from the shell; the queue outlives 
   assert.equal(msg.text, 'which sessions resumed?');
   assert.equal(msg.re, 'h1');
   assert.match(msg.from, /^ouroboros@/);
+  gh.fail.push({ status: 403, headers: { 'Retry-After': '3600' }, message: 'You have exceeded a secondary rate limit' });
   const q = await cli(['peer', 'send', 'and', 'the', 'browser?', '--why', 'the person asked'], e);
-  assert.match(q.stdout, /^queued [0-9a-f]{8} for housesitter: it goes out by \d{4}-/);
+  assert.match(q.stdout, /^queued [0-9a-f]{8} for housesitter: GitHub asked us to wait; it goes out after \d{4}-/);
   assert.equal(Object.keys(gists[O_TO_H]).length, 1);
-  assert.match((await cli(['peer', 'flush', 'studio', '--why', 'the person asked'], e)).stdout, /^1 queued: they go out by /);
+  assert.match((await cli(['peer', 'flush', 'studio', '--why', 'the person asked'], e)).stdout, /^1 queued: GitHub asked us to wait; they go out after /);
+  fs.writeFileSync(path.join(dir, 'peer-flush.json'), '{}'); // the wait is over
   const q2 = JSON.parse((await cli(['peer', 'send', 'later', '--json', '--why', 'the person asked'], e)).stdout);
-  assert.equal(q2.status, 'queued');
+  assert.equal(q2.status, 'sent');
   gists[H_TO_O]['20261109T100000Z-0000000c.json'] = JSON.stringify({ v: 1, id: 'c1', at: '2026-11-09T10:00:00Z', from: 'housesitter@comet', text: 'unlocked; desktop is back' });
-  const i = await cli(['peer', 'inbox'], { ...e, HOUSESITTER_PEER_FLUSH_SEC: '0' }); // due: the inbox sends the queue
+  const i = await cli(['peer', 'inbox'], e);
   assert.equal(i.status, 0, i.stderr);
   assert.match(i.stdout, /housesitter@comet {2}c1\nunlocked; desktop is back/);
   assert.equal(Object.keys(gists[O_TO_H]).length, 3);
@@ -323,16 +292,16 @@ test('peer watch: a failed ouro msg backs off and retries; a rate-limited read w
   await gh.close();
 });
 
-test('peer watch flushes the agent\'s queue when due, not before', async () => {
+test('peer watch sends what GitHub\'s rate limit kept queued, once the wait is over', async () => {
   const { gh, dir, time, p, patches, queue } = await setup();
+  gh.fail.push({ status: 429, headers: { 'Retry-After': '120' }, message: 'rate limit' });
   await p.send('first');
-  time.now += 60e3;
-  await p.send('second');
   const w = peerWatch({ p, dir, restartDir: path.join(scratchRoot, 'no-restart'), ouro: '/bin/ouro', bin: 'hs', exec: fakeExec().exec, clock: () => time.now, probe: async () => true });
   await w.tick();
   assert.equal(patches().length, 1);
   assert.equal(queue().length, 1);
-  time.now += 300e3;
+  assert.match(watchLog(dir).at(-1), /GitHub asked us to wait: 1 queued until /);
+  time.now += 121e3;
   await w.tick();
   assert.equal(patches().length, 2);
   assert.deepEqual(queue(), []);
@@ -481,5 +450,18 @@ test('peer watch tells Housesitter and the agent, once, when a Copilot app resta
   await w.tick();
   assert.equal(sent().length, 2);
   assert.match(sent()[1], /failed at quit: someone is using this Mac\. Sessions not resumed: abc\./);
+  await gh.close();
+});
+
+test('housesitter peer flush names the Mac itself when the config has exactly one', async () => {
+  const { gh, dir, env } = await setup();
+  const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') };
+  const one = await cli(['peer', 'flush', '--why', 'the person asked'], e);
+  assert.equal(one.status, 0, one.stderr);
+  assert.equal(one.stdout.trim(), 'nothing queued');
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ macs: { studio: {}, laptop: {} } }));
+  const two = await cli(['peer', 'flush', '--why', 'the person asked'], e);
+  assert.notEqual(two.status, 0);
+  assert.match(two.stdout + two.stderr, /name one of the Macs in the config: studio, laptop/);
   await gh.close();
 });
