@@ -4,20 +4,20 @@ Each message is one immutable gist file, <UTC yyyymmddTHHMMSSZ>-<8 hex>.json, ho
 {"v": 1, "id", "at", "from", "to", "text", "re"?}. Reading GETs the in gist with an ETag (304: nothing new) and returns
 the messages not yet in the seen-set, oldest first.
 
-GitHub allows about 100 gist writes an hour per user, shared by the whole fleet, so sending is batched: a message goes
-into a durable queue (peer-outbox.jsonl) and a flush writes everything queued, and deletes the out gist's files older
-than 24 hours, in one PATCH. A flush happens at most once every HOUSESITTER_PEER_FLUSH_SEC (default 360) after the last
-one, at once for an urgent message (now), and never more than HOUSESITTER_PEER_MAX_PER_HOUR (default 10) times in any
-60 minutes; over the cap, messages wait in the queue and peer-log.jsonl gets a peer-cap line. send tries a flush;
-watch.py and inbox flush whatever is due.
+No cap and no batching of our own (the owner, 2026-11-19: "set no caps unless there is some fundamental limit"): a
+message goes into a durable queue (peer-outbox.jsonl) and out at once, everything queued, with the deletion of the out
+gist's files older than 24 hours, in one PATCH. The only limit is GitHub's: when it answers a write with a rate limit
+(429, or 403 with Retry-After, x-ratelimit-reset or "rate limit" in its message), the messages stay queued, the wait is
+logged (peer-wait in peer-log.jsonl) and nothing is written until then. send flushes; watch.py and inbox flush whatever
+is still queued.
 
     python3 peer.py send <text> [--re <id>] [--to <name>] [--now]
     python3 peer.py inbox [--peek]
     python3 peer.py flush [--now]
 
 Env: HOUSESITTER_PEER_IN, HOUSESITTER_PEER_OUT (gist ids), HOUSESITTER_STATE_DIR (queue, seen-set, ETag, log),
-HOUSESITTER_PEER_FLUSH_SEC, HOUSESITTER_PEER_MAX_PER_HOUR, HOUSESITTER_TOKEN_FILE or GH_TOKEN / GITHUB_TOKEN,
-HOUSESITTER_GITHUB_API (tests). Python 3 standard library only.
+HOUSESITTER_TOKEN_FILE or GH_TOKEN / GITHUB_TOKEN, HOUSESITTER_GITHUB_API (tests). HOUSESITTER_PEER_FLUSH_SEC and
+HOUSESITTER_PEER_MAX_PER_HOUR are no longer read. Python 3 standard library only.
 """
 import contextlib
 import datetime
@@ -37,8 +37,6 @@ KEEP_SEC = 24 * 3600
 SEEN_MAX = 500
 NAME_RE = re.compile(r"^(\d{8}T\d{6}Z)-([0-9a-f]{8})\.json$")
 USER_AGENT = "housesitter-peer"
-FLUSH_SEC = 360  # at most one flush every 6 minutes, unless it's urgent
-MAX_PER_HOUR = 10  # GitHub allows about 100 gist writes an hour per user, shared by the whole fleet
 clock = time.time  # tests replace it
 
 
@@ -116,6 +114,33 @@ def file_time(name):
     return datetime.datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
+class GitHubError(RuntimeError):
+    """A GitHub answer of 300 or more: its HTTP status, and the Retry-After and x-ratelimit-reset it sent."""
+
+    def __init__(self, message, status, retry_after=None, reset=None, remaining=None):
+        RuntimeError.__init__(self, message)
+        self.status, self.retry_after, self.reset, self.remaining = status, retry_after, reset, remaining
+
+
+def _int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def rate_limited_until(e, now):
+    """When GitHub's rate limit lets us write again (s), for an error from a write; None when it isn't a rate limit
+    (GitHub sends x-ratelimit-reset on every answer, so that alone says nothing). Its Retry-After first, then
+    x-ratelimit-reset (epoch seconds) when none remain, else a minute (GitHub's advice for a secondary limit)."""
+    if not isinstance(e, GitHubError):
+        return None
+    if not (e.status == 429 or (e.status == 403 and (e.retry_after is not None or e.remaining == 0 or "rate limit" in str(e).lower()))):
+        return None
+    at = now + e.retry_after if e.retry_after is not None else e.reset if e.remaining == 0 and e.reset is not None else now + 60
+    return max(at, now + 1)
+
+
 def request(method, url, body=None, etag=None, timeout=20, raw=False):
     """One GitHub request: (status, etag, parsed body, or text when raw). A 304 is (304, etag, None)."""
     headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT, "X-GitHub-Api-Version": "2022-11-28"}
@@ -144,7 +169,9 @@ def request(method, url, body=None, etag=None, timeout=20, raw=False):
             e.close()
         if e.code == 304:
             return 304, etag, None
-        raise RuntimeError("GitHub %s %s -> HTTP %d%s" % (method, url.split("?")[0], e.code, (": " + detail) if detail else ""))
+        hdr = e.headers or {}
+        raise GitHubError("GitHub %s %s -> HTTP %d%s" % (method, url.split("?")[0], e.code, (": " + detail) if detail else ""), e.code,
+                          _int(hdr.get("Retry-After")), _int(hdr.get("X-RateLimit-Reset")), _int(hdr.get("X-RateLimit-Remaining")))
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise RuntimeError("GitHub %s %s: %s" % (method, url.split("?")[0], e))
 
@@ -215,14 +242,6 @@ def new_message(text, to="ouroboros", re_id=None, sender="housesitter@comet", no
     return "%s-%s.json" % (stamp(now), mid), msg
 
 
-def flush_sec():
-    return max(0, int(env("HOUSESITTER_PEER_FLUSH_SEC", str(FLUSH_SEC))))
-
-
-def max_per_hour():
-    return max(1, int(env("HOUSESITTER_PEER_MAX_PER_HOUR", str(MAX_PER_HOUR))))
-
-
 @contextlib.contextmanager
 def locked(name, block=True):
     """An exclusive lock on a file in the state dir (the MCP server's copies and the watcher share the queue). Yields
@@ -284,21 +303,21 @@ def send(text, to="ouroboros", re_id=None, sender="housesitter@comet", now=False
         r = {"error": str(e)}  # it stays queued; the next flush (the watcher's, within minutes) takes it
     sent = msg["id"] in (r.get("sent") or [])
     out["status"] = "sent" if sent else "queued"
-    for k in ("pruned", "queued", "next_flush_at", "capped", "next_allowed_at", "busy", "error"):
+    for k in ("pruned", "queued", "rate_limited", "retry_at", "busy", "error"):
         if k in r:
             out[k] = r[k]
     return out
 
 
 def flush_if_due(ts=None):
-    """Write the queue to the out gist if the last flush was HOUSESITTER_PEER_FLUSH_SEC (default 6 min) ago."""
-    return flush(now=False, ts=ts)
+    """Write whatever is queued (the watcher's and inbox's call; there is no cadence of our own any more)."""
+    return flush(ts=ts)
 
 
 def flush(now=False, ts=None, gist_id=None):
-    """Write every queued message to the out gist in one PATCH, which also deletes its files older than 24 h. Only when
-    it's due (or now=True) and the hourly cap allows; otherwise the messages stay queued. A failed PATCH leaves them
-    queued too and raises. Each PATCH tried counts against the cap."""
+    """Write every queued message to the out gist in one PATCH, which also deletes its files older than 24 h, unless
+    GitHub asked us to wait. GitHub's rate limit keeps them queued until the time it gave; any other failed PATCH leaves
+    them queued too and raises. `now` is kept for callers and changes nothing: every flush is at once."""
     gist_id = gist_id or env("HOUSESITTER_PEER_OUT", H_TO_O)
     ts = clock() if ts is None else ts
     with locked("peer-flush.lock", block=False) as got:
@@ -311,19 +330,9 @@ def flush(now=False, ts=None, gist_id=None):
         state_path = os.path.join(state_dir(), "peer-flush.json")
         st = read_json(state_path, {})
         st = st if isinstance(st, dict) else {}
-        writes = sorted(w for w in (st.get("writes") or []) if isinstance(w, (int, float)) and ts - w < 3600)
-        last = st.get("last")
-        every = flush_sec()
-        if not now and isinstance(last, (int, float)) and ts - last < every:
-            return {"ok": True, "sent": [], "queued": len(queue), "next_flush_at": iso(last + every)}
-        cap = max_per_hour()
-        if len(writes) >= cap:
-            next_allowed = iso(writes[len(writes) - cap] + 3600)
-            if not isinstance(st.get("cap_logged"), (int, float)) or ts - st["cap_logged"] >= 60:
-                log({"at": iso(ts), "event": "peer-cap", "queued": len(queue), "next_allowed_at": next_allowed})
-                st["cap_logged"] = ts
-                write_json(state_path, dict(st, writes=writes))
-            return {"ok": True, "sent": [], "queued": len(queue), "capped": True, "next_allowed_at": next_allowed}
+        retry_at = st.get("retry_at")
+        if isinstance(retry_at, (int, float)) and ts < retry_at:
+            return {"ok": True, "sent": [], "queued": len(queue), "rate_limited": True, "retry_at": iso(retry_at)}
         try:
             pruned = stale_files(get_gist(gist_id)[2], ts)
         except RuntimeError:
@@ -331,18 +340,23 @@ def flush(now=False, ts=None, gist_id=None):
         files = {n: None for n in pruned}
         for e in queue:
             files[e["file"]] = {"content": json.dumps(e["msg"])}
-        st["writes"] = writes + [ts]
-        write_json(state_path, st)
-        request("PATCH", "%s/gists/%s" % (api(), gist_id), body={"files": files})
-        st["last"] = ts
-        write_json(state_path, st)
+        try:
+            request("PATCH", "%s/gists/%s" % (api(), gist_id), body={"files": files})
+        except RuntimeError as e:
+            until = rate_limited_until(e, ts)
+            if until is None:
+                raise
+            write_json(state_path, {"last": st.get("last"), "retry_at": until})
+            log({"at": iso(ts), "event": "peer-wait", "queued": len(queue), "retry_at": iso(until), "status": e.status, "why": str(e)[:200]})
+            return {"ok": True, "sent": [], "queued": len(queue), "rate_limited": True, "retry_at": iso(until)}
+        write_json(state_path, {"last": ts})
         done = {e["msg"]["id"] for e in queue}
         with locked("peer-outbox.lock"):
             left = [e for e in read_queue() if e["msg"]["id"] not in done]
             write_queue(left)
         for e in queue:
             log({"dir": "sent", "gist": gist_id, "file": e["file"], "msg": e["msg"]})
-        log({"dir": "flush", "gist": gist_id, "at": iso(ts), "files": [e["file"] for e in queue], "pruned": pruned, "urgent": bool(now)})
+        log({"dir": "flush", "gist": gist_id, "at": iso(ts), "files": [e["file"] for e in queue], "pruned": pruned})
         return {"ok": True, "sent": [e["msg"]["id"] for e in queue], "queued": len(left), "pruned": pruned}
 
 
@@ -356,7 +370,7 @@ def inbox(gist_id=None, mark=True):
         except RuntimeError as e:
             flushed = {"error": str(e)}
     out = _read_inbox(gist_id, mark)
-    if flushed.get("sent") or flushed.get("error") or flushed.get("capped"):
+    if flushed.get("sent") or flushed.get("error") or flushed.get("rate_limited"):
         out["outbox"] = {k: v for k, v in flushed.items() if k != "ok"}
     return out
 

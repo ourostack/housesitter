@@ -178,7 +178,7 @@ export function peerWatch({ p, dir, agent = 'ouroboros', ouro, bin, every = 30, 
     try {
       const f = await p.flush();
       if (f.sent?.length) log(`flushed ${f.sent.length} queued message${f.sent.length === 1 ? '' : 's'}: ${f.sent.join(', ')}`);
-      else if (f.capped) log(`flush capped: ${f.queued} queued until ${f.next_allowed_at}`);
+      else if (f.rate_limited) log(`GitHub asked us to wait: ${f.queued} queued until ${f.retry_at}`);
     } catch (e) {
       log(`flush failed: ${oneLine(e.message, 300)}`);
     }

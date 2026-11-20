@@ -40,7 +40,7 @@ class McpTest(PluginCase):
         self.assertEqual(sorted(r), [1, 2, 3, 4, 5])  # the notification got no reply
         send = [t for t in r[2]["result"]["tools"] if t["name"] == "peer_send"][0]
         self.assertEqual(send["inputSchema"]["properties"]["now"]["type"], "boolean")
-        self.assertIn("10/h cap", send["inputSchema"]["properties"]["now"]["description"])
+        self.assertIn("no longer needed", send["inputSchema"]["properties"]["now"]["description"])
         init = r[1]["result"]
         self.assertEqual(init["protocolVersion"], "2025-03-26")
         self.assertIn("tools", init["capabilities"])
@@ -198,13 +198,12 @@ class McpTest(PluginCase):
         self.assertEqual(sent["status"], "sent")
         msg = json.loads(self.gh.gists[OUT][sent["file"]])
         self.assertEqual((msg["text"], msg["to"], msg["re"]), ("which sessions resumed?", "ouroboros", "x1"))
-        queued, _ = self.call("peer_send", {"text": "and the browser?"})
-        self.assertEqual(queued["status"], "queued")
-        self.assertNotIn(queued["file"], self.gh.gists[OUT])
+        second, _ = self.call("peer_send", {"text": "and the browser?"})
+        self.assertEqual(second["status"], "sent", "no batching: every message goes at once")
+        self.assertIn(second["file"], self.gh.gists[OUT])
         urgent, _ = self.call("peer_send", {"text": "about to restart", "now": True})
         self.assertEqual(urgent["status"], "sent")
-        self.assertIn(queued["file"], self.gh.gists[OUT])
-        self.assertEqual(len([q for q in self.gh.requests if q["method"] == "PATCH"]), 2)
+        self.assertEqual(len([q for q in self.gh.requests if q["method"] == "PATCH"]), 3)
         self.put_message(IN, "20261109T100000Z-00000001.json", {"v": 1, "id": "a1", "at": "2026-11-09T10:00:00Z", "text": "three resumed"})
         got, _ = self.call("peer_inbox")
         self.assertEqual([m["text"] for m in got["messages"]], ["three resumed"])

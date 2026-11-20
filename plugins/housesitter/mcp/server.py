@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.6.46"
+VERSION = "0.6.47"
 PROTOCOL = "2025-06-18"
 LONG_OPS = ("type", "type_secret", "notify", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
@@ -221,9 +221,9 @@ TOOLS = [
     ("sitter_key", "Press a key or combination on the Mac, like \"cmd+space\", \"return\" or \"ctrl+alt+delete\".", schema({"combo": {"type": "string"}}, ["combo"]), 40000, False),
     ("sitter_scroll", "Scroll on the Mac: dx, dy wheel steps (negative dy is up), optionally at x, y first (same pixels as sitter_click).",
      schema({"dx": NUM, "dy": NUM, "x": NUM, "y": NUM, "w": NUM, "h": NUM}, ["dx", "dy"]), 40000, False),
-    ("peer_send", "Send Ouroboros (the agent on the Mac) a message: free text, anything you want to say or ask. re is the id of the message you're answering. Messages are batched and go out within 6 minutes (status sent or queued); GitHub's gist writes are capped at 10 an hour each way.",
+    ("peer_send", "Send Ouroboros (the agent on the Mac) a message: free text, anything you want to say or ask. re is the id of the message you're answering. It goes out at once (status sent); only GitHub's rate limit can make it wait (status queued, with retry_at), and then it goes when GitHub allows.",
      schema({"text": {"type": "string"}, "to": {"type": "string"}, "re": {"type": "string"},
-             "now": {"type": "boolean", "description": "send at once (counts against the 10/h cap); use for anything Ari or Ouroboros must hear now, like 'tell Ari' or 'about to restart'"}}, ["text"]), 45000, False),
+             "now": {"type": "boolean", "description": "no longer needed: every message goes at once"}}, ["text"]), 45000, False),
     ("peer_bring_back_ouroboros", "Bring Ouroboros's daemon on the Mac back when it has stopped answering (the Mac's peer watch tells you when it does). Sends why as an urgent message that asks the Mac's peer watch to run `ouro up`; the watch reports the result back as a message.",
      schema({"why": {"type": "string"}}, ["why"]), 45000, False),
     ("peer_inbox", "New messages from Ouroboros, oldest first, each with its id, time and text. Each comes back once; then it's marked read. It also sends any of your queued messages that are due.", schema(), 45000, False),

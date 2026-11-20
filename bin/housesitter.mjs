@@ -401,6 +401,13 @@ async function main() {
     await new Promise((done) => process.stdout.write('', done));
     return code;
   }
+  // `housesitter peer flush` with no Mac names the config's only Mac: the call is completed before the kit checks it,
+  // so a name that is given is still checked like any other.
+  if (argv[0] === 'peer' && argv[1] === 'flush') {
+    const said = async (a) => { let t = ''; const io = { write: (x) => { t += x; return true; } }; return (await refusalOf(a, { stdout: io, stderr: io })) ? t : null; };
+    const only = Object.keys(loadConfig().macs || {});
+    if (only.length === 1 && /needs <mac>/.test((await said(argv)) || '')) argv.splice(2, 0, only[0]);
+  }
   // The kit checks the call first: its words, its flags, and the --why an acting command needs.
   const refused = await refusalOf(argv, kitIo);
   if (refused) { await new Promise((done) => process.stdout.write('', done)); return refused.exit; }
@@ -764,9 +771,8 @@ async function peerCmd() {
   let user;
   try { user = loadConfig().peer?.user; } catch { user = undefined; }
   const p = Peer.peer({ dir: path.dirname(configPath()), user });
-  const waiting = (r) => (r.capped ? `the hourly cap is reached; it goes out after ${r.next_allowed_at}`
-    : r.error ? `it goes out at the next flush (${r.error})`
-    : r.next_flush_at ? `it goes out by ${r.next_flush_at}` : 'it goes out at the next flush');
+  const waiting = (r) => (r.rate_limited ? `GitHub asked us to wait; it goes out after ${r.retry_at}`
+    : r.error ? `it goes out at the next flush (${r.error})` : 'it goes out at the next flush');
   if (name === 'send') {
     const text = rest.join(' ');
     need(text, 'housesitter peer send <text> [--re <id>] [--now]');
@@ -778,7 +784,7 @@ async function peerCmd() {
   }
   if (name === 'flush') {
     const r = await p.flush({ now: !!opt.now });
-    json ? emit(r) : say(r.sent.length ? `sent ${r.sent.length} queued message${r.sent.length === 1 ? '' : 's'}` : r.queued ? `${r.queued} queued: ${waiting(r).replace(/^it goes/, 'they go')}` : 'nothing queued');
+    json ? emit(r) : say(r.sent.length ? `sent ${r.sent.length} queued message${r.sent.length === 1 ? '' : 's'}` : r.queued ? `${r.queued} queued: ${waiting(r).replace(/\bit goes/, 'they go')}` : 'nothing queued');
     return 0;
   }
   if (name === 'inbox') {

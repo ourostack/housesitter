@@ -53,7 +53,7 @@ housesitter do <mac> <action> ['<json>'] run one; refusals: action-unavailable, 
 housesitter forget <mac> --yes           wipe the secrets from the KVM and stop the sitter
 housesitter peer send <text> [--re <id>] [--now]
                                          Ouroboros to Housesitter, the agent on the KVM: free text through a secret gist,
-                                         sent within 6 minutes (--now: at once; 10 gist writes an hour at most)
+                                         sent at once (only GitHub's rate limit can make it wait)
 housesitter peer inbox [--peek]          Housesitter's new messages, oldest first, each shown once (--peek: don't mark them read);
                                          also sends queued messages that are due
 housesitter peer flush <mac> [--now]   send the queued messages if due (--now: at once, within the hourly cap)

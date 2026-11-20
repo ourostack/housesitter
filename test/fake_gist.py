@@ -11,6 +11,7 @@ class FakeGists:
         self.truncate = set()  # file names served truncated, whole at raw_url
         self.requests = []
         self.fail = False
+        self.patch_fail = []  # GitHub's answers to the next writes: (status, headers, message)
         me = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -58,6 +59,9 @@ class FakeGists:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 self.record(body)
                 gid = self.path.strip("/").split("/")[1]
+                if me.patch_fail:
+                    code, headers, message = me.patch_fail.pop(0)
+                    return self.reply(code, {"message": message}, headers)
                 if gid not in me.gists:
                     return self.reply(404, {"message": "Not Found"})
                 for n, f in (body.get("files") or {}).items():
