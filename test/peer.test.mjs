@@ -463,6 +463,8 @@ test('housesitter peer flush names the Mac itself when the config has exactly on
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ macs: { studio: {}, laptop: {} } }));
   const two = await cli(['peer', 'flush', '--why', 'the person asked'], e);
   assert.notEqual(two.status, 0);
-  assert.match(two.stdout + two.stderr, /name one of the Macs in the config: studio, laptop/);
+  assert.match(two.stdout + two.stderr, /peer flush: needs <mac>/);
+  const wrong = await cli(['peer', 'flush', 'bogus', '--why', 'the person asked'], e);
+  assert.match(wrong.stdout + wrong.stderr, /no Mac called "bogus".*name one of the Macs in the config: studio, laptop/);
   await gh.close();
 });

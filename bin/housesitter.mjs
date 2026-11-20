@@ -401,6 +401,13 @@ async function main() {
     await new Promise((done) => process.stdout.write('', done));
     return code;
   }
+  // `housesitter peer flush` with no Mac names the config's only Mac: the call is completed before the kit checks it,
+  // so a name that is given is still checked like any other.
+  if (argv[0] === 'peer' && argv[1] === 'flush') {
+    const said = async (a) => { let t = ''; const io = { write: (x) => { t += x; return true; } }; return (await refusalOf(a, { stdout: io, stderr: io })) ? t : null; };
+    const only = Object.keys(loadConfig().macs || {});
+    if (only.length === 1 && /needs <mac>/.test((await said(argv)) || '')) argv.splice(2, 0, only[0]);
+  }
   // The kit checks the call first: its words, its flags, and the --why an acting command needs.
   const refused = await refusalOf(argv, kitIo);
   if (refused) { await new Promise((done) => process.stdout.write('', done)); return refused.exit; }
@@ -528,12 +535,7 @@ async function main() {
     return r.ok ? 0 : 1;
   }
   if (cmd === 'apple-account') return appleAccount();
-  if (cmd === 'peer' && ['flush', 'watch'].includes(name)) {
-    // With exactly one Mac in the config, it is the one: `housesitter peer flush` needs no name.
-    const known = Object.keys(loadConfig().macs || {});
-    if (!rest[0] && known.length === 1) rest = [known[0], ...rest.slice(1)];
-    requireMac(rest[0]);
-  }
+  if (cmd === 'peer' && ['flush', 'watch'].includes(name)) requireMac(rest[0]);
   if (cmd === 'peer') return peerCmd();
   if (cmd === 'restart-copilot') return restartCopilot();
   if (cmd === 'steer') return steerCmd();
