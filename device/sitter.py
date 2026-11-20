@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.13"
+VERSION = "0.3.14"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -2405,13 +2405,49 @@ def parse_frame_id(fid):
     return int(at), [((b >> sh) & 15) * 16 + 8 for b in packed for sh in (4, 0)], source
 
 
-def frame_moved(seen, fresh):
-    """None when the fresh cells match what was seen within the tolerance (picture noise, a blinking caret), else why not."""
-    deltas = [abs(a - b) for a, b in zip(seen, fresh)]
-    over = sum(1 for d in deltas if d > FRAME_CELL_OK)
-    if max(deltas) > FRAME_CELL_MAX or over > FRAME_CELLS_OVER:
-        return "%d of %d parts of the screen changed (the most by %d of 255)" % (over, len(deltas), max(deltas))
+FRAME_REGION_MIN_CELLS = 4  # a region is at least this many of the 16x9 cells: never one cell that happens to match
+
+
+def region_cells(region):
+    """The cells (indices into the 16x9 grid) whose centres lie inside `region`: {"left", "top", "right", "bottom"} in a
+    screenshot's pixels, with "width" and "height", that screenshot's size. Raises ValueError for a malformed or too
+    small one."""
+    if not isinstance(region, dict):
+        raise ValueError("an object: left, top, right, bottom in the screenshot's pixels, and width, height, its size")
+    try:
+        l, t, r, b, w, h = (float(region[k]) for k in ("left", "top", "right", "bottom", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("left, top, right, bottom in the screenshot's pixels, and width, height, its size, all numbers")
+    if not (w > 0 and h > 0 and 0 <= l < r <= w and 0 <= t < b <= h):
+        raise ValueError("a box inside the screenshot: 0 <= left < right <= width, 0 <= top < bottom <= height")
+    gw, gh = FRAME_GRID
+    cells = [j * gw + i for j in range(gh) for i in range(gw) if l <= (i + 0.5) * w / gw <= r and t <= (j + 0.5) * h / gh <= b]
+    if len(cells) < FRAME_REGION_MIN_CELLS:
+        raise ValueError("too small: it covers %d of the screen's 16x9 parts, and must cover at least %d (about %d%% of the screen's width by %d%% of its height); draw it around the whole prompt" % (len(cells), FRAME_REGION_MIN_CELLS, 200 // gw, 200 // gh))
+    return cells
+
+
+def frame_moved(seen, fresh, cells=None):
+    """None when the fresh cells match what was seen within the tolerance (picture noise, a blinking caret), else why not.
+    With `cells` (a region's), only those are compared, and none may change beyond the noise allowance."""
+    idx = list(cells) if cells else list(range(len(seen)))
+    deltas = [abs(seen[i] - fresh[i]) for i in idx]
+    changed = [i for i, d in zip(idx, deltas) if d > FRAME_CELL_OK]
+    allowed = FRAME_CELLS_OVER * len(idx) // len(seen)
+    if max(deltas) > FRAME_CELL_MAX or len(changed) > allowed:
+        why = "%d of %d parts of the %s changed (the most by %d of 255)" % (len(changed), len(idx), "region you gave" if cells else "screen", max(deltas))
+        moved = changed or [i for i, d in zip(idx, deltas) if d > FRAME_CELL_MAX]
+        if not cells and moved and all(not central_cell(i) for i in moved):
+            why += "; every one of them is at the screen's edges, outside its central 60%, like an animated wallpaper: pass region, a box around the prompt in the screenshot's pixels, to compare only that"
+        return why
     return None
+
+
+def central_cell(i):
+    """Is the cell's centre inside the screen's central 60% (20% to 80% across and down)?"""
+    gw, gh = FRAME_GRID
+    x, y = ((i % gw) + 0.5) / gw, ((i // gw) + 0.5) / gh
+    return 0.2 <= x <= 0.8 and 0.2 <= y <= 0.8
 
 
 def decode_picture(path, run=subprocess.run, w=2560):
@@ -3108,7 +3144,9 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
     outbox (its token can also take screenshots, so a secret typed through it could leak); a name it holds; never the
     KVM's own credentials; the Mac's own password never at a password screen (that is unlock's, with its own gates);
     20 an hour, counted in the ledger (write-ahead, so a KVM reboot resets nothing); `seen` under 30 s old, and a fresh
-    picture taken just before typing that still matches it and is not black. Never the value, nor its length, in a
+    picture taken just before typing that still matches it and is not black. With `region` (the caller's box around the
+    prompt, in the screenshot's pixels, at least 4 of the 16x9 cells), only the cells inside it are compared, so an
+    animated wallpaper around a lock-screen prompt doesn't count as the screen changing. Never the value, nor its length, in a
     reply, the ledger or the log."""
     if via != "ssh":
         return {"ok": False, "code": "action-unavailable", "result": "type_secret is over SSH or Housesitter's own MCP only, never the GitHub outbox: the outbox can also take screenshots, so a secret typed through it could leak"}
@@ -3122,6 +3160,12 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
     seen = parse_frame_id(a.get("seen"))
     if not seen:
         return {"ok": False, "code": "input-invalid", "result": "args.seen: the frame id from the screenshot or look in which you saw the focused password field (result.frame), as the sitter gave it"}
+    cells = None
+    if a.get("region") is not None:
+        try:
+            cells = region_cells(a["region"])
+        except ValueError as e:
+            return {"ok": False, "code": "input-invalid", "result": "args.region: %s" % e}
     prompt = prompt.strip()
     if name in KVM_OWN_SECRETS:
         return {"ok": False, "code": "action-unavailable", "result": "%s is the KVM's own credential; the sitter uses it itself and never types it into the Mac" % name}
@@ -3159,7 +3203,7 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
         return {"ok": False, "code": "action-unavailable", "result": "the KVM can't see the screen: kvmd has no live video now, or its picture is near-uniform like the NO LIVE VIDEO placeholder; it types nothing"}
     if classify_frame({"mean": sum(fresh) / len(fresh), "top_edges": 0}) == "black":
         return {"ok": False, "code": "action-unavailable", "result": "the screen is black now (asleep, or no picture): no password field to type into"}
-    moved = frame_moved(seen_cells, fresh)
+    moved = frame_moved(seen_cells, fresh, cells)
     if moved:
         return {"ok": False, "code": "action-unavailable", "result": "the screen changed since the picture you judged (%s); look again, and pass the new frame if the password field still has focus" % moved}
     who = "%s:%s" % (via, str(a.get("by") or "operator")[:64])

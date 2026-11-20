@@ -79,6 +79,8 @@ class McpTest(PluginCase):
             ("sitter_type", {"text": "Activity Monitor"}, "type", {"text": "Activity Monitor"}),
             ("sitter_type_secret", {"name": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True, "seen": "f1.1.x.y"}, "type_secret",
              {"name": "setup-password", "prompt": "sudo password prompt in Terminal", "enter": True, "seen": "f1.1.x.y", "by": "housesitter"}),
+            ("sitter_type_secret", {"name": "mac", "prompt": "lock screen dialog", "seen": "f2.1.x.live.y", "region": {"left": 1, "top": 2, "right": 300, "bottom": 400, "width": 1280, "height": 720}}, "type_secret",
+             {"name": "mac", "prompt": "lock screen dialog", "seen": "f2.1.x.live.y", "region": {"left": 1, "top": 2, "right": 300, "bottom": 400, "width": 1280, "height": 720}, "by": "housesitter"}),
             ("sitter_notify", {"text": "On your phone: approve the sign-in, number 47", "screenshot": True}, "notify",
              {"text": "On your phone: approve the sign-in, number 47", "screenshot": True, "by": "housesitter"}),
             ("sitter_key", {"combo": "cmd+space"}, "key", {"combo": "cmd+space"}),
