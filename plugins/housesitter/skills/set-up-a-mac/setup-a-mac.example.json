@@ -32,8 +32,6 @@
     "Microsoft Outlook.app"
   ],
   "dock_step": "prefs",
-  "finish_brief": "~/<desk>/<kit>/FINISH.md",
-  "copilot_account": "<github-login>",
-  "copilot_install_command": "brew install --cask github-copilot-app",
+  "finish_command": "bash ~/<desk>/<kit>/finish.sh",
   "operator": true
 }
