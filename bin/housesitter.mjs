@@ -770,12 +770,12 @@ async function fleetRun() {
 async function peerCmd() {
   let user;
   try { user = loadConfig().peer?.user; } catch { user = undefined; }
-  const p = Peer.peer({ dir: path.dirname(configPath()), user });
+  const p = Peer.peer({ dir: path.dirname(configPath()), user, from: Peer.sender({ as: opt.as }) });
   const waiting = (r) => (r.rate_limited ? `GitHub asked us to wait; it goes out after ${r.retry_at}`
     : r.error ? `it goes out at the next flush (${r.error})` : 'it goes out at the next flush');
   if (name === 'send') {
     const text = rest.join(' ');
-    need(text, 'housesitter peer send <text> [--re <id>] [--now]');
+    need(text, 'housesitter peer send <text> [--re <id>] [--as <sender>] [--now]');
     const r = await p.send(text, { re: opt.re, to: opt.to || 'housesitter', now: !!opt.now });
     json ? emit(r) : say(r.status === 'sent'
       ? `sent ${r.id} to ${r.to}${r.pruned?.length ? ` (cleared ${r.pruned.length} over a day old)` : ''}`

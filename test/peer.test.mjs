@@ -181,7 +181,7 @@ const cli = (args, env) => new Promise((resolve) => {
 
 test('housesitter peer send, flush and inbox from the shell; the queue outlives each process', async () => {
   const { gists, gh, dir, env } = await setup();
-  const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') };
+  const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json'), COPILOT_SESSION_ID: '', COPILOT_AGENT_SESSION_ID: '', COPILOT_CLI: '' };
   const s = await cli(['peer', 'send', 'which', 'sessions', 'resumed?', '--re', 'h1', '--json', '--why', 'the person asked'], e);
   assert.equal(s.status, 0, s.stderr);
   const sent = JSON.parse(s.stdout);
@@ -307,6 +307,16 @@ test('peer watch sends what GitHub\'s rate limit kept queued, once the wait is o
   assert.equal(patches().length, 2);
   assert.deepEqual(queue(), []);
   assert.match(watchLog(dir).at(-1), /flushed 1 queued message: /);
+  await gh.close();
+});
+
+test('peer send signs as who sent it: --as, a Copilot session, else Ouroboros', async () => {
+  const { gists, gh, dir, env } = await setup();
+  const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json'), COPILOT_SESSION_ID: '', COPILOT_AGENT_SESSION_ID: '', COPILOT_CLI: '' };
+  const as = JSON.parse((await cli(['peer', 'send', 'hi', '--as', 'Ari Mini!', '--json', '--now', '--why', 'the person asked'], e)).stdout);
+  assert.match(JSON.parse(gists[O_TO_H][as.file]).from, /^ari-mini@/);
+  const cp = JSON.parse((await cli(['peer', 'send', 'hi', '--json', '--now', '--why', 'the person asked'], { ...e, COPILOT_SESSION_ID: '0e4b7d7c-aaaa' })).stdout);
+  assert.match(JSON.parse(gists[O_TO_H][cp.file]).from, /^copilot-0e4b7d7c@/);
   await gh.close();
 });
 

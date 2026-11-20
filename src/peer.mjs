@@ -82,6 +82,15 @@ export function drillLabel(dir, now = Date.now()) {
 export const drillText = (text, label) => (label && !text.startsWith('[planned drill') ? `[planned drill: ${label}] ${text}` : text);
 export const DRILL_NOTE = (label) => `This is a planned drill (${label}): handle it for real, but say "planned drill (${label})" in anything you report, and don't relay it to Ari as an incident.`;
 
+// Who a message is from. `ouroboros@host` belongs to Ouroboros's own daemon; anything else on the Mac signs as itself:
+// the --as name, or the Copilot session that ran the command.
+export function sender({ as, env = process.env, host = os.hostname().replace(/\.local$/, '') } = {}) {
+  const clean = (v) => String(v).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  const sid = env.COPILOT_SESSION_ID || env.COPILOT_AGENT_SESSION_ID;
+  const name = as ? clean(as) : sid ? `copilot-${clean(sid).slice(0, 8)}` : env.COPILOT_CLI ? 'copilot' : 'ouroboros';
+  return `${name || 'unknown'}@${host}`;
+}
+
 export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env, fetchFn = globalThis.fetch, from = `ouroboros@${os.hostname().replace(/\.local$/, '')}`, clock = Date.now } = {}) {
   const api = (env.HOUSESITTER_GITHUB_API || 'https://api.github.com').replace(/\/$/, '');
   const outGist = env.HOUSESITTER_PEER_OUT || O_TO_H;
