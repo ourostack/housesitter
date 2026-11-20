@@ -55,7 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.12"
+VERSION = "0.3.13"
 HOME = os.environ.get("HOUSESITTER_HOME", "/etc/kvmd/user/housesitter")
 
 DEFAULTS = {
@@ -1468,6 +1468,7 @@ def budgets(st, now, rules=DEFAULTS, bcfg=None):
             "unlock_test_hour": [len(test), rules["attended_test_unlocks_per_hour"]],
             "cycles_day": [len(day), rules["cycles_per_day"]], "cycles_day_frees_at": min(e["at"] for e in day) + 86400000 if day else None,
             "type_secret_hour": [len(_recent(ledger, "type_secret", now, 60)), TYPE_SECRETS_PER_HOUR],
+            "notify_hour": [len(_recent(ledger, "ping", now, 60)), PINGS_PER_HOUR],
             "blocked": typing_budget(st, now, rules, bcfg)}
 
 
@@ -2883,10 +2884,12 @@ EMAIL_PER_DAY = 5
 
 
 def emails_today(ledger, now):
-    return sum(1 for e in ledger or [] if e.get("kind") == "notify" and now - e.get("at", 0) < 86400000 and "emailed" in str(e.get("result", "")))
+    return sum(1 for e in ledger or [] if e.get("kind") in ("notify", "ping") and now - e.get("at", 0) < 86400000 and "emailed" in str(e.get("result", "")))
 
 
-def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=None):
+def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=None, image=None):
+    """Post one message to the owner's notify target. image: an optional small JPEG, attached (ntfy) or inlined as
+    base64 (a webhook); with an image, ntfy takes the body as its Message header, so it must be one line."""
     n = cfg.get("notify") or {}
     url = n.get("url")
     if not url:
@@ -2895,11 +2898,19 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
         # alert-test: the same message the rules would send, marked in its first words so nobody acts on it.
         subject, body = "TEST: %s" % subject, "TEST (housesitter alert-test; nothing is wrong). %s" % body
     if n.get("kind") != "ntfy":
-        data = json.dumps({"subject": subject, "body": body, "text": "%s\n%s" % (subject, body)}).encode("utf-8")
+        msg = {"subject": subject, "body": body, "text": "%s\n%s" % (subject, body)}
+        if image:
+            msg["image_jpeg_b64"] = base64.b64encode(image).decode("ascii")
+        data = json.dumps(msg).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         with opener(req, timeout=10) as r:
             return "posted %d" % r.status
     headers = {"Title": subject.encode("utf-8"), "Tags": "house"}
+    data, method = body.encode("utf-8"), "POST"
+    if image:
+        # ntfy: the file is the request body, and the text rides in the Message header (ntfy's documented upload).
+        headers.update({"Filename": "screen.jpg", "Message": body.encode("utf-8")})
+        data, method = image, "PUT"
     email, note = n.get("email"), ""
     if email:
         now = now if now is not None else int(time.time() * 1000)
@@ -2915,7 +2926,7 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
             token = load_secret("ntfy")
             if token:
                 headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with opener(req, timeout=10) as r:
             return "posted %d%s" % (r.status, ", emailed" if email else note)
@@ -2931,7 +2942,7 @@ def notify(cfg, subject, body, opener=urllib.request.urlopen, now=None, ledger=N
             pass
         headers.pop("Email", None)
         headers.pop("Authorization", None)
-        with opener(urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST"), timeout=10) as r:
+        with opener(urllib.request.Request(url, data=data, headers=headers, method=method), timeout=10) as r:
             return "posted %d (ntfy wouldn't email: %s; a push only)" % (r.status, (why or "HTTP %d" % e.code)[:100])
 
 
@@ -2979,8 +2990,11 @@ def should_publish(st, status, now, beat_min=10):
     return status["state"] != last.get("state") or bool(status.get("actions")) or now - last.get("at", 0) >= beat_min * 60000
 
 
-OPS = ("status", "watch_check", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll", "type_secret")
+OPS = ("status", "watch_check", "look", "screenshot", "unlock", "want_desktop", "power_cycle", "power_on", "click", "type", "key", "scroll", "type_secret", "notify")
 TYPE_SECRETS_PER_HOUR = 20
+PINGS_PER_HOUR = 12
+PING_MAX = 300
+PING_WIDTH = 640
 CHECK_PICTURE_TRIES = 3
 
 
@@ -3167,6 +3181,61 @@ def type_secret(a, cfg, kvmd, st, now, via, log=lambda m: None):
     return {"ok": ok, "code": None if ok else "action-failed", "result": {"typed": name, "prompt": prompt, "enter": enter} if ok else res}
 
 
+def ping(a, cfg, kvmd, st, now, via, log=lambda m: None, opener=urllib.request.urlopen):
+    """An agent's message to the owner, straight through the sitter's own notify target (ntfy, its email, or a
+    webhook), for what only a person can do now: a passkey or QR, an MFA number, a click on the Mac itself. One line of
+    text, optionally with a small picture of the screen as the KVM sees it. Gates: over SSH or the plugin's MCP only,
+    never the GitHub outbox; never a secret the sitter holds in the text; 12 an hour, counted in the ledger as "ping"
+    (an agent's act, which the rules neither count nor judge), sharing notify's daily email cap."""
+    if via != "ssh":
+        return {"ok": False, "code": "action-unavailable", "result": "notify is over SSH or Housesitter's own MCP only, never the GitHub outbox"}
+    text, shot = a.get("text"), a.get("screenshot", False)
+    if not isinstance(text, str) or not text.strip() or len(text) > PING_MAX or "\n" in text or "\r" in text:
+        return {"ok": False, "code": "input-invalid", "result": "args.text: one line, 1-%d characters: what the owner must do now, and the number to match if there is one" % PING_MAX}
+    if not isinstance(shot, bool):
+        return {"ok": False, "code": "input-invalid", "result": "args.screenshot: true or false"}
+    text = text.strip()
+    if not (cfg.get("notify") or {}).get("url"):
+        return {"ok": False, "code": "action-unavailable", "result": "this sitter has no notify target (adopt --notify sets one); nothing sent"}
+    for n in secret_names():
+        try:
+            v = load_secret(n)
+        except Exception:  # noqa: BLE001
+            v = None
+        if v and len(v) >= 4 and v in text:
+            return {"ok": False, "code": "input-invalid", "result": "args.text holds a secret the sitter keeps; nothing sent"}
+    used = _recent(st.get("ledger") or [], "ping", now, 60)
+    if len(used) >= PINGS_PER_HOUR:
+        return {"ok": False, "code": "action-unavailable", "result": "notify budget used (%d in the last hour); one frees up in %d min" % (PINGS_PER_HOUR, max(1, (min(e["at"] for e in used) + 3600000 - now + 59999) // 60000))}
+    image = None
+    if shot:
+        try:
+            image = shrink_jpeg(snapshot_jpeg(kvmd, frame=lambda k: frame_jpeg(k, width=PING_WIDTH)), PING_WIDTH)
+        except Exception as e:  # noqa: BLE001  (the message matters more than its picture)
+            log("notify: no picture (%s); sending the text alone" % str(e)[:80])
+    who = "%s:%s" % (via, str(a.get("by") or "operator")[:64])
+    entry = write_ahead(st, {"at": now, "kind": "ping", "by": who, "ask": text[:120], "picture": image is not None})
+    title = "%s: needs you" % cfg.get("name", "the Mac")
+    try:
+        res = notify(cfg, title, text, opener=opener, now=now, ledger=st.get("ledger"), image=image)
+    except Exception as e:  # noqa: BLE001
+        res = "failed: %s" % str(e)[:160]
+        if image is not None:
+            # A target that won't take the picture (no attachments on a self-hosted ntfy, a quota) must not cost the ask.
+            image = None
+            try:
+                res = notify(cfg, title, text, opener=opener, now=now, ledger=st.get("ledger")) + " (without the picture: %s)" % res[len("failed: "):][:80]
+            except Exception as e2:  # noqa: BLE001
+                res = "failed: %s" % str(e2)[:160]
+    log("notify: %r, asked by %s -> %s" % (text[:120], who, res))
+    for e in st.get("ledger") or []:
+        if e.get("id") == entry["id"]:
+            e["picture"] = image is not None
+    finish(st, entry, res)
+    ok = res.startswith("posted")
+    return {"ok": ok, "code": None if ok else "action-failed", "result": {"sent": res, "picture": image is not None} if ok else res}
+
+
 def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
     """One command (from the inbox, or `sitter.py do` over SSH). Unlock and power ops keep the sitter's own budgets and
     checks; screenshot, click, type and key are an agent's hands and pass through, except at a password screen;
@@ -3187,6 +3256,8 @@ def handle(cmd, cfg, kvmd, power, log, now, st, via="ssh"):
         return watch_check(a, st, now, via)
     if op == "type_secret":
         return type_secret(a, cfg, kvmd, st, now, via, log)
+    if op == "notify":
+        return ping(a, cfg, kvmd, st, now, via, log)
     if op == "look":
         res = once(cfg, kvmd, power, log, now=now)
         try:
@@ -3572,8 +3643,8 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
     inc = (mem or {}).get("incident")
     if inc and inc.get("notified_at") is None and boot.get("told_at") and boot["told_at"] >= inc.get("started", now) - BOOT["armed_min"] * 60000:
         inc["notified_at"] = boot["told_at"]  # the boot watch already told you about this one
-    # A typed secret is an agent's act, not the rules': it neither settles nor is judged as a fix.
-    rules_ledger = [e for e in ledger if e.get("kind") != "type_secret"]
+    # A typed secret or an agent's message is an agent's act, not the rules': it neither settles nor is judged as a fix.
+    rules_ledger = [e for e in ledger if e.get("kind") not in ("type_secret", "ping")]
     mem, actions = tick(mem or None, rules_ledger, {k: v for k, v in obs.items() if not k.endswith("_error")}, now, caps, dict(DEFAULTS, **cfg.get("rules", {})))
     if clock_seen is not None:
         mem["clock_seen"] = clock_seen[-4:]
@@ -3606,7 +3677,7 @@ def once(cfg, kvmd, power, log, now=None, gh=None):
         log("%s %s -> %s: %s" % (mem["state"], a["kind"], a["why"], res))
     if open_incident and not mem.get("incident"):
         # Over: keep a short record, so `housesitter doctor` can say what the last bad stretch was and how it ended.
-        acts = [e.get("kind") for e in st.get("ledger") or [] if e.get("at", 0) >= open_incident.get("started", now) and e.get("kind") != "notify"]
+        acts = [e.get("kind") for e in st.get("ledger") or [] if e.get("at", 0) >= open_incident.get("started", now) and e.get("kind") not in ("notify", "ping")]
         st["last_incident"] = {"started": open_incident.get("started"), "ended": now, "actions": acts[-6:],
                                "told_you": open_incident.get("notified_at") is not None}
     status = {"v": 1, "sitter": VERSION, "at": now, "name": cfg.get("name"), "state": mem["state"], "since": mem.get("since"), "obs": obs,

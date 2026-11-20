@@ -15,6 +15,7 @@
   "setup_command": "curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/<kit>.sh | bash",
   "kit_readme": "https://github.com/<owner>/<repo>/blob/main/<kit>/README.md",
   "rerun_step": "bash ~/<desk>/<kit>/bootstrap.sh --only <step>",
+  "kit_log": "~/Library/Logs/<kit>.log",
   "apple_account": {
     "email": "owner@icloud.com",
     "send_from_reference": "./mac secret <mac> send --keychain housesitter/<reference_mac>-apple-account=housesitter/<mac>-apple-account",
