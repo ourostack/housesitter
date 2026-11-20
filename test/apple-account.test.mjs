@@ -53,7 +53,8 @@ test('after a coordinated boot, the iCloud password pane is filled once, with no
   assert.equal(r.status, 'filled', JSON.stringify(r));
   const typed = w.calls.find((c) => c[1] === 'type_secret');
   assert.deepEqual(JSON.parse(typed[2]), { keychain_item: 'mini-apple-account', element: 'securetextfield[Password]' });
-  assert.deepEqual(typed.slice(3), ['--app', 'Setup Assistant']);
+  assert.deepEqual(typed.slice(3, 5), ['--app', 'Setup Assistant']);
+  assert.match(typed[6], /apple-account job.*Ari/);
   assert.ok(w.calls.some((c) => c[1] === 'click' && JSON.parse(c[2]).element === 'button[Continue]'), 'the pane is continued with its own button');
   assert.ok(w.audit.map((a) => a.event).includes('filled'));
   assert.ok(!JSON.stringify([w.audit, w.state, w.told]).includes(FAKE));
