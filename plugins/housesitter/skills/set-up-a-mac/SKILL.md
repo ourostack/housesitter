@@ -53,6 +53,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 - **A lock during a wait is mine to undo.** If the screen locks or sleeps mid-setup, I unlock it myself in setup mode, as in step 2: `initial_password` before the enrollment password change, `mac` after.
 - **Never blind.** If `sitter_screenshot` or `sitter_look` gets no picture (HTTP 500, no live video, no frame) for more than 30 s, I don't wait. I restart kvmd, which brings its streamer back: `systemctl restart kvmd`, or `/etc/init.d/S*kvmd restart` where there's no systemd. If there's still no picture a minute later, I reboot the KVM (`reboot`). Setup mode survives that, and on waking I start again at Where am I.
 - **Keep the KVM light.** Before a long setup, I stop my own processes that aren't needed for it: the memory sampler (`/etc/init.d/S99housesitter-samples stop`), status publishers, and any shell or tool of mine left running. Never the sitter, kvmd, my watcher or my own turn. `kvm_health` before and after. I start the sampler again at the hand-over.
+- **Decide, don't ask.** Calls like these are mine: the order of steps, installing an app the setup needs that hasn't arrived, rerunning a step, leaving a non-blocking window for later. I act and note it. I ask the owner only for what only a person can do.
 - **Leave the reference Mac alone.** I ask Ouroboros only to read, to approve a code, or to run the config's own commands.
 
 ## When I'm stuck
@@ -138,15 +139,14 @@ In setup mode I type here myself, after a fresh look shows the password field fo
 
 ## 3. Work enrollment (only if `enroll` is set)
 
-**Done when:** in Terminal, `profiles status -type enrollment` reads "MDM enrollment: Yes", and my notes say `password: mac`.
+**Done when:** in Terminal, `profiles status -type enrollment` reads "MDM enrollment: Yes", my notes say `password: mac`, and `app-sso platform -s` shows `"registrationCompleted" : true`. Platform SSO comes before step 4: it makes Microsoft sign-in work in every browser on the Mac without a passkey, which every later device code depends on.
 
 1. **Install Company Portal** if Spotlight (cmd+space, "Company Portal") doesn't find it. In a Terminal work window (cmd+space, "Terminal", Return, then cmd+n), `sitter_type` `enroll.install_command`, Return. At `Password:`, `sitter_type` `initial_password`, Return. Done when the command ends without an error.
 2. **Sign in.** Company Portal, Sign In. Email field focused: `sitter_type` `work_email`, Return. At Microsoft's "Enter password" page, I take the passkey route from the rule above: "Sign in another way", then the passkey or QR option, and one ping to the owner with what's on screen. With `microsoft_password_secret` set, I type that secret instead, after a fresh look, with `enter: true` and `seen`.
 3. **The passkey or MFA.** After the passkey ping, I look every 10-15 s for up to 5 minutes. If the QR code expires, I start the passkey option again once and ping once more; after that, stuck. At "Approve sign in request", with a number if number matching is on, I tell the owner once: "On your phone: approve the Microsoft sign-in for <mac> (enrolling it), number <n>." I look every 10-15 s for up to 5 minutes. On "We didn't hear from you" or "Request denied", I press "Send another request" once and tell the owner once more, with the new number. After that, stuck. At "Stay signed in?": Yes.
 4. **Device management profile.** Begin; Continue through "Review privacy"; Download profile. System Settings opens at Device Management: Install, then Install. At "Enter your password to allow this": `sitter_type` `initial_password`, Return.
 5. **Back in Company Portal**, "Checking device settings" should end at "You're all set". If it names a setting to fix (FileVault, an update), I fix it and recheck.
-6. **Platform SSO registration** arrives when Intune delivers its profile, sometimes many minutes later, as a "Registration Required" notification. I click it, then Register. A Microsoft sign-in follows (items 2 and 3 again). At "enter your Mac password": `sitter_type` `initial_password`.
-7. **The password change** (old is `initial_password`, new is `mac`). In a dialog on the desktop:
+6. **The password change** (old is `initial_password`, new is `mac`). In a dialog on the desktop:
    - Old field focused: `sitter_type` `initial_password`.
    - Tab, fresh look, New field focused: `sitter_type_secret` `mac`, prompt "new password in the macOS password change dialog".
    - Tab, fresh look, Verify field focused: the same, with `enter: true`.
@@ -154,6 +154,8 @@ In setup mode I type here myself, after a fresh look shows the password field fo
    If the change is asked at the login window instead, I do the same there in setup mode: the old password, then the new one twice, with a fresh look before each field. Outside setup mode, that's a password screen: stuck.
 
 I note `password: mac` the moment the change succeeds. If it fails halfway, I note `password: unknown` and tell the owner once.
+
+7. **Platform SSO registration, right after the change and before step 4.** It arrives when Intune delivers its profile, as a "Registration Required" notification; I don't wait idly for it. If it isn't there, I look for it in System Settings > Users & Groups and Company Portal, and check `app-sso platform -s` in a work window every 10-15 s. When it's there: click it, then Register. A Microsoft sign-in follows (items 2 and 3 again). At "enter your Mac password", the password the Mac has now (the rule above; `mac` after the change).
 
 ## 4. The owner's setup command
 
@@ -178,7 +180,7 @@ I note `password: mac` the moment the change succeeds. If it fails halfway, I no
 **Device codes.** A code lives about 15 minutes, so none is ever left waiting.
 
 - **Sign-ins that go through the owner's Microsoft account are mine to finish on this Mac.** That covers a GitHub EMU account on github.com (its login ends in a suffix like `_microsoft`), a GitHub Enterprise host (`*.ghe.com`, like microsoft.ghe.com) and `az login`.
-  1. In a second work window (cmd+n), `sitter_type` `open <the device URL>` and Return. That opens it in this Mac's own browser.
+  1. In a second work window (cmd+n), `sitter_type` `open -a "Microsoft Edge" <the device URL>` and Return. If that fails because Edge hasn't arrived from Intune yet, I run `brew install --cask microsoft-edge` there myself, without waiting, then open the URL again.
   2. I type the code and press Continue.
   3. I go on through Microsoft's sign-in, where the enrolled Mac is already signed in: I pick the work account, and any password page takes the passkey route.
   4. Then Authorize (or Continue at "Are you trying to sign in to …?").
