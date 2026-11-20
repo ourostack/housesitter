@@ -117,9 +117,9 @@ def file_time(name):
 class GitHubError(RuntimeError):
     """A GitHub answer of 300 or more: its HTTP status, and the Retry-After and x-ratelimit-reset it sent."""
 
-    def __init__(self, message, status, retry_after=None, reset=None):
+    def __init__(self, message, status, retry_after=None, reset=None, remaining=None):
         RuntimeError.__init__(self, message)
-        self.status, self.retry_after, self.reset = status, retry_after, reset
+        self.status, self.retry_after, self.reset, self.remaining = status, retry_after, reset, remaining
 
 
 def _int(v):
@@ -130,13 +130,14 @@ def _int(v):
 
 
 def rate_limited_until(e, now):
-    """When GitHub's rate limit lets us write again (s), for an error from a write; None when it isn't a rate limit.
-    Its Retry-After first, then x-ratelimit-reset (epoch seconds), else a minute."""
+    """When GitHub's rate limit lets us write again (s), for an error from a write; None when it isn't a rate limit
+    (GitHub sends x-ratelimit-reset on every answer, so that alone says nothing). Its Retry-After first, then
+    x-ratelimit-reset (epoch seconds) when none remain, else a minute (GitHub's advice for a secondary limit)."""
     if not isinstance(e, GitHubError):
         return None
-    if not (e.status == 429 or (e.status == 403 and (e.retry_after is not None or e.reset is not None or "rate limit" in str(e).lower()))):
+    if not (e.status == 429 or (e.status == 403 and (e.retry_after is not None or e.remaining == 0 or "rate limit" in str(e).lower()))):
         return None
-    at = now + e.retry_after if e.retry_after is not None else e.reset if e.reset is not None else now + 60
+    at = now + e.retry_after if e.retry_after is not None else e.reset if e.remaining == 0 and e.reset is not None else now + 60
     return max(at, now + 1)
 
 
@@ -170,7 +171,7 @@ def request(method, url, body=None, etag=None, timeout=20, raw=False):
             return 304, etag, None
         hdr = e.headers or {}
         raise GitHubError("GitHub %s %s -> HTTP %d%s" % (method, url.split("?")[0], e.code, (": " + detail) if detail else ""), e.code,
-                          _int(hdr.get("Retry-After")), _int(hdr.get("X-RateLimit-Reset")))
+                          _int(hdr.get("Retry-After")), _int(hdr.get("X-RateLimit-Reset")), _int(hdr.get("X-RateLimit-Remaining")))
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise RuntimeError("GitHub %s %s: %s" % (method, url.split("?")[0], e))
 

@@ -29,12 +29,13 @@ export const SEEN_MAX = 500;
 export const OWNER = 'arimendelow';
 const NAME = /^(\d{8})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{8}\.json$/;
 
-// When GitHub's rate limit lets us write again (ms), for an error from a write; null when it isn't a rate limit. Its
-// Retry-After first, then x-ratelimit-reset (epoch seconds), else a minute.
+// When GitHub's rate limit lets us write again (ms), for an error from a write; null when it isn't a rate limit (GitHub
+// sends x-ratelimit-reset on every answer, so that alone says nothing). Its Retry-After first, then x-ratelimit-reset
+// (epoch seconds) when none remain, else a minute (GitHub's advice for a secondary limit).
 export function rateLimitedUntil(e, now) {
-  const limited = e?.status === 429 || (e?.status === 403 && (e.retryAfter != null || e.reset != null || /rate limit/i.test(e.message || '')));
+  const limited = e?.status === 429 || (e?.status === 403 && (e.retryAfter != null || e.remaining === 0 || /rate limit/i.test(e.message || '')));
   if (!limited) return null;
-  const at = e.retryAfter != null ? now + e.retryAfter * 1000 : e.reset != null ? e.reset * 1000 : now + 60e3;
+  const at = e.retryAfter != null ? now + e.retryAfter * 1000 : e.remaining === 0 && e.reset != null ? e.reset * 1000 : now + 60e3;
   return Math.max(at, now + 1000);
 }
 
@@ -101,6 +102,7 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
       e.status = r.status;
       e.retryAfter = int(r.headers.get('retry-after'), null);
       e.reset = int(r.headers.get('x-ratelimit-reset'), null);
+      e.remaining = int(r.headers.get('x-ratelimit-remaining'), null);
       throw e;
     }
     return { status: r.status, etag: r.headers.get('etag'), body: raw ? text : (text ? JSON.parse(text) : null) };

@@ -70,9 +70,10 @@ class PeerTest(PluginCase):
         self.assertEqual(done["sent"], [r["id"], q["id"]])
         self.assertEqual(len(self.patches()), 2)
         self.assertEqual(self.queue(), [])
-        self.gh.patch_fail.append((429, {"X-RateLimit-Reset": str(int(t0 + 600))}, "API rate limit exceeded"))
+        self.gh.patch_fail.append((429, {"X-RateLimit-Reset": str(int(t0 + 600)), "X-RateLimit-Remaining": "0"}, "API rate limit exceeded"))
         self.assertEqual(peer.send("three", ts=t0 + 200)["retry_at"], peer.iso(int(t0 + 600)))
-        self.gh.patch_fail.append((403, {}, "Resource not accessible"))
+        # GitHub sends x-ratelimit-reset on every answer: with some remaining, a 403 is a real refusal, not a wait.
+        self.gh.patch_fail.append((403, {"X-RateLimit-Reset": str(int(t0 + 3000)), "X-RateLimit-Remaining": "4000"}, "Resource not accessible by personal access token"))
         denied = peer.send("four", ts=t0 + 601)
         self.assertEqual(denied["status"], "queued")
         self.assertIn("HTTP 403", denied["error"])

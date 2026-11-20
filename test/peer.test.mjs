@@ -114,10 +114,11 @@ test('peer: GitHub\'s rate limit (403 with Retry-After) keeps messages queued, l
   assert.equal(patches().length, 2);
   assert.deepEqual(queue(), []);
   // A 429 with only x-ratelimit-reset waits until that reset; a 403 that isn't a rate limit is an error, still queued.
-  gh.fail.push({ status: 429, headers: { 'X-RateLimit-Reset': String(Math.floor((t0 + 600e3) / 1000)) }, message: 'API rate limit exceeded' });
+  gh.fail.push({ status: 429, headers: { 'X-RateLimit-Reset': String(Math.floor((t0 + 600e3) / 1000)), 'X-RateLimit-Remaining': '0' }, message: 'API rate limit exceeded' });
   assert.equal((await p.send('three')).retry_at, '2026-11-09T12:10:00Z');
   time.now = t0 + 601e3;
-  gh.fail.push({ status: 403, message: 'Resource not accessible' });
+  // GitHub sends x-ratelimit-reset on every answer: with some remaining, a 403 is a real refusal, not a wait.
+  gh.fail.push({ status: 403, headers: { 'X-RateLimit-Reset': String(Math.floor((t0 + 3000e3) / 1000)), 'X-RateLimit-Remaining': '4000' }, message: 'Resource not accessible by personal access token' });
   const denied = await p.send('four');
   assert.equal(denied.status, 'queued');
   assert.match(denied.error, /HTTP 403/);
