@@ -25,6 +25,8 @@ import fcntl
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 import time
 import urllib.error
@@ -375,6 +377,18 @@ def inbox(gist_id=None, mark=True):
     return out
 
 
+def trust(msg):
+    """Who really sent a message and whether its owner authorized what it asks: the sitter checks the signature against the
+    keys `adopt` sealed on this KVM. Unsigned or unverifiable never raises; it just comes back not verified."""
+    body = {k: v for k, v in msg.items() if k != "file"}
+    try:
+        r = subprocess.run(shlex.split(env("HOUSESITTER_SITTER_CMD", "python3 /etc/kvmd/user/housesitter/sitter.py")) + ["peer-verify"],
+                           input=json.dumps(body), capture_output=True, text=True, timeout=20)
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return {"verified": False, "authorized": False, "reason": "the sitter could not check it"}
+
+
 def _read_inbox(gist_id, mark):
     gist_id = gist_id or env("HOUSESITTER_PEER_IN", O_TO_H)
     d = state_dir()
@@ -393,6 +407,8 @@ def _read_inbox(gist_id, mark):
         if etag:
             etags[gist_id] = etag
             write_json(os.path.join(d, "peer-etag.json"), etags)
+    for m in fresh:
+        m["trust"] = trust(m)
     return {"ok": True, "messages": fresh}
 
 

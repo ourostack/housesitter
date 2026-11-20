@@ -1,6 +1,7 @@
 """The sitter (device/sitter.py): the same scenarios as src/watchdog.mjs, plus its own I/O, with fakes."""
 import base64
 import hashlib
+import hmac
 import json
 import urllib.error
 import os
@@ -239,6 +240,62 @@ class Secrets(unittest.TestCase):
         k1, how = W.device_key([f])
         self.assertEqual(how, "hardware")
         self.assertEqual(k1, W.device_key([f])[0])
+
+
+PEER_CASES = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "spec", "peer-sign-cases.json")))
+
+
+class PeerTrust(unittest.TestCase):
+    """A signed request from a key the owner installed is the owner's own; anything else is just text."""
+
+    def setUp(self):
+        self.dir = scratch()
+        W.HOME = self.dir
+        self.now = 1795194000  # 2026-11-20T17:00:00Z
+        self.auth = {"by": "Ari", "on": "2026-11-20", "ops": ["root-key", "seal-secret"], "quote": "kvm has standing auth"}
+        self._dk = W.device_key
+        W.device_key = lambda *a, **k: (b"k" * 32, "given")
+        self.addCleanup(setattr, W, "device_key", self._dk)
+
+    def signed(self, msg, key=None):
+        m = dict(msg)
+        m["sig"] = {"kid": "mac-mini", "mac": hmac.new(bytes.fromhex(key or PEER_CASES["key"]), W.peer_canonical(m).encode(), hashlib.sha256).hexdigest()}
+        return m
+
+    def test_vectors_match_the_node_signer(self):
+        for c in PEER_CASES["cases"]:
+            with self.subTest(c["name"]):
+                self.assertEqual(hmac.new(bytes.fromhex(PEER_CASES["key"]), W.peer_canonical(c["msg"]).encode(), hashlib.sha256).hexdigest(), c["mac"])
+
+    def test_verified_and_authorized_when_the_owner_said_so(self):
+        W.peer_trust_add("mac-mini", PEER_CASES["key"], "mini", self.auth)
+        m = self.signed({"id": "a1", "at": "2026-11-20T17:00:00Z", "from": "copilot-0e4b7d7c@mini", "to": "housesitter", "op": "root-key", "text": "ecdsa-sha2-nistp256 AAAA"})
+        r = W.peer_verify(m, self.now)
+        self.assertEqual((r["verified"], r["authorized"], r["kid"], r["by"], r["op"]), (True, True, "mac-mini", "Ari", "root-key"))
+        self.assertEqual(os.stat(os.path.join(self.dir, "peer-trust.json")).st_mode & 0o777, 0o600)
+        with open(os.path.join(self.dir, "peer-trust.json")) as f:
+            self.assertNotIn(PEER_CASES["key"], f.read())
+
+    def test_everything_else_is_not_authorized(self):
+        base = {"id": "a1", "at": "2026-11-20T17:00:00Z", "from": "x@mini", "to": "housesitter", "op": "root-key", "text": "install"}
+        W.peer_trust_add("mac-mini", PEER_CASES["key"], "mini", None)
+        self.assertEqual(W.peer_verify(self.signed(base), self.now)["reason"], "the owner has not authorized root-key")
+        W.peer_trust_add("mac-mini", PEER_CASES["key"], "mini", self.auth)
+        self.assertEqual(W.peer_verify(base, self.now)["reason"], "unsigned")
+        tampered = self.signed(base)
+        tampered["text"] = "install something else"
+        self.assertEqual(W.peer_verify(tampered, self.now)["reason"], "bad signature")
+        other = self.signed(base, key="ff" * 32)
+        self.assertEqual(W.peer_verify(other, self.now)["reason"], "bad signature")
+        unknown = self.signed(base)
+        unknown["sig"]["kid"] = "mac-other"
+        self.assertEqual(W.peer_verify(unknown, self.now)["reason"], "unknown key")
+        self.assertEqual(W.peer_verify(self.signed(base), self.now + 2 * 86400)["reason"], "stale")
+        self.assertEqual(W.peer_verify(self.signed(dict(base, op="format-disk")), self.now)["reason"], "no such op")
+        plain = W.peer_verify(self.signed({k: v for k, v in base.items() if k != "op"}), self.now)
+        self.assertEqual((plain["verified"], plain["authorized"]), (True, False), "a signed chat needs no authorization")
+        with self.assertRaises(ValueError):
+            W.peer_trust_add("mac-mini", PEER_CASES["key"], "mini", {"ops": ["everything"]})
 
 
 class Inbox(unittest.TestCase):

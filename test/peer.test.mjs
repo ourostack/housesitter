@@ -320,6 +320,22 @@ test('peer send signs as who sent it: --as, a Copilot session, else Ouroboros', 
   await gh.close();
 });
 
+test('housesitter peer send signs when a key exists, and refuses an unknown --op', async () => {
+  const { gists, gh, dir, env } = await setup();
+  const { ensureKey, signMac } = await import('../src/peer-sign.mjs');
+  const e = { ...env, HOUSESITTER_CONFIG: path.join(dir, 'config.json') };
+  const nokey = await cli(['peer', 'send', 'x', '--op', 'root-key', '--why', 'the person asked'], e);
+  assert.notEqual(nokey.status, 0, '--op without a key is refused');
+  const k = ensureKey(dir, 'mac-mini');
+  const r = JSON.parse((await cli(['peer', 'send', 'install this key', '--op', 'root-key', '--json', '--now', '--why', 'the person asked'], e)).stdout);
+  const m = JSON.parse(gists[O_TO_H][r.file]);
+  assert.equal(m.op, 'root-key');
+  assert.deepEqual(m.sig, { kid: 'mac-mini', mac: signMac(k.key, m) });
+  const bad = await cli(['peer', 'send', 'x', '--op', 'format-disk', '--why', 'the person asked'], e);
+  assert.notEqual(bad.status, 0);
+  await gh.close();
+});
+
 test('housesitter peer watch --once from the shell', async () => {
   const { gists, gh, dir, env } = await setup();
   const calls = path.join(dir, 'ouro-calls.txt');

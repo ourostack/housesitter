@@ -1305,6 +1305,103 @@ def has_secret(name):
     return load_secret(name) is not None
 
 
+# ---------- the peer link: who signed a message, and what its owner has authorized ----------
+# A message on the peer link is plain text in a gist, so anything on the Mac can say anything. Trust comes from a key:
+# `adopt` seals one per controller Mac here (peer-<kid>.cred, as every secret) over root SSH, with the owner's standing
+# authorization in peer-trust.json. A message signed by such a key, asking for an op the owner authorized, is the
+# owner's own ask: no one has to confirm it at a console. The signature is HMAC-SHA256 over peer_canonical(), the same
+# bytes src/peer-sign.mjs signs (spec/peer-sign-cases.json holds the vectors both read).
+PEER_OPS = ("root-key", "seal-secret")
+PEER_MAX_AGE_SEC = 24 * 3600
+
+
+def peer_canonical(msg):
+    for k in ("id", "at", "from", "to", "op", "re"):
+        if "\n" in str(msg.get(k) or ""):
+            raise ValueError("a newline in %s" % k)
+    return "\n".join(["housesitter-peer-v1", str(msg.get("id") or ""), str(msg.get("at") or ""), str(msg.get("from") or ""),
+                      str(msg.get("to") or ""), str(msg.get("op") or ""), str(msg.get("re") or ""), str(msg.get("text") or "")])
+
+
+def peer_trust_path():
+    return os.path.join(HOME, "peer-trust.json")
+
+
+def peer_trust_load():
+    try:
+        with open(peer_trust_path()) as f:
+            t = json.load(f)
+    except (OSError, ValueError):
+        t = {}
+    t = t if isinstance(t, dict) else {}
+    return {"keys": t.get("keys") if isinstance(t.get("keys"), dict) else {}, "standing_auth": t.get("standing_auth") if isinstance(t.get("standing_auth"), dict) else None}
+
+
+def peer_trust_add(kid, key_hex, mac=None, standing_auth=None, role="controller"):
+    """Seal one signer's key and record it (never the key) in peer-trust.json, with the standing authorization."""
+    if not re.match(r"^[a-z][a-z0-9-]{0,26}$", kid or ""):
+        raise ValueError("a key id is 1-27 lower-case letters, digits and dashes, starting with a letter")
+    if not re.match(r"^[0-9a-f]{64}$", key_hex or ""):
+        raise ValueError("a peer key is 64 hex characters")
+    if standing_auth is not None:
+        ops = standing_auth.get("ops") if isinstance(standing_auth, dict) else None
+        if not isinstance(ops, list) or not ops or any(o not in PEER_OPS for o in ops):
+            raise ValueError("standing_auth.ops must be a non-empty list of %s" % ", ".join(PEER_OPS))
+    store_secret("peer-" + kid, key_hex)
+    t = peer_trust_load()
+    t["keys"][kid] = {"mac": mac, "role": role}
+    if standing_auth is not None:
+        t["standing_auth"] = {k: standing_auth.get(k) for k in ("by", "on", "ops", "quote")}
+    os.makedirs(HOME, mode=0o700, exist_ok=True)
+    tmp = peer_trust_path() + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(t, f)
+    os.replace(tmp, peer_trust_path())
+    return {"kid": kid, "keys": sorted(t["keys"]), "standing_auth": t["standing_auth"]}
+
+
+def peer_verify(msg, now=None):
+    """Who really sent this message and whether its op is authorized: {verified, authorized, kid?, mac?, op?, reason?}.
+    Unsigned, an unknown key, a bad signature, a stale message or an op nobody authorized: not authorized, never an
+    error. The caller decides what to do with an unverified ask; a verified one needs no console confirmation."""
+    now = time.time() if now is None else now
+    sig = msg.get("sig") if isinstance(msg, dict) else None
+    if not isinstance(sig, dict) or not sig.get("kid") or not sig.get("mac"):
+        return {"verified": False, "authorized": False, "reason": "unsigned"}
+    kid = str(sig["kid"])
+    trust = peer_trust_load()
+    if kid not in trust["keys"]:
+        return {"verified": False, "authorized": False, "kid": kid, "reason": "unknown key"}
+    key = load_secret("peer-" + kid) if re.match(r"^[a-z][a-z0-9-]{0,26}$", kid) else None
+    if not key:
+        return {"verified": False, "authorized": False, "kid": kid, "reason": "the key does not open on this KVM"}
+    try:
+        want = hmac.new(bytes.fromhex(key), peer_canonical(msg).encode("utf-8"), hashlib.sha256).hexdigest()
+    except ValueError:
+        return {"verified": False, "authorized": False, "kid": kid, "reason": "malformed message"}
+    if not hmac.compare_digest(want, str(sig["mac"])):
+        return {"verified": False, "authorized": False, "kid": kid, "reason": "bad signature"}
+    try:
+        at = datetime.datetime.fromisoformat(str(msg.get("at")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        at = None
+    if at is None or abs(now - at) > PEER_MAX_AGE_SEC:
+        return {"verified": False, "authorized": False, "kid": kid, "reason": "stale"}
+    out = {"verified": True, "authorized": False, "kid": kid, "mac": trust["keys"][kid].get("mac")}
+    op = msg.get("op")
+    if op:
+        out["op"] = op
+        sa = trust["standing_auth"]
+        if op not in PEER_OPS:
+            out["reason"] = "no such op"
+        elif not sa or op not in (sa.get("ops") or []):
+            out["reason"] = "the owner has not authorized %s" % op
+        else:
+            out["authorized"], out["by"] = True, sa.get("by")
+    return out
+
+
 # ---------- unlock: only at the password prompt, typed by the sitter itself ----------
 
 def look_now(kvmd, cfg):
@@ -3838,6 +3935,26 @@ def main(argv):
         return 0
     if argv[:1] == ["forget"]:
         print(json.dumps(forget()))
+        return 0
+    if argv[:1] == ["peer-trust"] and argv[1:2] in (["add"], ["show"]):
+        # Root only (an operator over SSH, or adopt). `add` reads {"kid", "key", "mac", "standing_auth"} from stdin.
+        if argv[1] == "show":
+            t = peer_trust_load()
+            print(json.dumps({"keys": sorted(t["keys"]), "standing_auth": t["standing_auth"]}))
+            return 0
+        os.makedirs(HOME, mode=0o700, exist_ok=True)
+        try:
+            a = json.loads(sys.stdin.read())
+            print(json.dumps(peer_trust_add(a.get("kid"), a.get("key"), a.get("mac"), a.get("standing_auth"))))
+            return 0
+        except (ValueError, RuntimeError, AttributeError) as e:
+            print("peer-trust: %s" % e, file=sys.stderr)
+            return 2
+    if argv[:1] == ["peer-verify"]:
+        try:
+            print(json.dumps(peer_verify(json.loads(sys.stdin.read()))))
+        except ValueError:
+            print(json.dumps({"verified": False, "authorized": False, "reason": "malformed message"}))
         return 0
     if argv[:1] == ["secrets"]:
         # Each name and whether it opens on this KVM: never a value, nor its length.

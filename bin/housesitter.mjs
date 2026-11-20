@@ -4,8 +4,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { configPath, loadConfig, macConfig, secretStore, updateMac } from '../src/config.mjs';
-import { adopt, defaultRefs, fakeDeps, hostIfconfig, realDeps } from '../src/adopt.mjs';
+import { configPath, loadConfig, macConfig, secretStore, saveConfig, updateMac } from '../src/config.mjs';
+import { adopt, defaultRefs, fakeDeps, hostIfconfig, pushPeerTrust, realDeps } from '../src/adopt.mjs';
 import { night, render } from '../src/demo.mjs';
 import { adminFacts, buildDoctor, renderDoctor } from '../src/doctor.mjs';
 import { renderEvening, replay } from '../src/evening.mjs';
@@ -13,6 +13,7 @@ import { glimpse as paintGlimpse, painter, beside } from '../src/paint.mjs';
 import { Refusal, open } from '../src/hands.mjs';
 import { connect, summarise } from '../src/kvmd.mjs';
 import * as Peer from '../src/peer.mjs';
+import * as PeerSign from '../src/peer-sign.mjs';
 import * as Plugins from '../src/plugin-updates.mjs';
 import { peerWatch, which } from '../src/peer-watch.mjs';
 import * as Plug from '../src/plug.mjs';
@@ -770,13 +771,26 @@ async function fleetRun() {
 async function peerCmd() {
   let user;
   try { user = loadConfig().peer?.user; } catch { user = undefined; }
-  const p = Peer.peer({ dir: path.dirname(configPath()), user, from: Peer.sender({ as: opt.as }) });
+  const p = Peer.peer({ dir: path.dirname(configPath()), user, from: Peer.sender({ as: opt.as }), signer: PeerSign.loadKey(path.dirname(configPath())) });
+  if (name === 'authorize') {
+    // Your standing word, in the config; the KVM reads it from peer-trust.json, put there over root SSH like any secret.
+    const cfg = loadConfig();
+    const macName = rest[0];
+    need(macName, 'housesitter peer authorize <mac> [--by <you>] [--quote "<your words>"]');
+    const mac = macConfig(macName); // an unknown Mac refuses here, before anything is recorded or sent
+    const sa = { by: opt.by || 'Ari', on: new Date().toISOString().slice(0, 10), ops: PeerSign.PEER_OPS, quote: opt.quote || 'standing authorization for signed peer requests' };
+    saveConfig({ ...cfg, peer: { ...(cfg.peer || {}), standing_auth: sa } });
+    const x = { name: macName, mac, configFile: configPath(), deps: realDeps(macName, { secrets: secretStore(), saveMac: (fn) => updateMac(macName, fn) }) };
+    const r = await pushPeerTrust(x);
+    json ? emit({ ok: r.ok, standing_auth: sa, ...r }) : say(r.ok ? `recorded: ${sa.by} authorizes signed requests for ${sa.ops.join(' and ')}; key ${r.kid} is on the KVM` : `recorded in the config, but the KVM did not take it: ${r.detail}`);
+    return r.ok ? 0 : 1;
+  }
   const waiting = (r) => (r.rate_limited ? `GitHub asked us to wait; it goes out after ${r.retry_at}`
     : r.error ? `it goes out at the next flush (${r.error})` : 'it goes out at the next flush');
   if (name === 'send') {
     const text = rest.join(' ');
-    need(text, 'housesitter peer send <text> [--re <id>] [--as <sender>] [--now]');
-    const r = await p.send(text, { re: opt.re, to: opt.to || 'housesitter', now: !!opt.now });
+    need(text, 'housesitter peer send <text> [--re <id>] [--as <sender>] [--op root-key|seal-secret] [--now]');
+    const r = await p.send(text, { re: opt.re, op: opt.op, to: opt.to || 'housesitter', now: !!opt.now });
     json ? emit(r) : say(r.status === 'sent'
       ? `sent ${r.id} to ${r.to}${r.pruned?.length ? ` (cleared ${r.pruned.length} over a day old)` : ''}`
       : `queued ${r.id} for ${r.to}: ${waiting(r)}`);
@@ -816,7 +830,7 @@ async function peerCmd() {
     if (opt.once) { await w.tick(); return 0; }
     return w.run();
   }
-  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox, flush, watch, drill)`);
+  throw new Refusal('input-invalid', `peer: unknown subcommand ${name || ''} (send, inbox, flush, watch, drill, authorize)`);
 }
 
 // `housesitter plug <mac> find|adopt [ip]|status|prove`: see src/plug.mjs.

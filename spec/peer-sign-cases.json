@@ -1,0 +1,30 @@
+{
+  "_why": "Vectors for the peer link's signature, read by test/peer-sign.test.mjs (src/peer-sign.mjs) and test/test_sitter.py (device/sitter.py), so both sign and check the same bytes.",
+  "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "cases": [
+    {
+      "name": "a plain ask",
+      "msg": {
+        "id": "d92148d6",
+        "at": "2026-11-20T17:00:00Z",
+        "from": "ouroboros@mini",
+        "to": "housesitter",
+        "text": "is the KVM awake?"
+      },
+      "mac": "859b7f2da04ed73d51fe7187ff28e19083e9cdee1e0fd2924bf7367f020ad8ed"
+    },
+    {
+      "name": "a privileged ask with a reply id and a multi-line text",
+      "msg": {
+        "id": "a1b2c3d4",
+        "at": "2026-11-20T17:01:00Z",
+        "from": "copilot-0e4b7d7c@mini",
+        "to": "housesitter",
+        "op": "root-key",
+        "re": "abc12345",
+        "text": "install this key:\necdsa-sha2-nistp256 AAAA... ari@laptop"
+      },
+      "mac": "d10f7f69cd68b1542e9b0e5fe4f0a99e7c1d9e36328ffe3d8f2958118ebaf13b"
+    }
+  ]
+}
