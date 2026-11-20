@@ -16,6 +16,22 @@
   "kit_readme": "https://github.com/<owner>/<repo>/blob/main/<kit>/README.md",
   "rerun_step": "bash ~/<desk>/<kit>/bootstrap.sh --only <step>",
   "kit_log": "~/Library/Logs/<kit>.log",
+  "reference_dock": [
+    "Microsoft Edge",
+    "GitHub Copilot",
+    "Microsoft Teams",
+    "Microsoft Outlook",
+    "Messages",
+    "Music"
+  ],
+  "reference_apps": [
+    "Company Portal.app",
+    "Microsoft Edge.app",
+    "GitHub Copilot.app",
+    "Microsoft Teams.app",
+    "Microsoft Outlook.app"
+  ],
+  "dock_step": "prefs",
   "apple_account": {
     "email": "owner@icloud.com",
     "send_from_reference": "./mac secret <mac> send --keychain housesitter/<reference_mac>-apple-account=housesitter/<mac>-apple-account",

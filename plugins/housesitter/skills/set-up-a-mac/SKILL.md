@@ -21,6 +21,7 @@ Every step is check-then-act: I look, decide whether the step is already done, a
 | `region` | The country or region Setup Assistant asks for. |
 | `enroll` | Optional Microsoft work enrollment: `work_email`, and `install_command`, which installs Company Portal from Terminal. |
 | `setup_command` | The owner's one-line setup command. `kit_readme` says what it asks for; `rerun_step` reruns one of its steps; `kit_log` is the log it writes (like `~/Library/Logs/laptop-bootstrap.log`). |
+| `reference_dock`, `reference_apps`, `dock_step` | What done looks like: the reference Mac's Dock, in order (app names), and the apps it has in /Applications. `dock_step` is the kit's step that sets the Dock (like `prefs`), rerun with `rerun_step`. |
 | `apple_account` | `email`; `send_from_reference`, run on the reference Mac to send the Apple Account password into this Mac's own Keychain; `fill_command`, run on this Mac to type it from there. |
 | `microsoft_password_secret` | Optional, absent by default: the name of a secret sealed on the KVM that is the owner's Microsoft password. Only then do I type a Microsoft password. |
 | `operator` | `true` if the owner lets me arm and teach the sitter as their operator (step 7). Otherwise those commands are the owner's. |
@@ -157,6 +158,7 @@ In setup mode I type here myself, after a fresh look shows the password field fo
 I note `password: mac` the moment the change succeeds. If it fails halfway, I note `password: unknown` and tell the owner once.
 
 7. **Platform SSO registration, right after the change and before step 4.** It arrives when Intune delivers its profile, as a "Registration Required" notification; I don't wait idly for it. If it isn't there, I look for it in System Settings > Users & Groups and Company Portal, and check `app-sso platform -s` in a work window every 10-15 s. When it's there: click it, then Register. A Microsoft sign-in follows (items 2 and 3 again). At "enter your Mac password", the password the Mac has now (the rule above; `mac` after the change).
+8. **Apps Intune assigns but hasn't pushed yet** (like Teams and Outlook). Once enrollment completes, I don't wait for them. In Company Portal > Apps, I install each app from `reference_apps` that it lists and /Applications lacks, one after another, and look every 10-15 s until each has installed.
 
 ## 4. The owner's setup command
 
@@ -197,7 +199,13 @@ I note `password: mac` the moment the change succeeds. If it fails halfway, I no
 - A FAILED step whose cause is now fixed (a sign-in approved since, say), I rerun once with `rerun_step` and watch it as in step 4.
 - "needs a person" steps are the owner's. I tell them once, listing each step and what it needs. I note them as left to the owner, and rerun each with `rerun_step` once they say it's done.
 
-**Done when:** every FAIL is noted either as fixed (a rerun showed PASS) or as left to the owner.
+**Looks like the reference Mac.** Done means this Mac looks like the reference one, not just that the kit passed. In a work window I list the Dock (`defaults read com.apple.dock persistent-apps | grep '"file-label"'`) and /Applications (`ls /Applications`), and compare them with `reference_dock` (order included) and `reference_apps`.
+
+- **An app is missing:** if Company Portal lists it, I install it there (step 3, item 8). If the kit installs it, I rerun the kit step that does, with `rerun_step`. Otherwise I install it myself (`brew install --cask <app>`, or the App Store).
+- **The Dock differs** (an app missing from it, or in the wrong spot): I rerun `dock_step` with `rerun_step`. Whenever an app the Dock needs arrives, I rerun it again.
+- I compare again after each fix.
+
+**Done when:** every FAIL is noted either as fixed (a rerun showed PASS) or as left to the owner, and the Dock and /Applications match the reference. Only an app noted as left to the owner may still differ, named in my report.
 
 ## 6. Apple Account
 
@@ -226,7 +234,7 @@ Teaching needs `operator: true`. Without it, I ask the owner to run `housesitter
 2. I restart the Mac: Apple menu › Restart…, then Restart.
 3. If the KVM's picture stays dark for 2 minutes after the boot while the Mac is on, FileVault is drawing only on the built-in screen. I tell the owner once: "Close <mac>'s lid with power connected, so the KVM's display is its only one." When `sitter_look` shows the FileVault password field, within 15 minutes of the boot, I run `<sitter> learn-prompt --filevault taught by Housesitter during setup, field seen on the KVM`.
 4. The sitter types its one armed try by itself. If the desktop follows, the password is verified. If not, it goes back to unverified, for the reference Mac too, and I tell the owner once.
-5. **I report** to the owner and Ouroboros: what's set up, what's deferred for the owner, how many times I needed them, and the time from the cable move to here. If anything is deferred, step 8 follows. Otherwise, from now on my usual skill applies.
+5. **I report** to the owner and Ouroboros. I never call it done while the Dock or /Applications differs from the reference (step 5); I name each difference instead. The report says what's set up, what's deferred for the owner, how many times I needed them, and the time from the cable move to here. If anything is deferred, step 8 follows. Otherwise, from now on my usual skill applies.
 
 ## 8. The owner's sitting
 
