@@ -94,7 +94,7 @@ test('a peer link names a Mac the config knows; a returning Mac is the one lapto
 // no one new, so they run without --why; an agent's own restart still needs one.
 test('installed jobs, read-only looks and dry runs run without --why; an agent\'s restart still needs one', async () => {
   const { cli } = await import('../src/cli-table.mjs');
-  const { parse } = await import('../lib/ouro-ui/registry/ouro/ax/command.ts');
+  const { parse } = await import('../lib/ouro-ui/registry/ouro/ax/ax-command.ts');
   const { AGENTS } = await import('../src/recovery.mjs');
   const refusal = (argv) => { try { parse(cli, argv); return null; } catch (e) { return e.shape?.code ?? String(e); } };
   const needsWhy = (argv) => refusal(argv) === 'needs-why';
