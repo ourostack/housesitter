@@ -2,7 +2,7 @@
 // command takes, the --why an action other people see needs, and the one-line refusals. bin/housesitter.mjs runs each
 // command through its own switch, reading the flags and words the kit parsed. `effect` says who sees a command:
 // "others" when it acts on the Mac or sends a message, "private" when only the person sees it.
-import { defineCli, defineCommand, parse } from '../lib/ouro-ui/registry/ouro/ax/command.ts';
+import { defineCli, defineCommand, parse } from '../lib/ouro-ui/registry/ouro/ax/ax-command.ts';
 import { BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE } from '../lib/ouro-ui/registry/ouro/ax/exit-codes.ts';
 import { runCli } from '../lib/ouro-ui/registry/ouro/ax/cli.ts';
 import { AxError } from '../lib/ouro-ui/registry/ouro/ax/problem.ts';
