@@ -74,6 +74,10 @@
     {
       "id": "peer-link",
       "when": "Talking with Ouroboros, the agent on the Mac, through the two secret gists both agents read."
+    },
+    {
+      "id": "housesitter-skills",
+      "when": "Loading Housesitter's own instructions for the job in front of it, on the KVM beside the Mac."
     }
   ],
   "bookletWords": {
