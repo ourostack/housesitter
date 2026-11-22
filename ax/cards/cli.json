@@ -81,7 +81,8 @@
       "errors": [
         { "code": "needs-why", "means": "unlock acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
         { "code": "action-unavailable", "means": "No route reaches the Mac's sitter, or the sitter won't unlock now (setup mode is on).", "fix": "Set up SSH with housesitter adopt (or --outbox), or turn setup mode off on the KVM." },
-        { "code": "action-failed", "means": "The sitter tried and the desktop didn't come back, or it refused by its own checks; the message says which.", "fix": "Look at the screen with housesitter screenshot, then decide whether to try again." }
+        { "code": "action-failed", "means": "The sitter tried and the desktop didn't come back, or it refused by its own checks; the message says which.", "fix": "Look at the screen with housesitter screenshot, then decide whether to try again." },
+        { "code": "action-failed", "means": "With --trial or --hold, arming or holding the password trial over SSH failed; the message carries the KVM's answer.", "fix": "Check that the KVM is reachable with housesitter doctor <mac>, then run it again." }
       ]
     },
     {
@@ -164,6 +165,39 @@
       "when": "To show someone what Housesitter does without any hardware, from a recorded evening or a rehearsed night.",
       "errors": [
         { "code": "extra-arg", "means": "demo takes at most one word, night.", "fix": "Run housesitter demo, or housesitter demo night." }
+      ]
+    }
+,
+    {
+      "id": "cli:look", "group": "mac-screen", "effect": "read",
+      "when": "One read-only look over SSH: what the sitter makes of the screen, then the picture.",
+      "errors": [
+        { "code": "input-invalid", "means": "The config has no Mac by the name look was given; the message lists the known ones.", "fix": "Name one of the Macs in the config." },
+        { "code": "action-failed", "means": "The sitter's look over SSH failed; the message carries the KVM's own answer, or says it did not answer.", "fix": "Check that the KVM is reachable with housesitter doctor <mac>, then run it again." }
+      ]
+    },
+    {
+      "id": "cli:forget", "group": "sitter-control", "effect": "write", "destructive": true,
+      "when": "To wipe the Mac's password, the KVM's admin password and the outbox token from the KVM and stop the sitter, such as when retiring it.",
+      "errors": [
+        { "code": "input-invalid", "means": "forget was run without --yes, or the config has no Mac by that name; it wipes secrets, so it acts on nothing until confirmed.", "fix": "Run it again with --yes once you mean it." },
+        { "code": "action-failed", "means": "The wipe over SSH failed; the message carries the KVM's answer. Secrets may still be on the KVM.", "fix": "Check that the KVM is reachable with housesitter doctor <mac>, then run it again." }
+      ]
+    },
+    {
+      "id": "cli:learn-prompt", "group": "sitter-control", "effect": "write",
+      "when": "To teach the sitter the password prompt an operator can see on the KVM's own picture, so it types only where a frame matches.",
+      "errors": [
+        { "code": "input-invalid", "means": "The lesson was refused: no --i-see-the-field, --grid with --filevault, --regions missing, malformed or mixed with --grid or --filevault, or --grid without two fractions.", "fix": "Read the message: it says which flag to add, drop or fix." },
+        { "code": "action-failed", "means": "The lesson over SSH failed; the message carries the KVM's answer.", "fix": "Check that the KVM is reachable with housesitter doctor <mac>, then run it again." }
+      ]
+    },
+    {
+      "id": "cli:alert-test", "group": "reach-the-owner", "effect": "write",
+      "when": "To check the owner's phone alert works: one real stuck message through the notify rules, marked TEST.",
+      "errors": [
+        { "code": "needs-why", "means": "alert-test sends a real message to a person, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see who would get it." },
+        { "code": "action-failed", "means": "The sitter couldn't be reached over SSH, or it couldn't send through the notify channel; the answer's result says which.", "fix": "Check the channel with housesitter doctor <mac>, then run it again." }
       ]
     }
   ]
