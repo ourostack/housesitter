@@ -1,0 +1,12 @@
+{
+  "product": "fixture",
+  "walkers": {
+    "fixture-skills": { "module": "ax/walkers/skills.mts", "kinds": ["skill", "agent"] },
+    "fixture-mcp": { "module": "ax/walkers/mcp.mts", "kinds": ["mcp"] }
+  },
+  "sources": [
+    { "walker": "fixture-skills", "module": "", "source": "test/ax/fixtures/uses/plugins", "cards": "test/ax/fixtures/uses/cards.json" },
+    { "walker": "fixture-mcp", "module": "", "source": "test/ax/fixtures/mcp/server.py" },
+    { "walker": "argv-entries", "module": "dist", "source": "src" }
+  ]
+}

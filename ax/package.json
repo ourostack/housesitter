@@ -1,0 +1,10 @@
+{
+  "name": "housesitter-ax-census",
+  "private": true,
+  "type": "module",
+  "description": "Runs the Ouro AX census over Housesitter (ax/census.config.json, vendored from Ouro UI under ax/scripts/ouro-census). Kept apart from the repository root so the CLI keeps its two dependencies; the census's walkers and Housesitter's own use this package's typescript.",
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "@types/node": "22.19.1"
+  }
+}

@@ -1,0 +1,1 @@
+{ "errors": [{ "code": "unknown-door", "means": "m", "fix": "f" }], "doors": [{ "id": "mcp:gone", "group": "g", "when": "w", "effect": "read", "errors": [] }, { "group": "no id" }] }

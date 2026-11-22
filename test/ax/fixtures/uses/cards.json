@@ -1,0 +1,1 @@
+{ "doors": [{ "id": "skill:plug:watch", "uses": ["mcp:sitter_status", "mcp:sitter_statsu", "host:Bash"] }] }
