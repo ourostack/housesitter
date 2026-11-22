@@ -25,6 +25,7 @@ import * as Copilot from '../src/copilot-app.mjs';
 import * as Beat from '../src/heartbeat.mjs';
 import * as Disk from '../src/disk-prune.mjs';
 import * as Load from '../src/load-shed.mjs';
+import * as Mem from '../src/memory-pressure.mjs';
 import * as Reap from '../src/orphan-reap.mjs';
 import * as Bloat from '../src/app-bloat.mjs';
 import * as OsUp from '../src/os-update.mjs';
@@ -264,7 +265,7 @@ async function restartCopilot() {
     const s = Copilot.readState(stateDir);
     const rec = Rec.readRecovery(stateDir);
     const load = Load.readLoad(stateDir);
-    if (json) emit({ ...s, recovery: rec, load_shed: load }); else say(`${Copilot.renderState(s)}\n${Rec.renderRecovery(rec)}\n${Load.renderLoad(load.last, load.ledger)}`);
+    if (json) emit({ ...s, recovery: rec, load_shed: load }); else say(`${Copilot.renderState(s)}\n${Rec.renderRecovery(rec)}\n${Load.renderLoad(load.last, load.ledger)}\n${Mem.renderMemory(Mem.readMemory(stateDir))}`);
     return 0; // read-only: the exit code says the status was read; a failed restart is in the text and in --json (state, failed)
   }
   if (!!opt['install-recovery'] || !!opt['uninstall-recovery']) {
@@ -286,6 +287,7 @@ async function restartCopilot() {
     const r = await Load.pass(opts, Load.realLoadDeps({ state: stateDir, cfgLoad: () => loadConfig() }), (l) => { if (!json && !opt.quiet) console.log(l); });
     const reap = await Reap.pass(opts, Reap.realReapDeps({ state: stateDir, cfgLoad: () => loadConfig() }), (l) => { if (!json && !opt.quiet) console.log(l); });
     r.orphans = reap.reaped;
+    if (!opts.dry_run) { try { Mem.sample({ state: stateDir }); } catch { /* a missed sample is not a failed pass */ } }
     const cdeps = Copilot.realDeps({ copilotHome: opt['copilot-home'] || undefined, hackamore: opt.hackamore });
     const bloat = await Bloat.pass(opts, Bloat.realBloatDeps({
       state: stateDir, cfgLoad: () => loadConfig(), copilot: { runInProgress: Copilot.runInProgress, stateDir: () => stateDir },
