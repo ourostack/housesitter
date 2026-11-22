@@ -248,6 +248,100 @@
         { "code": "needs-why", "means": "peer drill changes what everything sent on the link says, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
         { "code": "input-invalid", "means": "No label was given to start a drill.", "fix": "Give the drill a label, or use --end to stop one." }
       ]
+    },
+    {
+      "id": "cli:adopt", "group": "sitter-control", "effect": "write",
+      "when": "When a new KVM sits next to a Mac and the three cables are in, to set the KVM up for it; --dry-run says what would be set up.",
+      "errors": [
+        { "code": "input-invalid", "means": "No Mac name was given, or a setting is malformed.", "fix": "Run housesitter adopt <mac>, naming the Mac as in the config." },
+        { "code": "action-failed", "means": "A setup step did not finish; the results list which step failed and why.", "fix": "Fix what that step names, then run adopt again; finished steps are skipped." }
+      ]
+    },
+    {
+      "id": "cli:secret", "group": "sitter-control", "effect": "write",
+      "when": "To store a password or token for a Mac from stdin, or with --kvm to seal it on the KVM where the sitter can type it.",
+      "errors": [
+        { "code": "input-invalid", "means": "The secret's name is not allowed, or nothing came on stdin.", "fix": "Name it as 1-32 lower-case letters, digits and dashes, and type the value, then Return." },
+        { "code": "action-unavailable", "means": "--kvm was given with nothing on stdin and the Keychain has no copy to send.", "fix": "Run it again and type the value, then Return." },
+        { "code": "action-failed", "means": "The KVM did not seal the secret or gave no receipt; the message carries its answer.", "fix": "Check the KVM is reachable with housesitter doctor <mac>, then run it again." }
+      ]
+    },
+    {
+      "id": "cli:apple-account", "group": "reach-the-owner", "effect": "write",
+      "when": "To fill or watch the Apple Account password prompt that appears after an update reboot, or to install the agent that does so.",
+      "errors": [
+        { "code": "needs-why", "means": "apple-account acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "No Mac name was given, or the Mac has no sitter route.", "fix": "Name the Mac as in the config and run housesitter adopt if no route is set up." },
+        { "code": "action-failed", "means": "launchctl would not load the apple-account agent; the message carries its error.", "fix": "Run it again with --install, or read the log in ~/Library/Logs." }
+      ]
+    },
+    {
+      "id": "cli:proof", "group": "mac-screen", "effect": "write",
+      "when": "While you restart a Mac, to record what the KVM sees as frames and a timeline in a folder.",
+      "errors": [
+        { "code": "action-unavailable", "means": "There is no SSH route to the Mac's KVM, and proof reads frames over SSH.", "fix": "Run housesitter adopt <mac> to set one up." }
+      ]
+    },
+    {
+      "id": "cli:plug", "group": "mac-power", "effect": "write",
+      "when": "To find, adopt, read or prove the smart plug on a Mac's power cord; prove cuts power for ten seconds and needs --attended.",
+      "errors": [
+        { "code": "needs-why", "means": "plug acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "The subcommand is unknown, more than one plug answered, or prove ran without --attended.", "fix": "Use find, adopt, status or prove; pass the plug's address to adopt; add --attended only while someone is there." },
+        { "code": "action-unavailable", "means": "No plug answered on the network, or the Mac has none set, or it is not a Shelly.", "fix": "Add the plug in the Shelly app on this Wi-Fi, then run plug <mac> adopt." },
+        { "code": "action-failed", "means": "The plug did not read back as set, or the power-cut proof did not pass; the message says which.", "fix": "Run adopt again, then prove again while attended." }
+      ]
+    },
+    {
+      "id": "cli:watch-kvm", "group": "sitter-control", "effect": "write",
+      "when": "To install, or run once, a LaunchAgent that checks the KVM each minute and says if it goes silent.",
+      "errors": [
+        { "code": "action-failed", "means": "launchctl would not load the agent; the message carries its error.", "fix": "Run it again with --install, or read the log in ~/Library/Logs." }
+      ]
+    },
+    {
+      "id": "cli:restart-copilot", "group": "ouro-reins", "effect": "write",
+      "when": "To restart the GitHub Copilot app without losing any session's work, or to install the jobs that do it on a schedule.",
+      "errors": [
+        { "code": "needs-why", "means": "restart-copilot acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "A --skip, --settle or --grace value is not valid.", "fix": "Use a step name from the usage text, and whole numbers of seconds." },
+        { "code": "action-unavailable", "means": "A restart is already running; the message names its step.", "fix": "Read its result with housesitter restart-copilot --status, then run again." },
+        { "code": "action-failed", "means": "launchctl would not start or load a job; the message carries its error.", "fix": "Run it again, or read the log in ~/Library/Logs." }
+      ]
+    },
+    {
+      "id": "cli:deploy", "group": "about-housesitter", "effect": "write",
+      "when": "To make a tool's checked release live in one swap; --dry-run runs every check but the swap.",
+      "errors": [
+        { "code": "needs-why", "means": "deploy acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "The target is unknown, there is no git clone or no v* tag, or the ref does not exist.", "fix": "Name housesitter or shepherd, pass --clone <dir>, and give a tag or ref that exists." },
+        { "code": "action-failed", "means": "The target is a folder, git could not fetch, or a build or check failed; the message says which step.", "fix": "Read the steps in the message; the live release is unchanged unless it says so." }
+      ]
+    },
+    {
+      "id": "cli:hold", "group": "sitter-control", "effect": "write",
+      "when": "When launchd jobs that must stay off (listed in the config as launchd_disabled) may have come back after an update, to stop them again.",
+      "errors": [
+        { "code": "needs-why", "means": "hold acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "launchd_disabled is not a list, or none is configured.", "fix": "Add a list of launchd labels as launchd_disabled in the config." },
+        { "code": "action-failed", "means": "launchctl would not turn some jobs off; the rows say which.", "fix": "Run it again, or turn that job off by hand." }
+      ]
+    },
+    {
+      "id": "cli:steer", "group": "ouro-reins", "effect": "write",
+      "when": "To check whether another computer can see and drive this Mac's agent sessions; --install keeps checking each few minutes.",
+      "errors": [
+        { "code": "action-failed", "means": "launchctl would not load the steer agent; the message carries its error.", "fix": "Run it again with --install, or read the log in ~/Library/Logs." }
+      ]
+    },
+    {
+      "id": "cli:laptop-arrival", "group": "reach-the-owner", "effect": "write",
+      "when": "When a Mac that was away is back, to bring it up to date and tell the agent once; --install checks every minute.",
+      "errors": [
+        { "code": "needs-why", "means": "laptop-arrival acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "The config file is missing or malformed.", "fix": "Write ~/.config/housesitter/laptop-arrival.json or pass --config <file>." },
+        { "code": "action-failed", "means": "launchctl would not load the agent; the message carries its error.", "fix": "Run it again with --install, or read the log in ~/Library/Logs." }
+      ]
     }
   ]
 }

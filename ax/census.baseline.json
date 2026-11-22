@@ -1,16 +1,4 @@
 {
   "census": "census/1",
-  "gaps": [
-    "cli:adopt",
-    "cli:apple-account",
-    "cli:deploy",
-    "cli:hold",
-    "cli:laptop-arrival",
-    "cli:plug",
-    "cli:proof",
-    "cli:restart-copilot",
-    "cli:secret",
-    "cli:steer",
-    "cli:watch-kvm"
-  ]
+  "gaps": []
 }
