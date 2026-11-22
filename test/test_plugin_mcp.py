@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -50,6 +51,8 @@ class McpTest(PluginCase):
         self.assertEqual({t["name"] for t in tools}, TOOLS)
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
+            # Ouro AX's booklet words: a description says what the tool does and refuses, not commands to the agent.
+            self.assertIsNone(re.search(r"(?<![a-z0-9_-])(always|never|do[\s_-]+not|use[\s_-]+this[\s_-]+whenever|you[\s_-]+must)(?![a-z0-9_-])", t["description"], re.I), t["name"])
             self.assertGreaterEqual(t["_meta"]["ouro.bot/timeoutMs"], 10000)
         self.assertEqual(r[3]["result"], {})
         self.assertEqual(r[4]["error"]["code"], -32601)
