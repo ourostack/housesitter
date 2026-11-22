@@ -76,6 +76,18 @@
       "when": "Talking with Ouroboros, the agent on the Mac, through the two secret gists both agents read."
     },
     {
+      "id": "ouro-reins",
+      "when": "Driving the Mac as state plus the actions open right now, the way Ouro Reins lays them out."
+    },
+    {
+      "id": "fleet",
+      "when": "Looking across every Mac in the fleet through the fleet gist's health records and run requests."
+    },
+    {
+      "id": "about-housesitter",
+      "when": "Learning what Housesitter is, which release is here, and how to fence the KVM, touching no Mac."
+    },
+    {
       "id": "housesitter-skills",
       "when": "Loading Housesitter's own instructions for the job in front of it, on the KVM beside the Mac."
     }
