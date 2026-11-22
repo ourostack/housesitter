@@ -1,1 +1,30 @@
-{ "doors": [] }
+{
+  "doors": [
+    {
+      "id": "skill:housesitter:housesitter", "group": "housesitter-skills", "effect": "read",
+      "when": "On each wake on the KVM, before the first tool call: incidents, Ouroboros's asks, drills and keeping the sitter fed.",
+      "errors": [
+        { "code": "action-unavailable", "means": "A sitter tool said no (a password screen, a used budget, setup mode); the skill reads the reason in result.", "fix": "Take the skill's next step for that reason, such as sitter_unlock at a password screen, and keep from retrying blind." },
+        { "code": "action-failed", "means": "The sitter tried and it didn't work, such as an unlock after which no desktop came back.", "fix": "Look again with sitter_look, then tell Ari what was seen and done, as the skill's incident steps say." }
+      ],
+      "uses": [
+        "mcp:sitter_status", "mcp:sitter_look", "mcp:sitter_screenshot", "mcp:sitter_unlock", "mcp:sitter_want_desktop",
+        "mcp:sitter_power_cycle", "mcp:sitter_power_on", "mcp:sitter_click", "mcp:sitter_type", "mcp:sitter_key", "mcp:sitter_scroll",
+        "mcp:sitter_type_secret", "mcp:sitter_setup_mode", "mcp:sitter_notify", "mcp:peer_send", "mcp:peer_inbox",
+        "mcp:peer_bring_back_ouroboros", "mcp:kvm_health"
+      ]
+    },
+    {
+      "id": "skill:housesitter:set-up-a-mac", "group": "housesitter-skills", "effect": "read",
+      "when": "To take a freshly wiped Mac to the owner's reference setup, step by step, then hand it back to keep-alive duty.",
+      "errors": [
+        { "code": "action-unavailable", "means": "Outside setup mode the sitter refuses hands anywhere but a desktop with its menu bar, so the setup step is stuck.", "fix": "Turn setup mode on with sitter_setup_mode, or tell the owner once what to finish there, as the skill's stuck rules say." }
+      ],
+      "uses": [
+        "mcp:sitter_status", "mcp:sitter_look", "mcp:sitter_screenshot", "mcp:sitter_unlock", "mcp:sitter_click", "mcp:sitter_type",
+        "mcp:sitter_key", "mcp:sitter_scroll", "mcp:sitter_type_secret", "mcp:sitter_setup_mode", "mcp:sitter_notify",
+        "mcp:peer_send", "mcp:peer_inbox", "mcp:kvm_health"
+      ]
+    }
+  ]
+}

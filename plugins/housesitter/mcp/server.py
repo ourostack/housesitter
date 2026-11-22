@@ -144,11 +144,12 @@ def sitter_heartbeat(now=None):
     try:
         mtime = os.stat(path).st_mtime
     except OSError:
-        return {"file": path, "error": "no status.json yet", "stale": True}
+        return {"file": path, "error": "no status.json yet", "code": "sitter-silent", "stale": True}
     st = peer.read_json(path, {}) or {}
     interval = int(st.get("interval_sec") or 60) if isinstance(st, dict) else 60
     age = int(now - mtime)
     return {"file": path, "written": peer.iso(mtime), "age_sec": age, "interval_sec": interval, "stale": age > 3 * interval,
+            **({"code": "sitter-silent"} if age > 3 * interval else {}),
             "state": st.get("state") if isinstance(st, dict) else None, "screen": ((st.get("obs") or {}).get("screen") if isinstance(st, dict) else None)}
 
 
@@ -164,23 +165,23 @@ def kvm_health():
         out["mem"] = {"available_mb": mem.get("MemAvailable", 0) // 1024, "total_mb": mem.get("MemTotal", 0) // 1024,
                       "available_pct": round(100.0 * mem.get("MemAvailable", 0) / max(1, mem.get("MemTotal", 1)), 1)}
     except (OSError, ValueError, IndexError) as e:
-        out["mem"] = {"error": str(e)}
+        out["mem"] = {"error": str(e), "code": "action-failed"}
     try:
         with open(os.path.join(proc, "loadavg")) as f:
             out["load"] = [float(x) for x in f.read().split()[:3]]
     except (OSError, ValueError) as e:
-        out["load"] = {"error": str(e)}
+        out["load"] = {"error": str(e), "code": "action-failed"}
     try:
         with open(os.path.join(proc, "uptime")) as f:
             out["uptime_min"] = int(float(f.read().split()[0]) // 60)
     except (OSError, ValueError, IndexError) as e:
-        out["uptime_min"] = {"error": str(e)}
+        out["uptime_min"] = {"error": str(e), "code": "action-failed"}
     disk = env("HOUSESITTER_DISK", "/userdata")
     try:
         u = shutil.disk_usage(disk)
         out["disk"] = {"path": disk, "free_mb": u.free // (1024 * 1024), "total_mb": u.total // (1024 * 1024)}
     except OSError as e:
-        out["disk"] = {"path": disk, "error": str(e)}
+        out["disk"] = {"path": disk, "error": str(e), "code": "action-failed"}
     out["sitter"] = sitter_heartbeat()
     return out
 
@@ -227,7 +228,7 @@ TOOLS = [
     ("peer_bring_back_ouroboros", "Bring Ouroboros's daemon on the Mac back when it has stopped answering (the Mac's peer watch tells you when it does). Sends why as an urgent message that asks the Mac's peer watch to run `ouro up`; the watch reports the result back as a message.",
      schema({"why": {"type": "string"}}, ["why"]), 45000, False),
     ("peer_inbox", "New messages from Ouroboros, oldest first, each with its id, time and text. Each comes back once; then it's marked read. It also sends any of your queued messages that are due.", schema(), 45000, False),
-    ("kvm_health", "This KVM's own health: memory available, load, uptime, free space on /userdata, and whether the sitter's heartbeat (its status.json, rewritten every interval) is fresh. The sitter comes first: keep memory free for it.",
+    ("kvm_health", "This KVM's own health: memory available, load, uptime, free space on /userdata, and whether the sitter's heartbeat (its status.json, rewritten every interval) is fresh. The sitter comes first: keep memory free for it. A part it can't read carries its error and a code beside it: action-failed for memory, load, uptime or disk; sitter-silent for a sitter heartbeat that is missing or stale.",
      schema(), 10000, True),
 ]
 

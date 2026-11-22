@@ -86,6 +86,10 @@
     {
       "id": "about-housesitter",
       "when": "Learning what Housesitter is, which release is here, and how to fence the KVM, touching no Mac."
+    },
+    {
+      "id": "housesitter-skills",
+      "when": "Loading Housesitter's own instructions for the job in front of it, on the KVM beside the Mac."
     }
   ],
   "bookletWords": {

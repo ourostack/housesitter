@@ -22,8 +22,6 @@
     "cli:secret",
     "cli:steer",
     "cli:watch-kvm",
-    "mcp:kvm_health",
-    "skill:housesitter:housesitter",
-    "skill:housesitter:set-up-a-mac"
+    "mcp:kvm_health"
   ]
 }
