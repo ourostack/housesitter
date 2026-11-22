@@ -5,6 +5,7 @@ Housesitter is an [Ouro](https://github.com/ourostack/ouroboros) agent that live
 - **The sitter's eyes and hands** as MCP tools: `sitter_status`, `sitter_look`, `sitter_screenshot`, `sitter_unlock`, `sitter_want_desktop`, `sitter_power_cycle`, `sitter_power_on`, `sitter_click`, `sitter_type`, `sitter_type_secret` (the sitter types its own sealed copy of a named secret at a password prompt the agent names; never through the outbox), `sitter_notify` (a one-line message to the owner's phone through the sitter's own notify, optionally with a small screenshot; never a secret, never through the outbox), `sitter_key`, `sitter_scroll`. Each runs `sitter.py do <op>` on the KVM and returns the sitter's reply as it is.
 - **A peer link with Ouroboros**, the agent on the Mac: `peer_send` and `peer_inbox`, free text through two secret gists (`peer.py`).
 - **`kvm_health`**: the KVM's memory, load, uptime, free space and the sitter's heartbeat.
+- **An unknown tool name** gets JSON-RPC error -32602 with `data.code` `unknown-door` and `data.tools`, the names the server serves.
 - **A watcher** (`watch.py`) that wakes the agent with `ouro msg --to <agent>` (an ordinary turn with all its tools) when Ouroboros writes, the sitter's state or the screen changes, the sitter goes quiet, or the Mac's fleet heartbeat goes stale or comes back.
 - **The skills:** `skills/housesitter/SKILL.md` for using all of it, and `skills/set-up-a-mac/SKILL.md` for taking a wiped Mac from any screen to its owner's setup, then on to keep-alive (its config: `setup-a-mac.example.json` beside it).
 

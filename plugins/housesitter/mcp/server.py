@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import peer  # noqa: E402
 
-VERSION = "0.6.49"
+VERSION = "0.6.50"
 PROTOCOL = "2025-06-18"
 LONG_OPS = ("type", "type_secret", "notify", "unlock", "want_desktop", "power_cycle", "power_on")
 SCREENS_KEPT = 50
@@ -329,7 +329,8 @@ def respond(req, out):
         result = {"tools": tool_list()}
     elif method == "tools/call":
         if params.get("name") not in NAMES:
-            send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": "unknown tool %r" % params.get("name")}}, out)
+            send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": "unknown tool %r" % params.get("name"),
+                                                         "data": {"code": "unknown-door", "tools": [t[0] for t in TOOLS]}}}, out)
             return
         result = tool_result(params["name"], params.get("arguments"))
     else:
