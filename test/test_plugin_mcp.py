@@ -215,8 +215,15 @@ class McpTest(PluginCase):
         self.assertEqual([m["text"] for m in got["messages"]], ["three resumed"])
         again, _ = self.call("peer_inbox")
         self.assertEqual(again["messages"], [])
-        _, bad = self.call("peer_send", {"text": ""})
-        self.assertTrue(bad["isError"])
+        bad, rep = self.call("peer_send", {"text": ""})
+        self.assertTrue(rep["isError"])
+        # A tool that raises answers with an Ouro AX code: a bad argument is input-invalid, anything else action-failed.
+        self.assertEqual((bad["ok"], bad["code"]), (False, "input-invalid"))
+        self.assertIn("a message needs some text", bad["error"])
+        os.environ["HOUSESITTER_PEER_IN"] = "no-such-gist"
+        failed, rep = self.call("peer_inbox")
+        self.assertTrue(rep["isError"])
+        self.assertEqual((failed["ok"], failed["code"]), (False, "action-failed"))
 
     def test_mcp_json_runs_the_server_from_the_plugin_dir(self):
         m = json.loads(slurp(os.path.join(PLUGIN, ".mcp.json")))["mcpServers"]["housesitter"]

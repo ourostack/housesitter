@@ -313,7 +313,11 @@ def tool_result(name, args):
         obj, extra = call(name, args or {})
         return {"content": [{"type": "text", "text": json.dumps(obj)}] + extra, "isError": False}
     except Exception as e:  # noqa: BLE001
-        return {"content": [{"type": "text", "text": json.dumps({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})}], "isError": True}
+        # The Ouro AX code an agent acts on: a plain ValueError is a bad argument the agent can fix (the tools raise it
+        # for their arguments; JSON and base64 errors are its subclasses and aren't the agent's); anything else (GitHub,
+        # the disk, the sitter's answer) is a failed action it can retry.
+        code = "input-invalid" if type(e) is ValueError else "action-failed"
+        return {"content": [{"type": "text", "text": json.dumps({"ok": False, "code": code, "error": "%s: %s" % (type(e).__name__, e)})}], "isError": True}
 
 
 def respond(req, out):
