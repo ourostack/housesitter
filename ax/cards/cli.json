@@ -1,1 +1,170 @@
-{ "errors": [], "doors": [] }
+{
+  "errors": [
+    { "code": "unknown-command", "means": "The CLI has no command by that word; the kit's answer lists the commands and the nearest one.", "fix": "Run the command line in the answer's fix, or housesitter --help for the list." }
+  ],
+  "doors": [
+    {
+      "id": "cli:status", "group": "mac-screen", "effect": "read",
+      "when": "A quick check from a controller Mac: does the KVM answer, which route reached the sitter, what it last saw.",
+      "errors": [
+        { "code": "input-invalid", "means": "No Mac was named, or the config has no Mac by that name; the message lists the known ones.", "fix": "Name one of the Macs in the config, or add it first with housesitter adopt." },
+        { "code": "unknown-flag", "means": "status was given a flag no Housesitter command reads.", "fix": "Drop the flag; --json and --plain are the ones status reads." }
+      ]
+    },
+    {
+      "id": "cli:doctor", "group": "mac-screen", "effect": "read",
+      "when": "When setting up or debugging: the whole picture in one screen, including whether this computer can administer the KVM.",
+      "errors": [
+        { "code": "input-invalid", "means": "The config has no Mac by the name doctor was given; the message lists the known ones.", "fix": "Name one of the configured Macs, or run doctor with no name for this computer's own setup." }
+      ]
+    },
+    {
+      "id": "cli:screenshot", "group": "mac-screen", "effect": "read",
+      "when": "To save the current frame to a file you can open, or to fix the pixel space later clicks use.",
+      "errors": [
+        { "code": "action-failed", "means": "No route reached the KVM (no endpoint answered and no outbox), or kvmd's snapshot wasn't a usable picture.", "fix": "Check the KVM is on the network with housesitter status, then take the screenshot again." },
+        { "code": "input-invalid", "means": "The config has no Mac by the name screenshot was given.", "fix": "Name one of the Macs the message lists." }
+      ]
+    },
+    {
+      "id": "cli:click", "group": "mac-hands", "effect": "write",
+      "when": "From a controller Mac, to press at a point read off the last saved screenshot, right or double with a flag.",
+      "errors": [
+        { "code": "needs-why", "means": "click acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "x or y isn't a number, or the point is outside the picture housesitter screenshot takes.", "fix": "Take a screenshot and pass a point inside its width and height, in its pixels." },
+        { "code": "action-failed", "means": "No route reached the Mac's KVM, directly or through the outbox.", "fix": "Check the KVM with housesitter status, then click again." },
+        { "code": "action-unavailable", "means": "Through the outbox, the sitter refused the click: the screen isn't a desktop.", "fix": "Unlock first with housesitter unlock, then click again." }
+      ]
+    },
+    {
+      "id": "cli:type", "group": "mac-hands", "effect": "write",
+      "when": "From a controller Mac, to send plain words as keystrokes into the field that has focus.",
+      "errors": [
+        { "code": "needs-why", "means": "type acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "input-invalid", "means": "The text is empty, over 2000 characters, or looks like a password or token, which the sitter types itself.", "fix": "Send 1 to 2000 characters of ordinary text; for a password, have the sitter type its own copy." },
+        { "code": "action-failed", "means": "No route reached the Mac's KVM, directly or through the outbox.", "fix": "Check the KVM with housesitter status, then type again." },
+        { "code": "action-unavailable", "means": "Through the outbox, the sitter refused: the screen isn't a desktop.", "fix": "Unlock first with housesitter unlock, then type again." }
+      ]
+    },
+    {
+      "id": "cli:key", "group": "mac-hands", "effect": "write",
+      "when": "From a controller Mac, to press one key or shortcut, like Return or cmd+tab, through the KVM's keyboard.",
+      "errors": [
+        { "code": "needs-why", "means": "key acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "input-invalid", "means": "The combo names a key Housesitter doesn't know.", "fix": "Write keys joined by +, such as cmd+space or Return." },
+        { "code": "action-failed", "means": "No route reached the Mac's KVM, directly or through the outbox.", "fix": "Check the KVM with housesitter status, then press again." },
+        { "code": "action-unavailable", "means": "Through the outbox, the sitter refused the key: the screen isn't a desktop.", "fix": "Unlock first with housesitter unlock, then press again." }
+      ]
+    },
+    {
+      "id": "cli:scroll", "group": "mac-hands", "effect": "write",
+      "when": "From a controller Mac, to move a page or list up or down by a few notches.",
+      "errors": [
+        { "code": "needs-why", "means": "scroll acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "input-invalid", "means": "The direction isn't up, down, left or right.", "fix": "Pass up or down, then how many notches (1 to 20, default 3)." },
+        { "code": "action-failed", "means": "No route reached the Mac's KVM, directly or through the outbox.", "fix": "Check the KVM with housesitter status, then scroll again." }
+      ]
+    },
+    {
+      "id": "cli:computer", "group": "mac-hands", "effect": "write",
+      "when": "When an agent speaks Anthropic's computer-use actions and wants one passed through to the Mac as JSON.",
+      "errors": [
+        { "code": "needs-why", "means": "computer acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "action-unavailable", "means": "The action isn't one Housesitter runs, or over the outbox it is direct-only (mouse_move, press-and-hold); available lists the ones that work.", "fix": "Use one of the actions in available." },
+        { "code": "input-invalid", "means": "A click action came without coordinate, or the point is off the last screenshot.", "fix": "Pass coordinate as [x, y] inside the last screenshot." },
+        { "code": "action-failed", "means": "No route reached the KVM, or the action's JSON couldn't be read.", "fix": "Pass one JSON object, and check the KVM with housesitter status." }
+      ]
+    },
+    {
+      "id": "cli:unlock", "group": "mac-power", "effect": "write",
+      "when": "From a controller Mac, when the screen is at FileVault or a lock screen and its owner wants it opened.",
+      "errors": [
+        { "code": "needs-why", "means": "unlock acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "action-unavailable", "means": "No route reaches the Mac's sitter, or the sitter won't unlock now (setup mode is on).", "fix": "Set up SSH with housesitter adopt (or --outbox), or turn setup mode off on the KVM." },
+        { "code": "action-failed", "means": "The sitter tried and the desktop didn't come back, or it refused by its own checks; the message says which.", "fix": "Look at the screen with housesitter screenshot, then decide whether to try again." }
+      ]
+    },
+    {
+      "id": "cli:power-cycle", "group": "mac-power", "effect": "write", "destructive": true,
+      "when": "From a controller Mac, when the Mac is hung for good and a hard restart through its plug is worth losing unsaved work.",
+      "errors": [
+        { "code": "needs-why", "means": "power-cycle acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "action-unavailable", "means": "No route reaches the sitter, the sitter has no plug, or setup mode is on.", "fix": "Adopt a plug with housesitter plug <mac> adopt, set up a route with housesitter adopt, or turn setup mode off." },
+        { "code": "action-failed", "means": "The sitter refused by its own checks (its budget, the Mac looking alive) or the plug failed; the message says which.", "fix": "If you have looked and want it anyway, run it again with --attended." }
+      ]
+    },
+    {
+      "id": "cli:power-on", "group": "mac-power", "effect": "write",
+      "when": "From a controller Mac, when the Mac is off and should be up, using its plug or button presser.",
+      "errors": [
+        { "code": "needs-why", "means": "power-on acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "action-unavailable", "means": "No route reaches the sitter, it has no plug or fingerbot, or setup mode is on.", "fix": "Set up the route or the power device, or turn setup mode off." },
+        { "code": "action-failed", "means": "The sitter refused by its own checks (a button presser sees the Mac on, or it was switched on minutes ago) or the device failed.", "fix": "Look with housesitter screenshot; leave a running Mac alone." }
+      ]
+    },
+    {
+      "id": "cli:want-desktop", "group": "mac-power", "effect": "write",
+      "when": "From a controller Mac, before an agent drives the UI for a while, so a lock in the middle gets undone.",
+      "errors": [
+        { "code": "needs-why", "means": "want-desktop acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "action-unavailable", "means": "No route reaches the sitter, or its config has unlock_lock_screen off, so agents can't ask.", "fix": "Set unlock_lock_screen to on_request in the sitter's config, or use housesitter unlock yourself." },
+        { "code": "action-failed", "means": "The request stands, but the first unlock try didn't bring the desktop back.", "fix": "Look with housesitter screenshot, then try again or unlock it yourself." }
+      ]
+    },
+    {
+      "id": "cli:ls", "group": "ouro-reins", "effect": "read",
+      "when": "Before a do: lists the Mac as state with the actions it offers right now and each one's JSON input schema.",
+      "errors": [
+        { "code": "action-failed", "means": "@ouro.bot/hackamore isn't installed here, and ls needs it.", "fix": "Run npm install in Housesitter's folder, or run it with npx github:ourostack/housesitter." },
+        { "code": "input-invalid", "means": "The config has no Mac by the name ls was given.", "fix": "Name one of the Macs the message lists." }
+      ]
+    },
+    {
+      "id": "cli:do", "group": "ouro-reins", "effect": "write",
+      "when": "After ls, to run exactly one of the actions it listed, with input that fits that action's schema.",
+      "errors": [
+        { "code": "needs-why", "means": "do acts where other people see it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\"." },
+        { "code": "action-unavailable", "means": "That action isn't available on the Mac right now; available lists the ones that are.", "fix": "Run housesitter ls and pick one of its actions." },
+        { "code": "input-invalid", "means": "The input doesn't fit the action's schema; path names the field.", "fix": "Fix the field at path, using the schema ls shows." },
+        { "code": "action-failed", "means": "The action ran and failed, or @ouro.bot/hackamore isn't installed here.", "fix": "Read the message; run npm install in Housesitter's folder if hackamore is missing." }
+      ]
+    },
+    {
+      "id": "cli:fleet", "group": "fleet", "effect": "read",
+      "when": "To compare all Macs at once: last report, staleness and free disk, healthy or not per row.",
+      "errors": [
+        { "code": "action-failed", "means": "The fleet gist couldn't be read: gh isn't signed in, HOUSESITTER_FLEET_GIST is wrong, or the --from file is unreadable.", "fix": "Check gh auth status and the gist id, or read a saved copy with --from <gist.json>." }
+      ]
+    },
+    {
+      "id": "cli:fleet run", "group": "fleet", "effect": "write",
+      "when": "To have a different Mac carry out one step on its allowlist and report the result back through the gist.",
+      "errors": [
+        { "code": "needs-why", "means": "fleet run acts on another Mac, so it needs --why naming who asked and what they said, except with --status.", "fix": "Add --why \"<who asked, and what they said>\", or read results with --status." },
+        { "code": "input-invalid", "means": "The host or step is missing, or --id names no run request in the fleet gist.", "fix": "Pass both the host and the step, or an --id that --status lists." },
+        { "code": "action-failed", "means": "The fleet gist couldn't be read or written: no GitHub token, or the wrong gist.", "fix": "Check gh auth status with a token that may write gists, and HOUSESITTER_FLEET_GIST." }
+      ]
+    },
+    {
+      "id": "cli:tailnet-policy", "group": "about-housesitter", "effect": "read",
+      "when": "When putting the KVM on Tailscale: prints an ACL to paste so the KVM can reach nothing on the tailnet.",
+      "errors": [
+        { "code": "extra-arg", "means": "tailnet-policy takes no words after its name.", "fix": "Run housesitter tailnet-policy alone." }
+      ]
+    },
+    {
+      "id": "cli:version", "group": "about-housesitter", "effect": "read",
+      "when": "To find which release is installed here, such as before filing a bug or after a deploy.",
+      "errors": [
+        { "code": "extra-arg", "means": "version takes no words after its name.", "fix": "Run housesitter version alone, or housesitter --version." }
+      ]
+    },
+    {
+      "id": "cli:demo", "group": "about-housesitter", "effect": "read",
+      "when": "To show someone what Housesitter does without any hardware, from a recorded evening or a rehearsed night.",
+      "errors": [
+        { "code": "extra-arg", "means": "demo takes at most one word, night.", "fix": "Run housesitter demo, or housesitter demo night." }
+      ]
+    }
+  ]
+}
