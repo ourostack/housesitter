@@ -787,8 +787,9 @@ async function peerCmd() {
     saveConfig({ ...cfg, peer: { ...(cfg.peer || {}), standing_auth: sa } });
     const x = { name: macName, mac, configFile: configPath(), deps: realDeps(macName, { secrets: secretStore(), saveMac: (fn) => updateMac(macName, fn) }) };
     const r = await pushPeerTrust(x);
-    json ? emit({ ok: r.ok, standing_auth: sa, ...r }) : say(r.ok ? `recorded: ${sa.by} authorizes signed requests for ${sa.ops.join(' and ')}; key ${r.kid} is on the KVM` : `recorded in the config, but the KVM did not take it: ${r.detail}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok) throw new Refusal('action-failed', `recorded in the config, but the KVM did not take it: ${r.detail}. Run housesitter peer authorize ${macName} again once the KVM is reachable`);
+    json ? emit({ ok: true, standing_auth: sa, ...r }) : say(`recorded: ${sa.by} authorizes signed requests for ${sa.ops.join(' and ')}; key ${r.kid} is on the KVM`);
+    return 0;
   }
   const waiting = (r) => (r.rate_limited ? `GitHub asked us to wait; it goes out after ${r.retry_at}`
     : r.error ? `it goes out at the next flush (${r.error})` : 'it goes out at the next flush');
@@ -889,7 +890,7 @@ async function plugCmd(mac) {
 }
 
 main().then((code) => process.exit(code ?? 0)).catch((e) => {
-  const code = e instanceof Refusal || e.code ? e.code : 'action-failed';
+  const code = typeof e.code === 'string' && /^[a-z]+(-[a-z]+)*$/.test(e.code) ? e.code : 'action-failed';
   if (json) emit({ ok: false, code, message: e.message, ...(e.available ? { available: e.available } : {}), ...(e.path ? { path: e.path } : {}) });
   else console.error(`housesitter: ${e.message}${e.available ? `\n  available: ${e.available.join(', ')}` : ''}`);
   process.exit(code === 'action-unavailable' || code === 'input-invalid' ? 2 : 1);
