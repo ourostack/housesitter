@@ -119,7 +119,7 @@ async function watchKvm(mac) {
     fs.writeFileSync(agent, Watch.plist({ name, node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), args: extra }));
     spawnSync('/bin/launchctl', ['bootout', `gui/${uid}/${label}`], { encoding: 'utf8' });
     const r = spawnSync('/bin/launchctl', ['bootstrap', `gui/${uid}`, agent], { encoding: 'utf8' });
-    if (r.status !== 0) { say(`✗ launchctl bootstrap failed: ${String(r.stderr).trim()}`); return 1; }
+    if (r.status !== 0) throw new Refusal('action-failed', `launchctl bootstrap of ${label} failed: ${String(r.stderr).trim() || `exit ${r.status}`}. Run housesitter watch-kvm ${name} --install again, or read the log in ~/Library/Logs`);
     say(`✓ this Mac now checks ${name}'s KVM every minute (${label}); one message if it's silent for ${silentMin} min, one when it's back${test ? ' (TEST messages)' : ''}`);
     return 0;
   }
@@ -167,7 +167,8 @@ async function appleAccount() {
   if (opt['install-agent']) {
     const r = await Apple.installAgent({ node: Watch.stableNode(process.execPath), bin, mac: name, env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: !!opt['dry-run'] });
     if (json) emit(r); else say(r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Apple.LABEL}); it looks at Setup Assistant while it runs. Log: ${r.log}` : `✗ launchctl would not load it: ${r.error}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok && !r.dry_run) throw new Refusal('action-failed', `launchctl would not load the apple-account agent: ${r.error}`);
+    return 0;
   }
   const agent = opt.agent || 'ouroboros';
   const ouro = opt.ouro || which('ouro');
@@ -182,7 +183,7 @@ async function appleAccount() {
   if (opt.watch) { await Apple.watch({ mac: name }, deps, out); return 0; }
   const r = await Apple.attempt({ mac: name, explicit: !!opt.now }, deps);
   if (json) emit(r); else say(`${r.status}${r.why ? `: ${r.why}` : ''}`);
-  return ['filled', 'no-dialog', 'left-alone', 'waiting'].includes(r.status) ? 0 : 1;
+  return ['filled', 'no-dialog', 'left-alone', 'waiting'].includes(r.status) ? 0 : 1; // a refusal to fill is the answer in r.status
 }
 
 async function holdCmd() {
@@ -198,12 +199,14 @@ async function holdCmd() {
   if (dry) {
     if (json) emit({ ok: !failed, dry_run: true, nothing_done: true, rows, message: `${text}\n${Hold.PREVIEW}` });
     else console.log(`${text}\n${Hold.PREVIEW}`);
-    return failed ? 1 : 0;
+    if (failed) throw new Refusal('action-failed', 'launchctl would not turn some jobs off: see the rows above');
+    return 0;
   }
   if (json) emit({ ok: !failed, rows });
   else if (Hold.acted(rows).length) say(text);
   else if (labels !== null && !quiet) say(text);
-  return failed ? 1 : 0;
+  if (failed) throw new Refusal('action-failed', 'launchctl would not turn some jobs off: see the rows above');
+  return 0;
 }
 
 async function steerCmd() {
@@ -213,7 +216,8 @@ async function steerCmd() {
     const a = Rec.AGENTS.steer;
     const r = opt.uninstall ? await Rec.uninstallAgent({ label: a.label }) : await Rec.installAgent({ label: a.label, program: [Watch.stableNode(process.execPath), bin, ...a.args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: a.every, logName: a.logName, dry: !!opt['dry-run'] });
     if (json) emit(r); else say(opt.uninstall ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${a.label})` : `✗ launchctl would not load it: ${r.error}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok && !r.dry_run && !opt.uninstall) throw new Refusal('action-failed', `launchctl would not load it: ${r.error}`);
+    return 0;
   }
   const r = await Steer.pass({ repair: !!opt.repair, sessions: !opt['no-sessions'], peer: opt.peer }, deps, (l) => { if (!json && !opt.quiet) console.log(l); });
   const ok = r.bad.length === 0;
@@ -233,11 +237,12 @@ async function laptopArrival() {
     const args = ['laptop-arrival', '--config', file, '--quiet'];
     const r = opt.uninstall ? await Rec.uninstallAgent({ label: Arrival.LABEL }) : await Rec.installAgent({ label: Arrival.LABEL, program: [Watch.stableNode(process.execPath), bin, ...args], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, every: Arrival.EVERY_SEC, logName: 'housesitter-laptop-arrival.launchd.log', dry: !!opt['dry-run'] });
     if (json) emit(r); else say(opt.uninstall ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it` : r.ok ? `installed ${r.plist} and loaded it (${Arrival.LABEL}); every minute it checks whether the laptop is back, with no model turns` : `✗ launchctl would not load it: ${r.error}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok && !r.dry_run && !opt.uninstall) throw new Refusal('action-failed', `launchctl would not load it: ${r.error}`);
+    return 0;
   }
   let cfg;
   try { cfg = Arrival.loadConfig(file); } catch (e) {
-    if (!opt['dry-run'] || !/no config/.test(e.message)) throw e;
+    if (!opt['dry-run'] || !/no config/.test(e.message)) throw new Refusal('input-invalid', e.message);
     const line = `laptop-arrival: dry run; nothing was done. There is no config at ${file}, so there is nothing to check. Without --dry-run this brings a returning Mac up to date and tells the agent once; the agent is the one who sees it.`;
     if (json) emit({ ok: true, dry_run: true, nothing_done: true, message: line }); else console.log(line);
     return 0;
@@ -325,7 +330,8 @@ async function restartCopilot() {
       ? await Plugins.uninstallPluginAgent({})
       : await Plugins.installPluginAgent({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: !!opt['dry-run'] });
     if (json) emit(r); else say(opt['uninstall-plugin-updates'] ? `removed ${r.plist}` : r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Plugins.PLUGIN_LABEL}); every ${Plugins.EVERY_SEC / 60} min it restarts the app, with its sessions saved and resumed, when a plugin it loaded has a newer release. Decisions: ${path.join(stateDir, 'plugin-updates.log')}` : `✗ launchctl would not load it: ${r.error}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok && !r.dry_run) throw new Refusal('action-failed', `launchctl would not load it: ${r.error}`);
+    return 0;
   }
   if (opt['plugin-updates']) {
     const pd = Plugins.realPluginDeps({ copilotHome: opt['copilot-home'] || undefined, hackamore: opt.hackamore, state: stateDir, bin: Deploy.liveBin(fileURLToPath(import.meta.url)) });
@@ -338,7 +344,8 @@ async function restartCopilot() {
     const before = async () => { const g = await Copilot.appGeneration(opts, d).catch(() => ({})); if (g.key) d.generation.set(g.key, 'install-keeper'); };
     const r = await Copilot.installKeeper({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() }, dry: !!opt['dry-run'], before });
     if (json) emit(r); else say(r.dry_run ? `would write ${r.plist} and load it:\n${r.text}` : r.ok ? `installed ${r.plist} and loaded it (${Copilot.KEEPER_LABEL}); it resumes sessions after every app start from now on (the app that is up now is not resumed). Log: ${r.log}` : `✗ launchctl would not load it: ${r.error}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok && !r.dry_run) throw new Refusal('action-failed', `launchctl would not load it: ${r.error}`);
+    return 0;
   }
   if (opt['resume-only']) {
     const out = (m) => console.log(`${new Date().toISOString()} copilot-resume: ${m}`);
@@ -377,7 +384,8 @@ async function restartCopilot() {
     const hk = deps.hackamore ? ['--hackamore', JSON.stringify(deps.hackamore)] : [];
     const r = await Copilot.detach({ node: Watch.stableNode(process.execPath), bin: Deploy.liveBin(fileURLToPath(import.meta.url)), args: ['restart-copilot', ...keep, ...hk], env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() } });
     if (json) emit(r); else say(r.ok ? `started as a launchd job (${Copilot.LABEL}); it does not depend on this session. Log: ${r.log}\nRead the result with: housesitter restart-copilot --status` : `✗ launchctl would not start it: ${r.error}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok && !r.dry_run) throw new Refusal('action-failed', `launchctl would not load it: ${r.error}`);
+    return 0;
   }
   fs.mkdirSync(stateDir, { recursive: true });
   const log = (m) => console.log(`${new Date().toISOString()} restart-copilot: ${m}`);
@@ -535,8 +543,9 @@ async function main() {
   if (cmd === 'deploy') {
     need(name, 'housesitter deploy <housesitter|shepherd> [--ref <tag|branch|sha>] [--clone <dir>] [--dry-run] [--json] --why "<who asked, and what they said>"');
     const r = await Deploy.deploy({ name, ref: opt.ref, clone: opt.clone, why: opt.why, dry: !!opt['dry-run'] });
+    if (!r.ok) { if (!json) say(Deploy.renderDeploy(r)); throw new Refusal('action-failed', `deploy ${name} did not finish: ${r.detail || 'a step failed'}. The live release is unchanged unless the steps above say otherwise`); }
     if (json) emit(r); else say(Deploy.renderDeploy(r));
-    return r.ok ? 0 : 1;
+    return 0;
   }
   if (cmd === 'apple-account') return appleAccount();
   if (cmd === 'peer' && ['flush', 'watch'].includes(name)) requireMac(rest[0]);
@@ -694,7 +703,7 @@ function saveShot(name, buf) {
 async function proof(mac) {
   const dir = path.resolve(opt.record || `proof-${mac.name}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`);
   const sit = sitterClient(mac);
-  if (!sit.routes.some((x) => x.via.startsWith('ssh'))) { say(`✗ proof reads frames on the KVM over SSH, and there is no SSH route to ${mac.name}'s KVM (housesitter adopt sets one up)`); return 2; }
+  if (!sit.routes.some((x) => x.via.startsWith('ssh'))) throw new Refusal('action-unavailable', `proof reads frames on the KVM over SSH, and there is no SSH route to ${mac.name}'s KVM (housesitter adopt sets one up)`);
   fs.mkdirSync(dir, { recursive: true });
   const sh = sitterSsh(mac);
   const end = Date.now() + (Number(opt.minutes) || 15) * 60000;
@@ -852,14 +861,15 @@ async function plugCmd(mac) {
   if (sub === 'adopt') {
     const ip = rest[1];
     const cands = ip ? [await Plug.shellyInfo(ip)].filter(Boolean) : (await Plug.find()).filter(Plug.isPlug);
-    if (cands.length !== 1) { say(cands.length ? `more than one plug answered (${cands.map((d) => d.ip).join(', ')}): name it, housesitter plug ${mac.name} adopt <ip>` : 'no Shelly plug answered on this network yet (Shelly app > Add device > this Wi-Fi, then run this again)'); return 2; }
+    if (cands.length > 1) throw new Refusal('input-invalid', `more than one plug answered (${cands.map((d) => d.ip).join(', ')}): name it, housesitter plug ${mac.name} adopt <ip>`);
+    if (cands.length === 0) throw new Refusal('action-unavailable', 'no Shelly plug answered on this network yet (Shelly app > Add device > this Wi-Fi, then run this again)');
     const d = cands[0];
     if (opt['dry-run']) { say(`would adopt ${d.id} (${d.model || 'Shelly'}) at ${d.ip}: on after an outage, no auto-off, cloud off, Bluetooth RPC on, a password of its own at ${ref}; record it; hand it to the sitter. Nothing is switched.`); return 0; }
     let pw = store.has(ref) ? store.get(ref) : null;
     if (!pw) { pw = Plug.newPassword(); store.set(ref, pw); }
     const c = await Plug.configure(d.ip, d, pw, { name: `${mac.name}-power` });
     const marks = Object.entries(c.checks).map(([k, v]) => `${v ? '✓' : '✗'} ${k}`).join(' · ');
-    if (!c.ok) { say(`✗ the plug didn't read back as set: ${marks}`); return 1; }
+    if (!c.ok) throw new Refusal('action-failed', `the plug didn't read back as set: ${marks}. Run housesitter plug ${mac.name} adopt ${d.ip} again`);
     const power = { kind: 'shelly', url: `http://${d.ip}`, mac: c.mac || d.mac, id: d.id, model: d.model || null, gen: d.gen ?? null, auth: true, ble_mac: null, adopted_at: new Date().toISOString() };
     updateMac(mac.name, (m) => { m.power = power; m.plug_password = ref; });
     const seen = await Plug.handToSitter(power, pw, sitterSsh(mac), { dir: sitterDir(mac) });
@@ -868,7 +878,7 @@ async function plugCmd(mac) {
   }
   if (sub === 'status') {
     const p = mac.power;
-    if (!p || p.kind !== 'shelly') { say(p ? `${mac.name}'s power is ${p.kind}; status reads Shelly plugs` : `${mac.name} has no plug yet; when it's on the Mac's cord: housesitter plug ${mac.name} adopt`); return 1; }
+    if (!p || p.kind !== 'shelly') throw new Refusal('action-unavailable', p ? `${mac.name}'s power is ${p.kind}; status reads Shelly plugs` : `${mac.name} has no plug yet; when it's on the Mac's cord: housesitter plug ${mac.name} adopt`);
     const pw = p.auth ? store.get(ref) : null;
     const [here, there] = await Promise.all([
       Plug.readPlug(p, pw).catch((e) => ({ error: e.message })),
@@ -880,11 +890,12 @@ async function plugCmd(mac) {
     return here.error || !there.ok ? 1 : 0;
   }
   if (sub === 'prove') {
-    if (!opt.attended) { say(`refused: this cuts ${mac.name}'s power for 10 s. Run it while you (or your agent) are watching, with --attended, and only once the Mac's cord alone is on the plug.`); return 2; }
-    if (!mac.power) { say(`${mac.name} has no plug yet: housesitter plug ${mac.name} adopt`); return 2; }
+    if (!opt.attended) throw new Refusal('input-invalid', `this cuts ${mac.name}'s power for 10 s. Run it while you (or your agent) are watching, with --attended, and only once the Mac's cord alone is on the plug.`);
+    if (!mac.power) throw new Refusal('action-unavailable', `${mac.name} has no plug yet: housesitter plug ${mac.name} adopt`);
     const r = await Plug.prove({ ssh: sitterSsh(mac), dir: sitterDir(mac), say });
-    if (json) emit(r); else say(r.ok ? `✓ power cut → boot seen in ${r.boot_s} s → desktop in ${r.desktop_s} s, unlocked by the sitter; the KVM stayed up` : `✗ ${r.why}`);
-    return r.ok ? 0 : 1;
+    if (!r.ok) throw new Refusal('action-failed', `the power-cut proof did not pass: ${r.why}`);
+    if (json) emit(r); else say(`✓ power cut → boot seen in ${r.boot_s} s → desktop in ${r.desktop_s} s, unlocked by the sitter; the KVM stayed up`);
+    return 0;
   }
   throw new Refusal('input-invalid', `plug: unknown subcommand ${sub} (find, adopt, status, prove)`);
 }
