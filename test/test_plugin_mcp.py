@@ -193,11 +193,17 @@ class McpTest(PluginCase):
         self.assertEqual(got["uptime_min"], 121)
         self.assertGreater(got["disk"]["free_mb"], 0)
         self.assertTrue(got["sitter"]["stale"])
+        self.assertEqual(got["sitter"]["code"], "sitter-silent")
         self.assertGreaterEqual(got["sitter"]["age_sec"], 399)
         self.assertEqual(got["sitter"]["state"], "healthy")
         self.write_status(age=5)
         fresh, _ = self.call("kvm_health")
         self.assertFalse(fresh["sitter"]["stale"])
+        self.assertNotIn("code", fresh["sitter"])
+        os.environ["HOUSESITTER_PROC"] = os.path.join(self.dir, "nowhere")
+        broken, _ = self.call("kvm_health")
+        for part in ("mem", "load", "uptime_min"):
+            self.assertEqual(broken[part]["code"], "action-failed")
 
     def test_peer_tools(self):
         sent, _ = self.call("peer_send", {"text": "which sessions resumed?", "re": "x1"})
