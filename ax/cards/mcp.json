@@ -140,6 +140,14 @@
       "errors": [
         { "code": "action-failed", "means": "GitHub didn't answer the read of the inbox gist: the network, the token, or its rate limit.", "fix": "Try again in a minute; kvm_health shows whether the KVM itself is healthy." }
       ]
+    },
+    {
+      "id": "mcp:kvm_health", "group": "kvm-upkeep", "effect": "read",
+      "when": "On waking, and when the KVM feels slow: whether there's room left for kvmd and the sitter before starting heavier work.",
+      "errors": [
+        { "code": "action-failed", "means": "A part (mem, load, uptime_min or disk) couldn't be read from /proc or /userdata; that part holds the error.", "fix": "Read the other parts as usual and call kvm_health again; tell Ari if the same part keeps failing." },
+        { "code": "sitter-silent", "means": "The sitter field: its status.json is missing or older than three intervals, so nobody unlocks the Mac after a restart.", "fix": "Tell Ari right away, as the housesitter skill says, and check sitter_status for what it last wrote." }
+      ]
     }
   ]
 }

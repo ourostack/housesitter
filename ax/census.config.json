@@ -90,6 +90,10 @@
     {
       "id": "housesitter-skills",
       "when": "Loading Housesitter's own instructions for the job in front of it, on the KVM beside the Mac."
+    },
+    {
+      "id": "kvm-upkeep",
+      "when": "Keeping the KVM itself healthy, so kvmd and the sitter have the memory and disk they need."
     }
   ],
   "bookletWords": {
