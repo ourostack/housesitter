@@ -21,6 +21,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { ghCliToken } from './outbox.mjs';
 
+const invalid = (m) => Object.assign(new Error(m), { code: 'input-invalid' });
+
 export const O_TO_H = 'd10a53ca03a65b26aa2a4bbb96cec03d';
 export const H_TO_O = '94a9ee97baab459bb32a37d6dbb7c52d';
 export const KEEP_MS = 24 * 3600 * 1000;
@@ -201,12 +203,12 @@ export function peer({ dir, token, user, ghToken = ghCliToken, env = process.env
     // Queue one message, then flush if due (now: at once, if the hourly cap allows). It is on disk before anything is
     // written to GitHub, so it's never lost; status says whether it went (sent) or waits (queued).
     async send(text, { re = null, to = 'housesitter', now = false, op = null } = {}) {
-      if (typeof text !== 'string' || !text) throw new Error('peer send: a message needs some text');
+      if (typeof text !== 'string' || !text) throw invalid('peer send: a message needs some text');
       const ts = clock();
       text = drillText(text, drillLabel(dir, ts));
       const id = crypto.randomBytes(4).toString('hex');
-      if (op && !PEER_OPS.includes(op)) throw new Error(`peer send: --op is one of ${PEER_OPS.join(', ')}`);
-      if (op && !signer) throw new Error('peer send: --op needs this Mac\'s signing key; run housesitter adopt (or peer authorize) first');
+      if (op && !PEER_OPS.includes(op)) throw invalid(`peer send: --op is one of ${PEER_OPS.join(', ')}`);
+      if (op && !signer) throw invalid('peer send: --op needs this Mac\'s signing key; run housesitter adopt (or peer authorize) first');
       const msg = { v: 1, id, at: iso(ts), from, to, ...(op ? { op } : {}), text, ...(re ? { re } : {}) };
       if (signer) msg.sig = signSig(signer, msg);
       const file = `${stamp(ts)}-${id}.json`;

@@ -200,5 +200,54 @@
         { "code": "action-failed", "means": "The sitter couldn't be reached over SSH, or it couldn't send through the notify channel; the answer's result says which.", "fix": "Check the channel with housesitter doctor <mac>, then run it again." }
       ]
     }
+,
+    {
+      "id": "cli:peer send", "group": "peer-link", "effect": "write",
+      "when": "To ask Housesitter, the agent on the KVM, something or tell it something, through the secret gist, at once.",
+      "errors": [
+        { "code": "needs-why", "means": "peer send puts a message where Housesitter on the KVM reads it, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "The message was empty, --op isn't root-key or seal-secret, or --op was given with no signing key on this Mac.", "fix": "Give the message text; pick one of the two ops; run housesitter adopt (or peer authorize) to make the key." },
+        { "code": "action-failed", "means": "GitHub refused or didn't answer when sending the message (gh not signed in, no token that may write gists, or the gist is gone); the message carries its answer.", "fix": "Check gh auth status, then run it again; queued messages stay on disk." }
+      ]
+    },
+    {
+      "id": "cli:peer authorize", "group": "peer-link", "effect": "write",
+      "when": "Once per controller Mac, to record the owner's standing word that signed peer requests may install a root key and expect a sealed secret, and put the Mac's key on the KVM.",
+      "errors": [
+        { "code": "needs-why", "means": "peer authorize records standing authorization the KVM will act on, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "No Mac was named, or the config has no Mac by that name; the message lists the known ones.", "fix": "Name one of the Macs in the config." },
+        { "code": "action-failed", "means": "The authorization is recorded in the config, but the KVM didn't take the signing key over SSH; the message carries its answer.", "fix": "Check the KVM is reachable with housesitter doctor <mac>, then run peer authorize again." }
+      ]
+    },
+    {
+      "id": "cli:peer inbox", "group": "peer-link", "effect": "write",
+      "when": "To read Housesitter's new messages, oldest first; each shows once and is then marked read, unless --peek.",
+      "errors": [
+        { "code": "action-failed", "means": "GitHub refused or didn't answer when reading Housesitter's messages (gh not signed in, no token that may write gists, or the gist is gone); the message carries its answer.", "fix": "Check gh auth status, then run it again; queued messages stay on disk." }
+      ]
+    },
+    {
+      "id": "cli:peer flush", "group": "peer-link", "effect": "write",
+      "when": "To send the queued messages now if they are due, such as after GitHub's rate limit let up.",
+      "errors": [
+        { "code": "needs-why", "means": "peer flush sends queued messages where Housesitter reads them, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "action-failed", "means": "GitHub refused or didn't answer when sending the queued messages (gh not signed in, no token that may write gists, or the gist is gone); the message carries its answer.", "fix": "Check gh auth status, then run it again; queued messages stay on disk." }
+      ]
+    },
+    {
+      "id": "cli:peer watch", "group": "peer-link", "effect": "write",
+      "when": "To keep one process running that wakes the Mac's agent whenever Housesitter writes; --once checks a single time.",
+      "errors": [
+        { "code": "needs-why", "means": "peer watch wakes an agent and sends queued messages on its own, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." }
+      ]
+    },
+    {
+      "id": "cli:peer drill", "group": "peer-link", "effect": "write",
+      "when": "Before a planned drill or outage test, to mark it so the link labels everything sent meanwhile as a drill; --end stops it.",
+      "errors": [
+        { "code": "needs-why", "means": "peer drill changes what everything sent on the link says, so it needs --why naming who asked and what they said.", "fix": "Add --why \"<who asked, and what they said>\", or --dry-run to see what it would do." },
+        { "code": "input-invalid", "means": "No label was given to start a drill.", "fix": "Give the drill a label, or use --end to stop one." }
+      ]
+    }
   ]
 }
