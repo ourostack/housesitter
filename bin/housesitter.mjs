@@ -387,6 +387,7 @@ async function restartCopilot() {
   return report.ok ? 0 : 1;
 }
 
+function sshWhy(r, what) { return `${what}: ${String(r.stderr || r.stdout).trim() || 'the KVM did not answer over SSH'}. Check that the KVM is reachable (housesitter doctor <mac>).`; }
 function need(n, usage) { if (!n) throw new Refusal('input-invalid', `usage: ${usage}`); }
 // The Mac a peer link or a return names must be one the config knows, so a wrong name never acts for another Mac.
 function requireMac(n) {
@@ -568,24 +569,25 @@ async function main() {
 
   if (cmd === 'look') {
     const r = await sitterSsh(mac)(onSitter(mac, 'look'));
-    if (r.status !== 0) { say(`✗ ${String(r.stderr || r.stdout).trim() || 'could not reach the KVM over SSH'}`); return 1; }
+    if (r.status !== 0) throw new Refusal('action-failed', sshWhy(r, 'look'));
     return showLook(JSON.parse(String(r.stdout).trim().split('\n').at(-1)));
   }
 
   if (cmd === 'proof') return proof(mac);
 
   if (cmd === 'forget') {
-    if (!opt.yes) { say(`This wipes the Mac's password, the KVM's admin password and the outbox token from ${name}'s KVM and stops the sitter. Run again with --yes.`); return 2; }
+    if (!opt.yes) throw new Refusal('input-invalid', `This wipes the Mac's password, the KVM's admin password and the outbox token from ${name}'s KVM and stops the sitter. Run again with --yes.`);
     const sh = sitterSsh(mac);
     const r = await sh(`python3 /etc/kvmd/user/housesitter/sitter.py forget && (systemctl disable --now housesitter 2>/dev/null || /etc/init.d/S99housesitter stop; true)`);
-    say(r.status === 0 ? `forgot: ${String(r.stdout).trim()}; the sitter is stopped. Your Keychain items are untouched (security delete-generic-password -s housesitter …).` : `could not reach the KVM over SSH: ${String(r.stderr).trim()}`);
-    return r.status === 0 ? 0 : 1;
+    if (r.status !== 0) throw new Refusal('action-failed', sshWhy(r, 'forget'));
+    say(`forgot: ${String(r.stdout).trim()}; the sitter is stopped. Your Keychain items are untouched (security delete-generic-password -s housesitter …).`);
+    return 0;
   }
 
   if (cmd === 'unlock' && (!!opt.trial || !!opt.hold)) {
     // Arming the one supervised try is an operator act over SSH, never through the GitHub outbox.
     const r = await sitterSsh(mac)(`python3 /etc/kvmd/user/housesitter/sitter.py ${opt.trial ? 'password-trial' : 'password-hold'}`);
-    if (r.status !== 0) { say(`✗ ${String(r.stderr || r.stdout).trim() || 'could not reach the KVM over SSH'}`); return 1; }
+    if (r.status !== 0) throw new Refusal('action-failed', sshWhy(r, opt.trial ? 'unlock --trial' : 'unlock --hold'));
     say(!!opt.trial
       ? `armed one supervised try. Restart the Mac now and watch: housesitter proof ${name} --record ./proof. The sitter types once, only where it sees the password field; if the desktop follows within 2 minutes the password is verified, otherwise it goes back to unverified and types nothing more.`
       : 'held: the password is unverified again, and nothing is typed until you arm a trial.');
@@ -596,32 +598,33 @@ async function main() {
     // An operator act over SSH, never through the GitHub outbox: the sitter sends one real stuck message, marked TEST.
     const r = await sitterSsh(mac)(onSitter(mac, `alert-test${opt.again ? ' --again' : ''}`));
     let j = {};
-    try { j = JSON.parse(String(r.stdout).trim().split('\n').at(-1)); } catch { j = { ok: false, result: String(r.stderr || r.stdout).trim().slice(0, 200) || 'could not reach the KVM over SSH' }; }
+    try { j = JSON.parse(String(r.stdout).trim().split('\n').at(-1)); } catch { j = { ok: false, code: 'action-failed', result: sshWhy(r, 'alert-test').slice(0, 300) }; }
     if (json) emit(j); else say(j.ok ? `✓ sent through ${mac.notify?.kind || 'the notify channel'}: ${j.result}\n  title: ${j.sent?.title}\n  body:  ${String(j.sent?.body || '').replace(/\n/g, ' / ')}` : `✗ ${j.result}`);
     return j.ok ? 0 : 1;
   }
 
   if (cmd === 'learn-prompt') {
-    if (!opt['i-see-the-field']) { say(`Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field (or, with --grid, the login window's list of users) on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`); return 2; }
+    if (!opt['i-see-the-field']) throw new Refusal('input-invalid', `Teach the sitter ${name}'s password prompt only while you can see the FileVault or login password field (or, with --grid, the login window's list of users) on the KVM's own picture (housesitter screenshot ${name}). Then run again with --i-see-the-field.`);
     let grid = '';
-    if (!!opt.grid && !!opt.filevault) { say('--grid and --filevault are two different lessons: a list of users is only ever clicked, never typed into. Teach each on its own.'); return 2; }
-    if (opt.regions && (opt.grid || opt.filevault)) { say('--regions is only for the lock screen, not --grid or --filevault.'); return 2; }
-    if (!opt.grid && !opt.filevault && !opt.regions) { say('Lock lessons need --regions with tight field and hint rectangles [left, top, right, bottom], as fractions of the whole KVM picture. Show the empty password field and Touch ID or Enter Password text; do not include wallpaper.'); return 2; }
+    if (!!opt.grid && !!opt.filevault) throw new Refusal('input-invalid', '--grid and --filevault are two different lessons: a list of users is only ever clicked, never typed into. Teach each on its own.');
+    if (opt.regions && (opt.grid || opt.filevault)) throw new Refusal('input-invalid', '--regions is only for the lock screen, not --grid or --filevault.');
+    if (!opt.grid && !opt.filevault && !opt.regions) throw new Refusal('input-invalid', 'Lock lessons need --regions with tight field and hint rectangles [left, top, right, bottom], as fractions of the whole KVM picture. Show the empty password field and Touch ID or Enter Password text; do not include wallpaper.');
     let regions = '';
     if (opt.regions) {
       let parsed;
-      try { parsed = JSON.parse(opt.regions); } catch { say('--regions needs a JSON object with field and hint rectangles.'); return 2; }
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { say('--regions needs a JSON object with field and hint rectangles.'); return 2; }
+      try { parsed = JSON.parse(opt.regions); } catch { throw new Refusal('input-invalid', '--regions needs a JSON object with field and hint rectangles.'); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Refusal('input-invalid', '--regions needs a JSON object with field and hint rectangles.');
       regions = ` --regions '${JSON.stringify(parsed).replace(/'/g, "'\\''")}'`;
     }
     if (opt.grid) {
       const [gx, gy] = [Number(rest[0]), Number(rest[1])];
-      if (!(gx > 0 && gx < 1 && gy > 0 && gy < 1)) { say('--grid needs your account tile as two fractions of the screen, like --grid 0.48 0.87 (x then y, from housesitter screenshot)'); return 2; }
+      if (!(gx > 0 && gx < 1 && gy > 0 && gy < 1)) throw new Refusal('input-invalid', '--grid needs your account tile as two fractions of the screen, like --grid 0.48 0.87 (x then y, from housesitter screenshot)');
       grid = ` --grid ${gx} ${gy}`;
     }
     const r = await sitterSsh(mac)(onSitter(mac, `learn-prompt${opt.filevault ? ' --filevault' : ''}${grid}${regions} taught over SSH by an operator who saw the screen`));
-    say(r.status === 0 ? `learned: ${String(r.stdout).trim()}. The sitter types only where a frame matches this.` : `✗ ${String(r.stderr || r.stdout).trim()}`);
-    return r.status === 0 ? 0 : r.status === 2 ? 2 : 1;
+    if (r.status !== 0) throw new Refusal(r.status === 2 ? 'input-invalid' : 'action-failed', sshWhy(r, 'learn-prompt'));
+    say(`learned: ${String(r.stdout).trim()}. The sitter types only where a frame matches this.`);
+    return 0;
   }
 
   if (cmd === 'want-desktop') {
