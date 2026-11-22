@@ -54,6 +54,9 @@ class McpTest(PluginCase):
         self.assertEqual(r[3]["result"], {})
         self.assertEqual(r[4]["error"]["code"], -32601)
         self.assertEqual(r[5]["error"]["code"], -32602)
+        # The Ouro AX code an agent reads: the tool name is not one this server serves; the reply names the served tools.
+        self.assertEqual(r[5]["error"]["data"]["code"], "unknown-door")
+        self.assertEqual(set(r[5]["error"]["data"]["tools"]), TOOLS)
         no_version = self.rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})[1]["result"]
         self.assertEqual(no_version["protocolVersion"], "2025-06-18")
 
