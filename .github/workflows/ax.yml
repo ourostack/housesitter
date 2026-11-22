@@ -1,7 +1,8 @@
 name: ax
 # Ouro AX: the X-ray against the fake KVM on a loopback address, and the action claims. Both upload artifacts whose names
 # contain "xray", which the adoption ledger reads. The X-ray job fails when a must claim does not hold, so a change
-# that breaks one can't merge.
+# that breaks one can't merge. The ax-census job counts every agent door Housesitter has and fails when one without a
+# valid card is new.
 on:
   push:
     branches: [main]
@@ -65,3 +66,56 @@ jobs:
         with:
           name: actions-xray
           path: xray-actions/
+  ax-census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # The census (vendored from Ouro UI under ax/scripts/ouro-census) and Housesitter's walkers (ax/walkers) read
+      # TypeScript's syntax tree, so they get their own install of it, apart from the CLI's two dependencies. The MCP
+      # walker reads the Python server with the runner's python3.
+      - name: Install the census's dependencies
+        working-directory: ax
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Typecheck Housesitter's census walkers
+        run: ax/node_modules/.bin/tsc -p ax/tsconfig.json
+      - name: Housesitter's census walker tests
+        run: |
+          node --test --test-concurrency=3 --experimental-test-coverage \
+            --test-coverage-include='ax/walkers/*.mts' --test-coverage-include='ax/check-uses.mts' \
+            --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=85 \
+            'test/ax/*.node-test.mts'
+      # The census counts every agent door Housesitter's walkers find (the CLI's commands, the plugin's MCP tools and
+      # its skills) and fails when one without a valid card isn't on ax/census.baseline.json, when this pull request
+      # adds to the baseline, or when it drops a walker source. It compares with the base commit the checked-out merge
+      # ref was built on, not the base branch's tip, which can have moved since. There is no override.
+      - name: Ouro AX census
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p ax-census
+          base_baseline=none; base_config=absent
+          if [ -n "$BASE_REF" ]; then
+            base_sha=$(node ax/scripts/ouro-census/base.mts)
+            git fetch --depth=1 origin "$base_sha"
+            if git show FETCH_HEAD:ax/census.config.json > "$RUNNER_TEMP/base-config.json" 2>/dev/null; then base_config="$RUNNER_TEMP/base-config.json"; fi
+            if git show FETCH_HEAD:ax/census.baseline.json > "$RUNNER_TEMP/base-baseline.json" 2>/dev/null; then base_baseline="$RUNNER_TEMP/base-baseline.json"; fi
+          fi
+          node ax/scripts/ouro-census/census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
+            --base-baseline "$base_baseline" --base-config "$base_config" \
+            --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --repo "$GITHUB_REPOSITORY" --out ax-census/census.json \
+            --inventory ax-census/inventory.json 2>&1 | tee ax-census/census.txt
+      # A skill card's uses must name doors the walkers find; each walker sees only its own.
+      - name: Card uses name real doors
+        run: node ax/check-uses.mts ax/census.config.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ax-census
+          path: ax-census/
+          retention-days: 90
+          if-no-files-found: warn
