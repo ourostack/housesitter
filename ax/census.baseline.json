@@ -21,7 +21,6 @@
     "cli:restart-copilot",
     "cli:secret",
     "cli:steer",
-    "cli:watch-kvm",
-    "mcp:kvm_health"
+    "cli:watch-kvm"
   ]
 }
