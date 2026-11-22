@@ -1,0 +1,15 @@
+{
+  "errors": [{ "code": "unknown-door", "means": "The server serves no tool by that name.", "fix": "Call one of the tools tools/list names." }],
+  "doors": [
+    {
+      "id": "mcp:sitter_unlock",
+      "group": "sitter-hands",
+      "when": "The Mac sits at FileVault or a lock screen and the agent needs its desktop back",
+      "effect": "write",
+      "errors": [
+        { "code": "sitter-refused", "means": "The sitter declined.", "fix": "Read its reason and wait." },
+        { "code": "only-in-a-card", "means": "Raised nowhere.", "fix": "Drop it." }
+      ]
+    }
+  ]
+}

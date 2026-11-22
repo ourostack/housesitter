@@ -1,0 +1,1 @@
+{ "doors": [{ "id": "cli:status", "group": "g", "when": "w", "effect": "read", "errors": [] }] }

@@ -1,0 +1,16 @@
+{
+  "errors": [{ "code": "unknown-command", "means": "No command has that word.", "fix": "Run housesitter --help and pick a listed command." }],
+  "doors": [
+    {
+      "id": "cli:unlock",
+      "group": "mac-hands",
+      "when": "The Mac sits at FileVault or a lock screen and an agent needs its desktop back",
+      "effect": "consequential",
+      "confirm": "Unlock the Mac now?",
+      "errors": [
+        { "code": "sitter-refused", "means": "The sitter declined.", "fix": "Read its reason and wait." },
+        { "code": "only-in-a-card", "means": "Raised nowhere.", "fix": "Drop it." }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "product": "housesitter",
+  "walkers": {
+    "housesitter-cli": { "module": "ax/walkers/cli.mts", "kinds": ["cli"] },
+    "housesitter-mcp": { "module": "ax/walkers/mcp.mts", "kinds": ["mcp"] },
+    "housesitter-skills": { "module": "ax/walkers/skills.mts", "kinds": ["skill", "agent"] }
+  },
+  "sources": [
+    { "walker": "housesitter-cli", "module": "", "source": "src/cli-table.mjs", "cards": "ax/cards/cli.json", "handlers": ["bin", "src", "lib/ouro-ui/registry/ouro/ax/ax-command.ts"] },
+    { "walker": "housesitter-mcp", "module": "", "source": "plugins/housesitter/mcp/server.py", "cards": "ax/cards/mcp.json", "handlers": ["plugins/housesitter", "device/sitter.py"] },
+    { "walker": "housesitter-skills", "module": "", "source": "plugins", "cards": "ax/cards/skills.json" }
+  ],
+  "groups": [],
+  "bookletWords": { "allow": [] }
+}
