@@ -1,15 +1,82 @@
 {
   "product": "housesitter",
   "walkers": {
-    "housesitter-cli": { "module": "ax/walkers/cli.mts", "kinds": ["cli"] },
-    "housesitter-mcp": { "module": "ax/walkers/mcp.mts", "kinds": ["mcp"] },
-    "housesitter-skills": { "module": "ax/walkers/skills.mts", "kinds": ["skill", "agent"] }
+    "housesitter-cli": {
+      "module": "ax/walkers/cli.mts",
+      "kinds": [
+        "cli"
+      ]
+    },
+    "housesitter-mcp": {
+      "module": "ax/walkers/mcp.mts",
+      "kinds": [
+        "mcp"
+      ]
+    },
+    "housesitter-skills": {
+      "module": "ax/walkers/skills.mts",
+      "kinds": [
+        "skill",
+        "agent"
+      ]
+    }
   },
   "sources": [
-    { "walker": "housesitter-cli", "module": "", "source": "src/cli-table.mjs", "cards": "ax/cards/cli.json", "handlers": ["bin", "src", "lib/ouro-ui/registry/ouro/ax/ax-command.ts"] },
-    { "walker": "housesitter-mcp", "module": "", "source": "plugins/housesitter/mcp/server.py", "cards": "ax/cards/mcp.json", "handlers": ["plugins/housesitter", "device/sitter.py"] },
-    { "walker": "housesitter-skills", "module": "", "source": "plugins", "cards": "ax/cards/skills.json" }
+    {
+      "walker": "housesitter-cli",
+      "module": "",
+      "source": "src/cli-table.mjs",
+      "cards": "ax/cards/cli.json",
+      "handlers": [
+        "bin",
+        "src",
+        "lib/ouro-ui/registry/ouro/ax/ax-command.ts"
+      ]
+    },
+    {
+      "walker": "housesitter-mcp",
+      "module": "",
+      "source": "plugins/housesitter/mcp/server.py",
+      "cards": "ax/cards/mcp.json",
+      "handlers": [
+        "plugins/housesitter",
+        "device/sitter.py"
+      ]
+    },
+    {
+      "walker": "housesitter-skills",
+      "module": "",
+      "source": "plugins",
+      "cards": "ax/cards/skills.json"
+    }
   ],
-  "groups": [],
-  "bookletWords": { "allow": [] }
+  "groups": [
+    {
+      "id": "mac-screen",
+      "when": "Seeing what the watched Mac's screen shows through the KVM, before deciding whether to act on it."
+    },
+    {
+      "id": "mac-hands",
+      "when": "Driving the watched Mac's mouse and keyboard through the KVM, as a person at its desk would."
+    },
+    {
+      "id": "mac-power",
+      "when": "Getting the watched Mac running and unlocked: power through its plug, FileVault and lock screens by the sitter."
+    },
+    {
+      "id": "sitter-control",
+      "when": "Changing what the sitter on the KVM does by itself, such as pausing its own actions."
+    },
+    {
+      "id": "reach-the-owner",
+      "when": "Reaching the owner's phone when only a person can act right now."
+    },
+    {
+      "id": "peer-link",
+      "when": "Talking with Ouroboros, the agent on the Mac, through the two secret gists both agents read."
+    }
+  ],
+  "bookletWords": {
+    "allow": []
+  }
 }

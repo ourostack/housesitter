@@ -1,1 +1,145 @@
-{ "errors": [], "doors": [] }
+{
+  "errors": [
+    { "code": "unknown-door", "means": "The server serves no tool by that name; JSON-RPC error -32602 lists the tools it serves in data.tools.", "fix": "Call one of the names in data.tools, or read tools/list again." }
+  ],
+  "doors": [
+    {
+      "id": "mcp:sitter_status", "group": "mac-screen", "effect": "read",
+      "when": "First thing in a check-in: the sitter's state, budgets, setup mode and secret names, and whether the Mac itself reports in.",
+      "errors": [
+        { "code": "action-failed", "means": "The answer's sitter field says action-failed: the sitter didn't answer within 30 s, couldn't run, or exited without a JSON reply.", "fix": "Check kvm_health for the sitter's heartbeat and the KVM's memory, then call sitter_status again." },
+        { "code": "input-invalid", "means": "simulate was given as something other than \"stale-heartbeat\".", "fix": "Leave simulate out, or pass \"stale-heartbeat\" for a drill." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_look", "group": "mac-screen", "effect": "read",
+      "when": "Before driving or unlocking: tells which kind of screen is up right now, with a frame id for later hands.",
+      "errors": [
+        { "code": "action-failed", "means": "The sitter's look or its picture failed: no answer in time, kvmd gave no frame, or the reply wasn't JSON.", "fix": "Call kvm_health to see whether the sitter is alive, then look again; sitter_screenshot alone may still work." },
+        { "code": "input-invalid", "means": "width isn't a number of pixels.", "fix": "Pass width as a number, such as 1280, or leave it out." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_screenshot", "group": "mac-screen", "effect": "read",
+      "when": "When only pixels matter: coordinates to click, a frame id to prove a focused password field, or a sharper image.",
+      "errors": [
+        { "code": "action-failed", "means": "The sitter took no picture: kvmd didn't give a frame in time, or the sitter's answer had no image.", "fix": "Check that kvmd shows video (sitter_status shows the last screen read), then take the screenshot again." },
+        { "code": "input-invalid", "means": "width isn't a number of pixels.", "fix": "Pass width as a number between 320 and 1920, or leave it out for 1280." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_unlock", "group": "mac-power", "effect": "write",
+      "when": "A look shows FileVault or a lock screen and work needs the desktop once, with no standing request.",
+      "errors": [
+        { "code": "action-unavailable", "means": "Setup mode is on: the KVM is on another Mac's cables, so the sitter unlocks nothing.", "fix": "Finish the setup and turn setup mode off with sitter_setup_mode, or wait for it to expire." },
+        { "code": "action-failed", "means": "The sitter tried and the desktop didn't come back, or it refused by its own budget or checks; result says which.", "fix": "Read result, take a sitter_look to see the screen now, and ask the owner with sitter_notify if it still won't unlock." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_want_desktop", "group": "mac-power", "effect": "write",
+      "when": "Before a stretch of UI work lasting minutes, so a Mac that locks midway gets unlocked again by the sitter.",
+      "errors": [
+        { "code": "action-unavailable", "means": "unlock_lock_screen is off in this sitter's config, or setup mode is on, so agents can't ask for the desktop.", "fix": "Ask the owner to set unlock_lock_screen to on_request, or turn setup mode off; sitter_unlock still works for FileVault." },
+        { "code": "action-failed", "means": "The request stands, but this first unlock try didn't bring the desktop back; result.unlock says why.", "fix": "Take a sitter_look, then retry later or ask the owner with sitter_notify." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_power_cycle", "group": "mac-power", "effect": "write", "destructive": true,
+      "when": "Last resort for a frozen Mac whose clock stopped and network went quiet; unsaved work on it is lost.",
+      "errors": [
+        { "code": "action-unavailable", "means": "No smart plug is configured on this sitter, or setup mode is on, so it cuts no power.", "fix": "Ask the owner to adopt a plug (housesitter plug <mac> adopt), or turn setup mode off." },
+        { "code": "action-failed", "means": "The sitter refused by its own checks (its power budget, the Mac looking alive) or the plug didn't answer; result says which.", "fix": "Read result; if the Mac answers after all, leave it, else tell the owner with sitter_notify." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_power_on", "group": "mac-power", "effect": "write",
+      "when": "The Mac is dark and should be running, such as after a power cut, with its plug or button presser set up.",
+      "errors": [
+        { "code": "action-unavailable", "means": "No plug or fingerbot is configured on this sitter, or setup mode is on, so it powers nothing.", "fix": "Ask the owner to set up a plug or fingerbot, or turn setup mode off." },
+        { "code": "action-failed", "means": "The sitter refused by its own checks or the power device didn't answer; result says which.", "fix": "Read result, wait a minute and take a sitter_look; tell the owner with sitter_notify if it stays dark." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_click", "group": "mac-hands", "effect": "write",
+      "when": "To press on a button, menu or field picked from the latest screenshot, while a desktop is showing.",
+      "errors": [
+        { "code": "action-unavailable", "means": "The screen isn't a desktop right now (a password screen, or the menu bar is hidden), so the sitter sends no click.", "fix": "Unlock with sitter_unlock first, or show the menu bar of a full-screen app, then look and click again." },
+        { "code": "input-invalid", "means": "x or y is missing or isn't a number, or w and h aren't numbers.", "fix": "Pass x and y in the screenshot's pixels, with w and h set to that screenshot's size." },
+        { "code": "action-failed", "means": "kvmd didn't take the mouse event.", "fix": "Check kvm_health and sitter_status, then click again." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_type", "group": "mac-hands", "effect": "write",
+      "when": "To enter ordinary words into the focused field on a desktop: a search, a file name, a terminal command.",
+      "errors": [
+        { "code": "input-invalid", "means": "text is empty, isn't a string, or is over 2000 characters.", "fix": "Send 1 to 2000 characters, splitting longer text into several calls." },
+        { "code": "action-unavailable", "means": "The screen isn't a desktop right now, so the sitter types nothing.", "fix": "Take a sitter_look; unlock with sitter_unlock, or show a full-screen app's menu bar, then type again." },
+        { "code": "action-failed", "means": "kvmd didn't take the keystrokes.", "fix": "Check kvm_health and sitter_status, then type again." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_type_secret", "group": "mac-hands", "effect": "write",
+      "when": "A sudo, Company Portal or Setup Assistant password field sits focused in a recent picture, and the sitter keeps that credential.",
+      "errors": [
+        { "code": "input-invalid", "means": "name, prompt, enter, seen or region is missing or malformed; result names which.", "fix": "Pass the secret's name, one line of prompt, and seen as the frame id from a screenshot or look." },
+        { "code": "action-unavailable", "means": "The sitter typed nothing: no such secret, its hourly budget used, an old or changed frame, no live video, or a guarded credential.", "fix": "Read result: take a fresh screenshot and pass its frame, wait for the budget, or seal the secret with housesitter secret --kvm." },
+        { "code": "action-failed", "means": "The sitter hit an error while checking the picture or typing.", "fix": "Take a fresh screenshot and try once more; if it fails again, check kvm_health." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_setup_mode", "group": "sitter-control", "effect": "write",
+      "when": "While setting up a different Mac on the KVM's cables, so the sitter holds back from acting on its own Mac.",
+      "errors": [
+        { "code": "input-invalid", "means": "on is missing, or the sitter refused the hours or mac label it was given.", "fix": "Pass on: true with mac and hours of at most 24, or on: false." },
+        { "code": "action-failed", "means": "The server couldn't run the sitter's setup-mode command, or it exited with an error; result has its last line.", "fix": "Check kvm_health, then try again; sitter_status shows whether setup mode is on." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_notify", "group": "reach-the-owner", "effect": "write",
+      "when": "When a step waits on a human hand no agent can replace, like approving a sign-in or plugging in a cable.",
+      "errors": [
+        { "code": "input-invalid", "means": "text isn't one line of 1 to 300 characters, holds a secret the sitter keeps, or screenshot isn't true or false.", "fix": "Send one short line saying what the owner must do, with the number to match, and no secret." },
+        { "code": "action-unavailable", "means": "The sitter has no notify target, or its 12 an hour are used; result says when one frees up.", "fix": "Wait for the time in result, or send it over the peer link with peer_send." },
+        { "code": "action-failed", "means": "The notify target refused the message or didn't answer.", "fix": "Try once more; if it fails again, send it with peer_send." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_key", "group": "mac-hands", "effect": "write",
+      "when": "To press a named key or shortcut on a desktop: Return to confirm, Tab to move, cmd+q to quit an app.",
+      "errors": [
+        { "code": "input-invalid", "means": "combo names a key the sitter doesn't know; result names it.", "fix": "Write keys joined by +, such as cmd+space or return." },
+        { "code": "action-unavailable", "means": "The screen isn't a desktop, so the sitter presses nothing; Escape is refused there because at a login window it opens the user list.", "fix": "Take a sitter_look, unlock with sitter_unlock first, then press the key again." },
+        { "code": "action-failed", "means": "kvmd didn't take the key event.", "fix": "Check kvm_health and sitter_status, then press it again." }
+      ]
+    },
+    {
+      "id": "mcp:sitter_scroll", "group": "mac-hands", "effect": "write",
+      "when": "To bring hidden rows of a list or page into view, by wheel steps, at a point picked from the screenshot.",
+      "errors": [
+        { "code": "input-invalid", "means": "x or y is given but isn't a number, or w and h aren't numbers.", "fix": "Pass x and y in the screenshot's pixels with w and h set to its size, or leave them all out." },
+        { "code": "action-failed", "means": "kvmd didn't take the wheel event, or dx or dy isn't a number.", "fix": "Pass dx and dy as numbers of wheel steps, then check kvm_health if it fails again." }
+      ]
+    },
+    {
+      "id": "mcp:peer_send", "group": "peer-link", "effect": "write",
+      "when": "To tell or ask Ouroboros something in free text, or answer one of its messages by id with re.",
+      "errors": [
+        { "code": "input-invalid", "means": "text is missing or empty.", "fix": "Pass the message as text." }
+      ]
+    },
+    {
+      "id": "mcp:peer_bring_back_ouroboros", "group": "peer-link", "effect": "write",
+      "when": "After messages to the Mac go unanswered and its heartbeat or watch says the agent there is down.",
+      "errors": [
+        { "code": "action-failed", "means": "The server couldn't put the request on its peer queue on the KVM's disk.", "fix": "Check kvm_health for free space on /userdata, then ask again." }
+      ]
+    },
+    {
+      "id": "mcp:peer_inbox", "group": "peer-link", "effect": "write",
+      "when": "To read what Ouroboros wrote since the last check, each new message once, and send what's queued.",
+      "errors": [
+        { "code": "action-failed", "means": "GitHub didn't answer the read of the inbox gist: the network, the token, or its rate limit.", "fix": "Try again in a minute; kvm_health shows whether the KVM itself is healthy." }
+      ]
+    }
+  ]
+}
