@@ -486,8 +486,14 @@ async function main() {
       const refs = [['KVM admin password', m.kvm?.admin_password], ['Mac password', m.mac_password], ['outbox token', m.outbox?.token]].filter(([, r]) => r);
       lines.push(`${n}: ${m.kvm?.endpoints?.length || 0} endpoint(s)${m.kvm?.tls_sha256 ? ', pinned' : ', NOT pinned'}; ${refs.map(([l, r]) => `${l} ${store.has(r) ? '✓' : '✗'}`).join(', ') || 'no secrets referenced'}; power ${m.power?.kind || 'none'}; notify ${m.notify?.kind || 'none'}`);
     }
+    let unreachable = 0;
+    for (const h of Array.isArray(cfg.agent_hosts) ? cfg.agent_hosts : []) {
+      const r = spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', String(h), 'true'], { encoding: 'utf8' });
+      if (r.status === 0) lines.push(`agent host ${h}: ssh ✓`);
+      else { unreachable++; lines.push(`agent host ${h}: ssh ✗ (${String(r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n').pop().slice(0, 140)}). Fix: turn on Tailscale SSH there, or install this Mac's agent key and add a ${h} host alias to ~/.ssh/config`); }
+    }
     if (json) emit({ lines }); else console.log(lines.join('\n'));
-    return 0;
+    return unreachable ? 1 : 0;
   }
 
   if (cmd === 'adopt') {
