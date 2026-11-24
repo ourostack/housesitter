@@ -15,7 +15,6 @@ function fake(over = {}) {
     now: () => NOW,
     usage: () => ({ pct, free, }),
     caches: () => over.caches || [],
-    size: () => 2 * GIB,
     remove: (p) => { log.cache.push(p); free += 10 * GIB; },
     appWorktrees: () => new Set(over.used || []),
     liveSessions: () => new Set(over.live || []),
@@ -32,7 +31,10 @@ function fake(over = {}) {
     histories: () => over.hist || [],
     protectedBy: (x) => (over.protect || []).includes(x) ? 'launchd' : null,
     deadSessions: () => over.dead || [],
-    quietFor: (dir) => (over.dead || []).find((x) => x.dir === dir).quietFor ?? Infinity,
+    quietFor: (dir) => (over.dead || []).find((x) => x.dir === dir)?.quietFor ?? over.quiet?.[dir] ?? Infinity,
+    archivedScratch: (id) => (over.scratchOf || {})[id] || null,
+    ghCacheOld: () => over.ghOld || [],
+    size: (p) => over.sizes?.[p] ?? 2 * GIB,
     clonesIn: (dirs) => over.clones?.[dirs[0]] || [],
     scratch: () => over.scratchList || [],
     leakedClones: () => over.leaked || [],
@@ -538,4 +540,51 @@ test('the tell and result count what was kept, by reason', async () => {
   const f = fake({ scratchList, cloneAge: { '/private/tmp/a': 3600000, '/private/tmp/b': 3600000 }, openFiles: ['/private/tmp/c'], protect: ['/private/tmp/d'] });
   const r = await pass({}, f.d);
   assert.deepEqual(r.keeps.scratch, { 'changed within 3 h': 2, 'a process has it open': 1, 'launchd or Housesitter runs from it': 1 });
+});
+
+test('retention: an archived, quiet session loses only files/, above the floor too; live, recent or open ones keep it', async () => {
+  const sc = (id) => ({ id, dir: `/s/${id}`, files: `/s/${id}/files` });
+  const { d, log } = fake({
+    freeGib: 600, archived: ['a-old', 'a-new', 'a-open', 'a-live'], live: ['a-live'],
+    scratchOf: { 'a-old': sc('a-old'), 'a-new': sc('a-new'), 'a-open': sc('a-open'), 'a-live': sc('a-live') },
+    quiet: { '/s/a-new': 3600000 }, openFiles: ['/s/a-open/files'],
+    sizes: { '/s/a-old/files': 5 * GIB },
+  });
+  const r = await pass({}, d);
+  assert.deepEqual(log.cache, ['/s/a-old/files']);
+  assert.equal(r.reclaimedBytes, 5 * GIB);
+  assert.equal(log.state.retention.reclaimedBytes, 5 * GIB);
+  assert.ok(!log.cache.some((p) => /events|session\.db|images|checkpoints/.test(p)));
+});
+
+test('retention: a dry run removes nothing and a session without files/ is skipped', async () => {
+  const { d, log } = fake({ freeGib: 600, archived: ['a-old', 'a-bare'], scratchOf: { 'a-old': { id: 'a-old', dir: '/s/a-old', files: '/s/a-old/files' } } });
+  const r = await pass({ dry_run: true }, d);
+  assert.deepEqual(log.cache, []);
+  assert.equal(r.reclaimedBytes, 2 * GIB);
+});
+
+test('retention: old gh cache entries go and fresh ones stay (the dep lists only old ones)', async () => {
+  const { d, log } = fake({ freeGib: 600, ghOld: [{ path: '/h/.cache/gh/0a/old1', size: GIB }, { path: '/h/.cache/gh/ff/old2', size: GIB }] });
+  const r = await pass({}, d);
+  assert.deepEqual(log.cache, ['/h/.cache/gh/0a/old1', '/h/.cache/gh/ff/old2']);
+  assert.equal(r.reclaimedBytes, 2 * GIB);
+});
+
+test('real ghCacheOld and archivedScratch read a synthetic home', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-ret-'));
+  const id = '11111111-2222-3333-4444-555555555555';
+  fs.mkdirSync(path.join(home, '.cache/gh/0a'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.copilot/session-state', id, 'files'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.copilot/session-state', id, 'events.jsonl'), 'x');
+  const oldF = path.join(home, '.cache/gh/0a/old'), newF = path.join(home, '.cache/gh/0a/new');
+  fs.writeFileSync(oldF, 'o'); fs.writeFileSync(newF, 'n');
+  const past = new Date(Date.now() - 3 * DAY); fs.utimesSync(oldF, past, past);
+  const deps = realDiskDeps({ home, state: path.join(home, 'st') });
+  assert.deepEqual(deps.ghCacheOld(Date.now() - DAY).map((e) => e.path), [oldF]);
+  assert.equal(deps.archivedScratch(id).files, path.join(home, '.copilot/session-state', id, 'files'));
+  assert.equal(deps.archivedScratch('../etc'), null);
+  fs.rmSync(home, { recursive: true, force: true });
 });

@@ -308,7 +308,7 @@ async function restartCopilot() {
   if (opt['disk-prune']) {
     const floor = opt['floor-gib'] == null ? undefined : Number(opt['floor-gib']) * 1073741824;
     const r = await Disk.pass({ ...opts, force: !!opt.now, t: floor == null ? undefined : { floor } }, Disk.realDiskDeps({ copilotHome: opt['copilot-home'] || undefined, state: stateDir }), (l) => { if (!json && !opt.quiet) console.log(l); });
-    if (json) emit(r); else if (!opt.quiet) say(`disk prune: ${r.action}${r.after != null ? ` (${Disk.gib(r.before)} -> ${Disk.gib(r.after)} free)` : ` (${Disk.gib(r.free)} free)`}`);
+    if (json) emit(r); else if (!opt.quiet) say(`disk prune: ${r.action}${r.after != null ? ` (${Disk.gib(r.before)} -> ${Disk.gib(r.after)} free)` : ` (${Disk.gib(r.free)} free)`}${r.reclaimedBytes ? `; reclaimed ${Disk.gib(r.reclaimedBytes)}` : ''}`);
     return 0;
   }
   if (opt['os-updates']) {
