@@ -20,6 +20,7 @@
 //   7. the history of a session the app no longer lists, compressed, never deleted
 //   Before all of that, on every pass and above the floor too: the history of an archived session, compressed by
 //   Shepherd's compressHistory, which refuses a live or open one. A finished history loses nothing, so it waits for nothing.
+//   Also on every pass: files/ of an archived session untouched for 72 h, and gh cache entries older than 24 h (see `archivedQuiet`).
 //   Also on every pass: the leaked code-sign clones of Chromium browsers (see `leakedCloneQuiet`).
 // Each hour it records free space in a ledger; each day it measures where the bytes are and says which sources grew,
 // so the cause gets fixed and not only the symptom. A pass that finds nothing safe, or ends still under the floor, rests
@@ -54,6 +55,8 @@ export const DP = {
   idleSessionQuiet: 3 * 24 * 3600000, // a listed session's regenerable files go only after the whole session folder was untouched this long
   junkQuiet: 3 * 24 * 3600000, // loose non-git work under ~/code goes only after this long untouched
   cloneQuiet: 3 * 24 * 3600000, // a full clone is removed only after this long untouched
+  archivedQuiet: 72 * 3600000, // an archived session's files/ scratch goes only after its whole folder was untouched this long
+  ghCacheMaxAge: 24 * 3600000, // an entry in gh's HTTP response cache older than this goes
   rest: 3600000, // after a pass that found nothing safe, or that ended still under the floor, the next scan waits this long
   urgent: 50 * 1073741824, // below this much free space a pass never rests
   cacheBack: 7 * 24 * 3600000, // a cache a pass removed that is back within this long is in use, and is kept
@@ -123,6 +126,29 @@ export async function pass(opts, deps, say = () => {}) {
   const keep = (cat, why) => { const c = (keeps[cat] ||= {}); c[why] = (c[why] || 0) + 1; };
   const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   const rows = (await deps.sessionRows?.()) || null;
+
+  // Retention for agent storage, every pass and above the floor too. Only files/ of an archived session nobody has touched
+  // for 72 hours: events.jsonl(.gz), session.db, images/ and checkpoints stay, so the app can still restore the session.
+  const retained = { archivedFiles: 0, ghCache: 0 };
+  for (const id of rows?.archived || []) {
+    if (rows.live.has(id)) continue;
+    const s = deps.archivedScratch?.(id);
+    if (!s) continue;
+    if (deps.open(s.dir) || deps.open(s.files)) { keep('archived scratch', 'a process has it open'); continue; }
+    if (!(deps.quietFor(s.dir, t.archivedQuiet) >= t.archivedQuiet)) { keep('archived scratch', 'changed within 72 h'); continue; }
+    const n = deps.size(s.files);
+    if (!opts.dry_run) { try { deps.remove(s.files); } catch (e) { out(`could not remove files/ of archived session ${id.slice(0, 8)}: ${e.message}`); continue; } }
+    retained.archivedFiles += n; out(`${opts.dry_run ? 'would remove' : 'removed'} files/ of archived session ${id.slice(0, 8)}: ${gib(n)}`);
+  }
+  for (const e of deps.ghCacheOld?.(now - t.ghCacheMaxAge) || []) {
+    if (!opts.dry_run) { try { deps.remove(e.path); } catch (er) { out(`could not remove gh cache entry ${e.path}: ${er.message}`); continue; } }
+    retained.ghCache += e.size;
+  }
+  if (retained.ghCache) out(`${opts.dry_run ? 'would remove' : 'removed'} gh cache entries older than 24 h: ${gib(retained.ghCache)}`);
+  const retainedTotal = retained.archivedFiles + retained.ghCache;
+  if (retainedTotal) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(retainedTotal)} of agent storage (archived files/ ${gib(retained.archivedFiles)}, gh cache ${gib(retained.ghCache)})`);
+  const retentionStamp = () => { if (retainedTotal && !opts.dry_run) stamp({ retention: { at: iso(now), reclaimedBytes: retainedTotal, ...retained } }); };
+
   for (const id of rows?.archived || []) {
     if (rows.live.has(id)) continue;
     const r = await deps.compress(id, { dryRun: Boolean(opts.dry_run) });
@@ -141,7 +167,8 @@ export async function pass(opts, deps, say = () => {}) {
   }
   if (leaked.length) out(`${opts.dry_run ? 'would remove' : 'removed'} ${leaked.length} leaked browser code-sign clone(s): ${gib(reclaimed.browserClones)}`);
 
-  if (before.free >= floor && !opts.force) return { action: 'ok', free: before.free, reclaimed };
+  reclaimed.retention = retained;
+  if (before.free >= floor && !opts.force) { retentionStamp(); return { action: 'ok', free: before.free, reclaimed, reclaimedBytes: retainedTotal }; }
   if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) return { action: 'resting', free: before.free };
 
   await deps.load?.();
@@ -278,8 +305,8 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   const after = deps.usage();
-  const total = reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
-  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
+  const total = retainedTotal + reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, reclaimedBytes: total - reclaimed.thinned.length + reclaimed.thin, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
@@ -298,7 +325,7 @@ export async function pass(opts, deps, say = () => {}) {
   // A pass that ends still under the floor rests too: the next one, ten minutes later, would scan the same disk (lsof,
   // du, find on a loaded Mac) to find the same nothing. Only when space is critically low does every pass run.
   if (res.action === 'nothing-safe' || (after.free < floor && after.free >= t.urgent)) st.restUntil = now + t.rest; else delete st.restUntil;
-  deps.writeState({ ...st, lastPass: { at: iso(now), ...res } });
+  deps.writeState({ ...st, ...(retainedTotal ? { retention: { at: iso(now), reclaimedBytes: retainedTotal, ...retained } } : {}), lastPass: { at: iso(now), ...res } });
   return res;
 }
 
@@ -520,7 +547,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       }
       return openList === null ? true : openList.has(p);
     },
-    quietFor: (d) => { const r = sh('/usr/bin/find', [d, '-mtime', `-${Math.ceil(DP.deadQuiet / 86400000)}`, '-print', '-quit'], { timeout: 300000 }); return r.error || r.stdout.trim() ? 0 : Infinity; },
+    quietFor: (d, ms = DP.deadQuiet) => { const r = sh('/usr/bin/find', [d, '-mmin', `-${Math.ceil(ms / 60000)}`, '-print', '-quit'], { timeout: 300000 }); return r.error || r.stdout.trim() ? 0 : Infinity; },
     clonesIn: (dirs) => dirs.flatMap((d) => { const r = sh('/usr/bin/find', [d, '-maxdepth', '5', '-name', '.git', '-prune', '-print'], { timeout: 120000 }); return r.stdout.split('\n').filter(Boolean).map((g) => path.dirname(g)); }),
     // Listed sessions that are not running, own no automation and have had nothing change for days, with their files/ folder.
     idleSessionFiles: () => {
@@ -578,6 +605,26 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
           if (next !== had) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, next, { mode: 0o755 }); fs.chmodSync(f, 0o755); }
         } catch { /* one clone's trouble is not the others' */ }
       }
+    },
+    // An archived session's files/ folder, when it has one: the only part of it the retention rule removes.
+    archivedScratch: (id) => {
+      if (!/^[0-9a-f-]{36}$/.test(id)) return null;
+      const dir = path.join(sessions, id), files = path.join(dir, 'files');
+      try { return fs.statSync(files).isDirectory() ? { id, dir, files } : null; } catch { return null; }
+    },
+    // Files in gh's HTTP response cache (~/.cache/gh/<00..ff>/...) last changed before `cutoff` (ms since the epoch).
+    ghCacheOld: (cutoff) => {
+      const root = path.join(home, '.cache', 'gh'), out = [];
+      const walk = (d) => {
+        let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const e of ents) {
+          const f = path.join(d, e.name);
+          if (e.isDirectory()) walk(f);
+          else if (e.isFile()) { try { const st = fs.statSync(f); if (st.mtimeMs < cutoff) out.push({ path: f, size: st.blocks * 512 }); } catch { /* gone */ } }
+        }
+      };
+      walk(root);
+      return out;
     },
     idleSessions: () => idleIds || new Set(),
     // Linked worktrees of unarchived app sessions that are still whole; the script is the repository's own, from the
