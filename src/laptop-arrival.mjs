@@ -147,7 +147,7 @@ export const STEPS = ['housesitter', 'app', 'retire', 'verify', 'sessions', 'rep
 
 export function describePlan(cfg) {
   return [
-    `detect: Hub lists the laptop's device online and its bus answers a shell command`,
+    `detect: its bus answers a shell command (Hub saying the device is offline only delays that check to the next probe)`,
     `housesitter: a current checkout of this tool on the laptop (${cfg.housesitter_git})`,
     `app: the Copilot app at least ${cfg.target_app === 'mini' ? "this Mac's version" : cfg.target_app} and Desk at least ${cfg.min_desk}; otherwise restart it with its sessions saved and resumed (waits while someone uses the laptop)`,
     `retire: ${cfg.retire.length ? `unload and move aside ${cfg.retire.map((r) => r.label).join(', ')}` : 'nothing configured'}`,
