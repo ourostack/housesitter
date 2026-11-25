@@ -90,8 +90,8 @@ export function whyKeep(w, now, t = DP) {
 
 // Why a linked worktree of a repository may not be removed as landed, or null when it may. `w`: { dir, protectedBy, usedByApp,
 // open, quiet, dirty, landed }; the last three are asked in this order only while the earlier ones pass, since each costs more.
-// The caller never lists a primary clone, ~/code/tandem-wt.noindex or anything under ~/.copilot/copilot-worktrees (see `isOffLimits`).
-export const isOffLimits = (dir, copilotWorktrees) => dir.split('/').includes('tandem-wt.noindex') || dir === copilotWorktrees || dir.startsWith(`${copilotWorktrees}/`);
+// The caller never lists a primary clone, ~/code/tandem-wt.noindex anything under ~/.copilot/copilot-worktrees, or a release folder `housesitter deploy` owns (see `isOffLimits`).
+export const isOffLimits = (dir, copilotWorktrees) => dir.split('/').includes('tandem-wt.noindex') || dir.includes('/housesitter/releases/') || dir === copilotWorktrees || dir.startsWith(`${copilotWorktrees}/`);
 export function landedWorktreeKeep(w) {
   if (w.protectedBy) return 'launchd or Housesitter runs from it';
   if (w.usedByApp()) return 'an unarchived app session uses it';

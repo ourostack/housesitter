@@ -620,6 +620,7 @@ test('landed worktrees: a dry run removes nothing; Tandem\'s keepers and the app
   const { isOffLimits } = await import('../src/disk-prune.mjs');
   assert.ok(isOffLimits('/h/code/tandem-wt.noindex/x', '/h/.copilot/copilot-worktrees'));
   assert.ok(isOffLimits('/h/.copilot/copilot-worktrees/r/n', '/h/.copilot/copilot-worktrees'));
+  assert.ok(isOffLimits('/h/Library/Application Support/housesitter/releases/shepherd/abc', '/h/.copilot/copilot-worktrees'));
   assert.ok(!isOffLimits('/h/code/CIT-pages-worktrees/x', '/h/.copilot/copilot-worktrees'));
 });
 
