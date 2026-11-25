@@ -196,6 +196,11 @@ export function realDeps({ copilotHome = path.join(os.homedir(), '.copilot'), ho
       return { code: r.code, json, timedOut: r.timedOut, text: (r.stderr || r.stdout).trim().slice(0, 300) };
     },
     kill: (pid, sig) => { try { process.kill(pid, sig); return true; } catch { return false; } },
+    alive: (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } },
+    scratch: {
+      list: () => { const root = path.join(home, '.local', 'agency', 'plugins', 'sessions'); try { return fs.readdirSync(root).map((n) => ({ dir: path.join(root, n), name: n })); } catch { return []; } },
+      remove: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+    },
     open: async (appName, { background }) => run('/usr/bin/open', [...(background ? ['-g'] : []), '-a', appName]),
     exchange: guard(app.exchange),
     appExe: async (dir) => (await run('/usr/bin/plutil', ['-extract', 'CFBundleExecutable', 'raw', '-o', '-', path.join(dir, 'Contents', 'Info.plist')])).stdout.trim() || null,
@@ -270,6 +275,21 @@ async function answerQuitDialog(deps, app, answered, why) {
 }
 
 // The whole plan from what is true now; changes nothing. Used by --dry-run and by the real run's first step.
+// The agent runtime's scratch folders are named agency-plugin-<id>.p<pid>. A restart leaves those of the processes it killed,
+// and the runtime sweeps them at its next start, slowly enough on a busy Mac to time a session's start out. While the app is
+// down they are removed here. A pid is checked for life right before its folder goes, and a live one is never touched.
+export function clearDeadScratch(deps) {
+  if (!deps.scratch || !deps.alive) return { removed: 0, kept: 0 };
+  let removed = 0, kept = 0;
+  for (const { dir, name } of deps.scratch.list()) {
+    const m = /^agency-plugin-.+\.p(\d+)$/.exec(name);
+    if (!m) continue;
+    if (deps.alive(Number(m[1]))) { kept += 1; continue; }
+    try { deps.scratch.remove(dir); removed += 1; } catch { kept += 1; }
+  }
+  return { removed, kept };
+}
+
 export async function plan(opts, deps) {
   const app = opts.app || DEFAULT_APP;
   const dir = deps.appDir(app);
@@ -468,6 +488,7 @@ async function restartSteps(opts, deps, log) {
     return fail('quit', why);
   }
   step('app exited', { processes: familyPids.length });
+  try { const c = clearDeadScratch(deps); if (c.removed || c.kept) step('dead scratch folders cleared', c); } catch { /* a courtesy: never blocks the relaunch */ }
 
   // A step of the caller's own while the app is down (a macOS update that restarts the Mac). If it takes over, nothing is
   // relaunched here; if it did not start, or the Mac is still up after its wait, the app is relaunched and resumed as usual.

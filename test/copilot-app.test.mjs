@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, settleVerdict, watch, settleText } from '../src/copilot-app.mjs';
+import { clearDeadScratch, configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, settleVerdict, watch, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -680,4 +680,29 @@ test('hackamore: a path with a space is one program, as a path, an array, or the
     assert.deepEqual(hackamoreArgv(JSON.stringify(deps.hackamore)), deps.hackamore);
   }
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('clearDeadScratch removes the folders of dead pids, checks life right before each, and never touches a live one or a stranger', () => {
+  const names = ['agency-plugin-aaa.p100', 'agency-plugin-bbb.p200', 'agency-plugin-ccc.p300', 'notes'];
+  const removed = [];
+  const alive = new Set([200]);
+  const checks = [];
+  const deps = {
+    scratch: { list: () => names.map((name) => ({ dir: `/s/${name}`, name })), remove: (dir) => removed.push(dir) },
+    alive: (pid) => { checks.push(pid); if (pid === 300) alive.add(300); return alive.has(pid); },
+  };
+  assert.deepEqual(clearDeadScratch(deps), { removed: 1, kept: 2 });
+  assert.deepEqual(removed, ['/s/agency-plugin-aaa.p100']);
+  assert.deepEqual(clearDeadScratch({}), { removed: 0, kept: 0 });
+});
+
+test('realDeps lists the scratch folders under the home it was given', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'scratch-'));
+  try {
+    const root = path.join(home, '.local', 'agency', 'plugins', 'sessions');
+    fs.mkdirSync(path.join(root, 'agency-plugin-x.p999999'), { recursive: true });
+    const d = realDeps({ home, state: path.join(home, 'state'), config: path.join(home, 'c.json') });
+    assert.equal(clearDeadScratch(d).removed, 1);
+    assert.equal(fs.readdirSync(root).length, 0);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
