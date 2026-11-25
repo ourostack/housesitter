@@ -71,6 +71,9 @@ export const DP = {
   cacheBack: 7 * 24 * 3600000, // a cache a pass removed that is back within this long is in use, and is kept
   ledgerEvery: 55 * 60000, // free space is recorded about hourly
   breakdownEvery: 24 * 3600000, // where the bytes are is measured daily
+  dropBytes: 3 * 1073741824, // free space down by more than this since the previous pass measures where the bytes are at once
+  triggerEvery: 30 * 60000, // but a fall-triggered measurement runs at most this often (it walks ~/Library and home)
+  growRow: 1073741824, // a pass row names the roots whose growth since the last measurement is more than this
 };
 
 const GIB = 1073741824;
@@ -146,12 +149,24 @@ export async function pass(opts, deps, say = () => {}) {
   const lap = (name) => { const n = Date.now(); phases[name] = (phases[name] || 0) + (n - last); last = n; };
   let rows;
   const getRows = async () => (rows === undefined ? (rows = (await deps.sessionRows?.()) || null) : rows);
+  // Where the bytes are: daily, and at once (at most every `triggerEvery`) when free space fell by more than `dropBytes` since the
+  // previous pass, so a drop names its owner. A cheap pass stays cheap: only the fall pays for the walk.
+  let bdInfo = null, bdRan = false;
+  const runBreakdown = (why, extra = {}) => timed(why === 'daily' ? 'breakdown' : 'breakdown (free space fell)', async () => {
+    const b = deps.breakdown?.(st0.breakdown); if (!b) return;
+    stamp({ breakdown: { ...b, at: now } }); bdRan = true;
+    bdInfo = { why, since: st0.breakdown?.at ? iso(st0.breakdown.at) : null, ...extra, grew: (b.top || []).filter((x) => Math.abs(x.grew || 0) > t.growRow).map((x) => ({ name: x.name, size: x.size, grew: x.grew })) };
+  });
+  const dropped = typeof st0.lastFree === 'number' ? st0.lastFree - before.free : 0;
+  const needBreakdown = !opts.dry_run && dropped > t.dropBytes && !(now - (st0.breakdown?.at || 0) < t.triggerEvery);
+  if (!opts.dry_run) stamp({ lastFree: before.free });
   const retentionDue = Boolean(opts.force || opts.dry_run) || !(now - (st0.retentionAt || 0) < t.retainEvery);
-  const record = (res) => {
+  const record = async (res) => {
+    if (needBreakdown && !bdRan) await runBreakdown('free space fell', { drop: dropped });
     const ms = Date.now() - started;
     // What the pass removed and why it kept the rest, so the log alone answers "what went, and what stayed".
     const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, after: res.after ?? (res.reclaimed?.landedBytes ? deps.usage().free : before.free), ms, phases,
-      reclaimedBytes: res.reclaimedBytes ?? 0, landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), keeps: res.keeps || {} };
+      reclaimedBytes: res.reclaimedBytes ?? 0, ...(bdInfo ? { breakdown: bdInfo } : {}), landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), keeps: res.keeps || {} };
     if (!opts.dry_run) { try { deps.passLog?.(row); } catch { /* a courtesy */ } }
     out(`pass took ${(ms / 1000).toFixed(1)} s (${res.action}${retentionDue ? ', with retention' : ', free-space check only'}${Object.keys(phases).length ? `: ${Object.entries(phases).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`).join(', ')}` : ''})`);
     return { ...res, ms, phases };
@@ -215,9 +230,7 @@ export async function pass(opts, deps, say = () => {}) {
     });
 
     // Where the bytes are, daily; last, so the slowest measurement never delays a reclaim.
-    if (!opts.dry_run && !(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) {
-      await timed('breakdown', async () => { const b = deps.breakdown?.(st0.breakdown); if (b) stamp({ breakdown: { ...b, at: now } }); });
-    }
+    if (!opts.dry_run && !bdRan && !(now - (st0.breakdown?.at || 0) < t.breakdownEvery)) await runBreakdown('daily');
     stamp({ retentionAt: now, ...(retainedTotal ? { retention: { at: iso(now), reclaimedBytes: retainedTotal, ...retained } } : {}) });
   };
 
@@ -255,11 +268,11 @@ export async function pass(opts, deps, say = () => {}) {
     if (retentionDue && before.free < floor + margin) {
       await timed('landed worktrees (near floor)', async () => { await deps.load?.(); reclaimLanded(t.nearQuiet, '1 hour'); });
     }
-    return record({ action: 'ok', free: before.free, reclaimed, reclaimedBytes: retainedTotal + reclaimed.landedBytes, keeps });
+    return await record({ action: 'ok', free: before.free, reclaimed, reclaimedBytes: retainedTotal + reclaimed.landedBytes, keeps });
   }
   if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) {
     if (retentionDue) await retain();
-    return record({ action: 'resting', free: before.free });
+    return await record({ action: 'resting', free: before.free });
   }
 
   await timed('load app state', async () => deps.load?.());
@@ -413,7 +426,7 @@ export async function pass(opts, deps, say = () => {}) {
   const after = deps.usage();
   const total = retainedTotal + reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.landedBytes + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
   const res = { action: reclaimed.worktrees.length || reclaimed.landed.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, reclaimedBytes: total - reclaimed.thinned.length + reclaimed.thin, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
-  if (opts.dry_run) return record(res);
+  if (opts.dry_run) return await record(res);
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
   const why = Object.entries(keeps).map(([c, r]) => `${c}: ${Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join(', ')}`).join('; ');
@@ -431,7 +444,7 @@ export async function pass(opts, deps, say = () => {}) {
   // A pass that ends still under the floor rests too: the next one, ten minutes later, would scan the same disk (lsof,
   // du, find on a loaded Mac) to find the same nothing. Only when space is critically low does every pass run.
   if (res.action === 'nothing-safe' || (after.free < floor && after.free >= t.urgent)) st.restUntil = now + t.rest; else delete st.restUntil;
-  const rec = record(res);
+  const rec = await record(res);
   deps.writeState({ ...st, ...(retainedTotal ? { retention: { at: iso(now), reclaimedBytes: retainedTotal, ...retained } } : {}), lastPass: { at: iso(now), ...rec } });
   return rec;
 }
@@ -774,6 +787,13 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     breakdown: (prev) => {
       const roots = { sessions, worktrees: wt, code: path.join(home, 'code'), caches: path.join(home, 'Library', 'Caches'), trash: path.join(home, '.Trash'), rescue: rescueRoot };
       const duBytes = (p) => (Number(String(nice('/usr/bin/du', ['-sk', p], { timeout: 1800000 }).stdout).split(/\s+/)[0]) || 0) * 1024;
+      // The rest of the disk, by top-level child, so a fall that is not agent storage still has a name: ~/Library/Metadata (Spotlight),
+      // every other ~/Library child, the rest of ~/.copilot and of home. The folders macOS asks the user's leave to read are left out.
+      const kids = (dir, skip) => { try { return fs.readdirSync(dir).filter((n) => !skip.includes(n)).map((n) => [path.join(dir, n), n]); } catch { return []; } };
+      for (const [p, n] of kids(path.join(home, 'Library'), ['Caches'])) roots[`Library/${n}`] = p;
+      for (const [p, n] of kids(copilotHome, [path.basename(sessions), path.basename(wt)])) roots[`.copilot/${n}`] = p;
+      const claimed = ['Library', 'code', '.copilot', '.Trash', 'Desktop', 'Documents', 'Downloads', 'Movies', 'Music', 'Pictures', 'Public', path.relative(home, rescueRoot).split('/')[0]];
+      for (const [p, n] of kids(home, claimed)) roots[`~/${n}`] = p;
       // The session folders are measured through the index, so only a folder that changed is walked; their root is their sum.
       const ses = {};
       try {
@@ -782,8 +802,13 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
         saveIndex(new Set(ids));
       } catch { /* none */ }
       const sizes = {}; for (const [k, p] of Object.entries(roots)) sizes[k] = k === 'sessions' ? Object.values(ses).reduce((a, b) => a + b, 0) : fs.existsSync(p) ? duBytes(p) : 0;
+      // Swap lives in its own APFS volume: what the kernel says is used, and what that volume has consumed.
+      const m = /used = ([\d.]+)([MG])/.exec(String(sh('/usr/sbin/sysctl', ['-n', 'vm.swapusage']).stdout));
+      if (m) sizes['swap used'] = Math.round(Number(m[1]) * (m[2] === 'G' ? GIB : 1048576));
+      const vm = Number(String(sh('/bin/df', ['-k', '/System/Volumes/VM']).stdout).trim().split('\n').pop().split(/\s+/)[2]);
+      if (Number.isFinite(vm)) sizes['swap VM volume'] = vm * 1024;
       const prevSes = prev?.sessionSizes || {};
-      const list = [...Object.entries(sizes).map(([k, v]) => ({ name: k, size: v, grew: prev?.roots ? v - (prev.roots[k] || 0) : 0 })), ...Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ name: `session ${k.slice(0, 8)}`, size: v, grew: prev ? v - (prevSes[k] || 0) : 0 }))];
+      const list = [...Object.entries(sizes).map(([k, v]) => ({ name: k, size: v, grew: prev?.roots && k in prev.roots ? v - prev.roots[k] : 0 })), ...Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ name: `session ${k.slice(0, 8)}`, size: v, grew: prev ? v - (prevSes[k] || 0) : 0 }))];
       const sessionSizes = Object.fromEntries(Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 50));
       return { roots: sizes, sessionSizes, top: list.sort((a, b) => (b.grew > 0 ? b.grew : 0) - (a.grew > 0 ? a.grew : 0) || b.size - a.size) };
     },
