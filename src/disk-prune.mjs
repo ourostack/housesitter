@@ -5,7 +5,7 @@
 //      pass removed that came back within a week: that one is in use, and removing it again only buys a download
 //   1b. landed worktrees: a linked git worktree anywhere (under ~/code, the desk, the CIT workspace) whose work is already on
 //      the default branch on origin, with nothing uncommitted or untracked, nothing changed for 24 hours, no live process
-//      or app session in it; removed with `git worktree remove` and logged with its size (see `landedWorktreeKeep`)
+//      or app session in it (one hour, not 24, in the margin above the floor: `nearQuiet`); removed with `git worktree remove` and logged with its size (see `landedWorktreeKeep`)
 //   2. thin: a worktree whose session Shepherd reports idle (never busy) is made sparse with the repository's own
 //      .github/scripts/lean-worktree.sh (images, video, audio and bundles leave the working tree and stay in Git;
 //      modified and untracked files stay where they are)
@@ -55,6 +55,7 @@ export const DP = {
   // its clone open, so one nothing has open that is also this quiet is a leak, and it goes on every pass, above the floor too.
   leakedCloneQuiet: 3600000,
   quiet: 24 * 3600000, // a worktree or history changed within this is never touched
+  nearQuiet: 3600000, // within `margin` above the floor, a landed worktree needs only this much quiet (every other gate holds)
   deadQuiet: 2 * 24 * 3600000, // the heavy parts of an unlisted session go only after this long untouched
   minHistory: 20 * 1048576, // smaller histories are not worth compressing
   nag: 24 * 3600000, // how often "still under the floor" may be said
@@ -96,11 +97,11 @@ export function whyKeep(w, now, t = DP) {
 // open, quiet, dirty, landed }; the last three are asked in this order only while the earlier ones pass, since each costs more.
 // The caller never lists a primary clone, ~/code/tandem-wt.noindex anything under ~/.copilot/copilot-worktrees, or a release folder `housesitter deploy` owns (see `isOffLimits`).
 export const isOffLimits = (dir, copilotWorktrees) => dir.split('/').includes('tandem-wt.noindex') || dir.includes('/housesitter/releases/') || dir === copilotWorktrees || dir.startsWith(`${copilotWorktrees}/`);
-export function landedWorktreeKeep(w) {
+export function landedWorktreeKeep(w, quietLabel = '24 hours') {
   if (w.protectedBy) return 'launchd or Housesitter runs from it';
   if (w.usedByApp()) return 'an unarchived app session uses it';
   if (w.open()) return 'a running process has it open';
-  if (!w.quiet()) return 'something in it changed in the last 24 hours';
+  if (!w.quiet()) return `something in it changed in the last ${quietLabel}`;
   if (w.dirty()) return 'it has uncommitted or untracked changes';
   if (!w.landed()) return 'its work has not landed on the default branch';
   return null;
@@ -218,10 +219,37 @@ export async function pass(opts, deps, say = () => {}) {
     stamp({ retentionAt: now, ...(retainedTotal ? { retention: { at: iso(now), reclaimedBytes: retainedTotal, ...retained } } : {}) });
   };
 
+  const done = () => deps.usage().free >= floor + margin;
+  // Linked worktrees agents made with `git worktree add` whose work is already on origin's default branch (a squash merge
+  // included). Cheap rules first; a kept one is only counted, since a Mac holds hundreds. Near the floor the idle gate is shorter.
+  const reclaimLanded = (quietMs, quietLabel) => {
+    const used = deps.appWorktrees();
+    reclaimed.landed = []; reclaimed.landedBytes = 0;
+    for (const w of deps.landedWorktrees?.() || []) {
+      if (done()) break;
+      let landedBy = null;
+      const why = landedWorktreeKeep({
+        protectedBy: (deps.protectedDirect || deps.protectedBy)?.(w.dir), usedByApp: () => used.has(w.dir), open: () => deps.open(w.dir),
+        quiet: () => (deps.quietSince ? deps.quietSince(w.dir, quietMs) : now - deps.changedAt(w.dir) >= quietMs),
+        dirty: () => deps.dirty(w.dir), landed: () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); },
+      }, quietLabel);
+      if (why) { keep('landed worktrees', why); continue; }
+      const n = deps.size(w.dir);
+      if (!opts.dry_run && !deps.removeLanded(w.dir)) { out(`could not remove landed worktree ${w.dir}`); continue; }
+      reclaimed.landed.push({ dir: w.dir, bytes: n, why: landedBy }); reclaimed.landedBytes += n;
+      out(`${opts.dry_run ? 'would remove' : 'removed'} landed worktree ${w.dir}: ${gib(n)} (${landedBy})`);
+    }
+    if (reclaimed.landed.length) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(reclaimed.landedBytes)} from ${reclaimed.landed.length} landed worktree(s)`);
+  };
+
   reclaimed.retention = retained;
   if (before.free >= floor && !opts.force) {
     if (retentionDue) await retain();
-    return record({ action: 'ok', free: before.free, reclaimed, reclaimedBytes: retainedTotal });
+    // Within `margin` above the floor the next busy hour can cross it, and lane worktrees add about 1 GiB each: release landed ones after an hour.
+    if (retentionDue && before.free < floor + margin) {
+      await timed('landed worktrees (near floor)', async () => { await deps.load?.(); reclaimLanded(t.nearQuiet, '1 hour'); });
+    }
+    return record({ action: 'ok', free: before.free, reclaimed, reclaimedBytes: retainedTotal + reclaimed.landedBytes, keeps });
   }
   if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) {
     if (retentionDue) await retain();
@@ -229,7 +257,6 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   await timed('load app state', async () => deps.load?.());
-  const done = () => deps.usage().free >= floor + margin;
   const used = deps.appWorktrees();
 
   const kept = [];
@@ -277,22 +304,7 @@ export async function pass(opts, deps, say = () => {}) {
   lap('loose work');
   // Linked worktrees agents made with `git worktree add` whose work is already on origin's default branch (a squash merge
   // included). Cheap rules first; a kept one is only counted, since a Mac holds hundreds.
-  reclaimed.landed = []; reclaimed.landedBytes = 0;
-  for (const w of deps.landedWorktrees?.() || []) {
-    if (done()) break;
-    let landedBy = null;
-    const why = landedWorktreeKeep({
-      protectedBy: (deps.protectedDirect || deps.protectedBy)?.(w.dir), usedByApp: () => used.has(w.dir), open: () => deps.open(w.dir),
-      quiet: () => (deps.quietSince ? deps.quietSince(w.dir, t.quiet) : now - deps.changedAt(w.dir) >= t.quiet),
-      dirty: () => deps.dirty(w.dir), landed: () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); },
-    });
-    if (why) { keep('landed worktrees', why); continue; }
-    const n = deps.size(w.dir);
-    if (!opts.dry_run && !deps.removeLanded(w.dir)) { out(`could not remove landed worktree ${w.dir}`); continue; }
-    reclaimed.landed.push({ dir: w.dir, bytes: n, why: landedBy }); reclaimed.landedBytes += n;
-    out(`${opts.dry_run ? 'would remove' : 'removed'} landed worktree ${w.dir}: ${gib(n)} (${landedBy})`);
-  }
-  if (reclaimed.landed.length) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(reclaimed.landedBytes)} from ${reclaimed.landed.length} landed worktree(s)`);
+  reclaimLanded(t.quiet, '24 hours');
 
   lap('landed worktrees');
   const idle = deps.idleSessions?.() || new Set();
