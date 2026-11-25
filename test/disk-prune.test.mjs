@@ -2,6 +2,10 @@
 // worktree that a session uses, a process has open, or that changed in the last day is never removed, whatever its name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { sessionIndex } from '../src/session-index.mjs';
 import { CACHES, DP, floorOf, marginOf, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
 
 const DAY = 24 * 3600000, GIB = 1073741824;
@@ -673,4 +677,73 @@ test('real landed worktrees: squash-merged goes; unpushed, dirty, recent, tandem
   assert.ok(fs.existsSync(main), 'the protected primary clone stays, and does not shield its other worktrees');
   assert.deepEqual(r.reclaimed.landed.map((x) => x.why).sort(), ['PR #7 merged', 'every changed path matches origin/main']);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('scheduling: a pass between hourly ones only checks free space; the retention walk runs once an hour', async () => {
+  const hist = [{ id: 'arch-1', file: '/s/arch-1/events.jsonl', size: 100 * 1048576, mtime: NOW - 9 * DAY }];
+  const { d, log } = fake({ freeGib: 600, hist, archived: ['arch-1'], scratchOf: { 'arch-1': { id: 'arch-1', dir: '/s/arch-1', files: '/s/arch-1/files' } } });
+  const calls = { rows: 0, compress: 0, gh: 0, quiet: 0 };
+  const { sessionRows, compress, ghCacheOld, quietFor } = d;
+  d.sessionRows = async () => { calls.rows++; return sessionRows(); };
+  d.compress = async (...a) => { calls.compress++; return compress(...a); };
+  d.ghCacheOld = (...a) => { calls.gh++; return ghCacheOld(...a); };
+  d.quietFor = (...a) => { calls.quiet++; return quietFor(...a); };
+  let now = NOW; d.now = () => now;
+  let r = await pass({}, d);
+  assert.equal(r.action, 'ok');
+  assert.deepEqual(calls, { rows: 1, compress: 1, gh: 1, quiet: 1 }, 'the first pass does the retention');
+  assert.equal(log.state.retentionAt, NOW);
+  now = NOW + 10 * 60000;
+  r = await pass({}, d);
+  assert.equal(r.action, 'ok');
+  assert.deepEqual(calls, { rows: 1, compress: 1, gh: 1, quiet: 1 }, 'ten minutes later it walks nothing');
+  assert.deepEqual(Object.keys(r.phases), [], 'and has no slow phase');
+  now = NOW + 61 * 60000;
+  await pass({}, d);
+  assert.deepEqual(calls, { rows: 2, compress: 2, gh: 2, quiet: 2 }, 'an hour on it does the retention again');
+  assert.ok(log.state.retentionAt === NOW + 61 * 60000);
+  await pass({ force: true }, d);
+  assert.equal(calls.rows, 3, 'a forced pass always does it');
+});
+
+test('scheduling: under the floor the reclaiming stages run before the retention, and a pass records its phases', async () => {
+  const order = [];
+  const { d } = fake({ freeGib: 60, caches: ['/home/.npm/_cacache'], archived: ['arch-1'], hist: [{ id: 'arch-1', file: '/s/arch-1/events.jsonl', size: 100 * 1048576, mtime: NOW - 9 * DAY }] });
+  const { remove, compress } = d;
+  d.remove = (p) => { order.push(`remove ${p}`); return remove(p); };
+  d.compress = async (...a) => { order.push('compress'); return compress(...a); };
+  const rows = [];
+  d.passLog = (row) => rows.push(row);
+  const r = await pass({}, d);
+  assert.ok(order.indexOf('remove /home/.npm/_cacache') < order.indexOf('compress'), 'the floor action is not held up by the slow retention');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].retention, true);
+  assert.ok(r.ms >= 0 && 'compress histories' in r.phases && 'caches' in r.phases);
+});
+
+test('session index: an unchanged folder is not walked again; a changed one is', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-idx-'));
+  try {
+    const dir = path.join(root, 'sess'); fs.mkdirSync(path.join(dir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), 'x');
+    let walks = 0; const du = () => { walks++; return 1000; };
+    const find = () => { walks++; return true; };
+    const first = sessionIndex();
+    assert.equal(first.size('s', dir, du), 1000);
+    assert.equal(first.quiet('s', dir, 1000, find), true);
+    assert.equal(first.heavy('s', dir, ['files', 'images'], du), 1000);
+    assert.equal(walks, 3);
+    const again = sessionIndex({ data: JSON.parse(JSON.stringify(first.data())) });
+    assert.equal(again.size('s', dir, du), 1000);
+    assert.equal(again.quiet('s', dir, 500, find), true, 'quiet for longer is quiet for less');
+    assert.equal(again.heavy('s', dir, ['files', 'images'], du), 1000);
+    assert.equal(walks, 3, 'nothing was re-read');
+    assert.equal(again.stats.misses, 0);
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), 'xyz');
+    assert.equal(again.size('s', dir, du), 1000);
+    assert.equal(walks, 4, 'a changed folder is walked again');
+    assert.equal(again.quiet('s', dir, 500, () => { walks++; return false; }), false, 'a busy folder is asked each time');
+    again.prune(new Set());
+    assert.deepEqual(again.data(), {});
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
