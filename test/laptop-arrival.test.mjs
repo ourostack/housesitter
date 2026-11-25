@@ -76,7 +76,7 @@ test('what the app needs: older than the floor, Desk below its floor, or a plugi
 });
 
 test('offline: nothing is touched, and the plan names every step it would run on arrival', async () => {
-  const r = rig({ online: false });
+  const r = rig({ online: false, bus: false });
   const out = await r.tick();
   assert.equal(out.action, 'down');
   assert.equal(out.plan.length, 8);
@@ -261,16 +261,20 @@ test('macd is done only when the laptop reports another release folder and pid; 
   assert.match(r.state.epoch.steps.macd.detail, /macd-new, pid 11/);
 });
 
-test('detect asks the bus only when Hub says online, or when Hub cannot be read and a probe is due', async () => {
+test('detect asks the bus when Hub says online, cannot be read, or has dropped the device, and a probe is due', async () => {
   let probes = 0;
   const deps = { hubDevice: async () => ({ listed: true, online: false, lastSeenAt: 'x' }), sh: async () => { probes += 1; return { ok: true, out: 'boot=1\n' }; } };
-  assert.equal((await detect(CFG, {}, deps, 0)).kind, 'down');
-  assert.equal(probes, 0);
+  assert.equal((await detect(CFG, { last_probe: new Date(0).toISOString() }, deps, 60000)).kind, 'down');
+  assert.equal(probes, 0, 'a probe is not due yet');
+  const flap = await detect(CFG, { last_probe: new Date(0).toISOString() }, deps, 400000);
+  assert.equal(flap.kind, 'up', 'Hub dropped the device but the laptop answers on the same boot');
+  assert.equal(probes, 1);
+  deps.sh = async () => ({ ok: false, out: '', err: 'timed out', code: 1 });
+  assert.equal((await detect(CFG, {}, deps, 0)).kind, 'down', 'Hub drops it and the route is silent too');
   deps.hubDevice = async () => { throw new Error('no token'); };
   assert.equal((await detect(CFG, { last_probe: new Date(0).toISOString(), phase: 'down' }, deps, 60000)).kind, 'down');
-  assert.equal(probes, 0, 'a probe is not due yet');
+  deps.sh = async () => { probes += 1; return { ok: true, out: 'boot=1\n' }; };
   assert.equal((await detect(CFG, { last_probe: new Date(0).toISOString(), phase: 'down' }, deps, 400000)).kind, 'up');
-  assert.equal(probes, 1);
 });
 
 test('a missing config names the fields it needs and where to read how', () => {
