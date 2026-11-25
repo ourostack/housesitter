@@ -399,6 +399,7 @@ test('the laptop\'s own run logs count toward the daily cap, whatever this Mac r
   assert.deepEqual(r.L.restarts, []);
   assert.match(r.state.epoch.steps.app.detail, /restarted 2 times in the last day/);
   assert.deepEqual(restartHistory(['2026-11-16T09:00:00.000Z'], ['2026-11-16T09:00:20.000Z', '2026-11-14T09:00:00.000Z'], Date.parse('2026-11-16T17:00:00Z')), ['2026-11-16T09:00:20Z']);
+  assert.deepEqual(restartHistory(['2026-11-25T07:03:21Z'], ['2026-11-25T07:04:21.932Z'], Date.parse('2026-11-25T08:00:00Z')), ['2026-11-25T07:04:21Z'], 'a log made 60 s after its record is the same restart');
   assert.deepEqual(parseRestartRuns('run-2026-11-25T07-04-21-932Z.log\nstatus.json'), ['2026-11-25T07:04:21.932Z']);
 });
 
