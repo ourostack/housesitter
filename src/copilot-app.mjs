@@ -35,7 +35,7 @@ import { which } from './peer-watch.mjs';
 export { MAX_HISTORY_BYTES, appReady, lastReply, pickTargets, resumeText, sendTo, snapshot, tookTurnSince } from '@ouro.bot/shepherd';
 
 export const DEFAULT_APP = 'GitHub Copilot';
-export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, verify: 180000, ...RESUME_T };
+export const T = { settle: 600000, settleMax: 10800000, recheckMin: 120000, recheckMax: 1200000, beat: 60000, sendTries: 5, sendPause: 60000, quit: 60000, dialog: 4000, person: 600000, up: 120000, verify: 180000, ...RESUME_T };
 // A session the app no longer has (archived or deleted on purpose) is not a failed resume.
 export const isGone = (o) => /^gone/.test(o || '');
 export const isDone = (o) => o === 'resumed' || o === 'already continued' || isGone(o);
@@ -355,7 +355,16 @@ async function restartSteps(opts, deps, log) {
   if (asked.length) {
     const firstAskedAt = deps.now();
     const by = firstAskedAt + t.settleMax;
-    const sent = await Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by, stallSec: Math.round(t.settle / 1000), why: opts.why, what: opts.what }), 30000).then((r) => ({ id: s.id, ...r }))));
+    const askAll = () => Promise.all(asked.map((s) => sendTo(deps, s.id, settleText({ by, stallSec: Math.round(t.settle / 1000), why: opts.why, what: opts.what }), 30000).then((r) => ({ id: s.id, ...r }))));
+    let sent = await askAll();
+    // A busy laptop can be slow to take a message while its menu still answers: that is a slow app, not a frozen one, and quitting it
+    // would stop every working session without a safe point. Ask again a few times, then call the restart off with nothing touched.
+    for (let n = 2; !sent.some((r) => r.ok) && p.quit.method === 'menu' && n <= t.sendTries; n++) {
+      step(`no session took the message but the app's menu answers: it is slow, not frozen; asking again in ${Math.round(t.sendPause / 1000)} s`, { try: n - 1, of: t.sendTries });
+      await deps.sleep(t.sendPause);
+      sent = await askAll();
+    }
+    if (!sent.some((r) => r.ok) && p.quit.method === 'menu') return fail('settle', `none of the ${asked.length} working sessions took the message in ${t.sendTries} tries, though the app's menu answers; nothing was quit, so the sessions carry on. It will try again later`);
     step('asked to reach a safe point', { asked: asked.length, accepted: sent.filter((r) => r.ok).length, refused: sent.filter((r) => !r.ok).map((r) => `${short(r.id)}: ${r.error || r.reply}`), ceiling: new Date(by).toISOString() });
     // A session that did not take the message has nothing to answer: it counts from the ask like the rest. When none took it,
     // the app is not answering (a frozen app refuses every send): nobody can reach a safe point, so waiting only delays the fix.
