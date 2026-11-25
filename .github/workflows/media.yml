@@ -18,7 +18,7 @@ jobs:
           node-version: 22
       # vhs-action downloads the latest ffmpeg on every run and fails when that host returns 504 (#20), so install
       # vhs's dependencies from the runner's apt cache and the vhs release from GitHub instead.
-      - run: sudo apt-get install -y ffmpeg ttyd
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg ttyd
       - run: |
           gh release download "$VHS_VERSION" -R charmbracelet/vhs -p 'vhs_*_amd64.deb' -D "$RUNNER_TEMP"
           sudo dpkg -i "$RUNNER_TEMP"/vhs_*_amd64.deb
