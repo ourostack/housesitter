@@ -818,3 +818,26 @@ test('session index: an unchanged folder is not walked again; a changed one is',
     assert.deepEqual(again.data(), {});
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('free space falling more than 3 GiB since the last pass measures where the bytes are at once, and the row names what grew', async () => {
+  const prev = { at: NOW - 3 * 3600000, roots: { code: 100 * GIB, swap: 1 * GIB } };
+  const bd = { top: [{ name: 'swap', size: 9 * GIB, grew: 8 * GIB }, { name: 'code', size: 100.5 * GIB, grew: 0.5 * GIB }, { name: 'caches', size: 5 * GIB, grew: -2 * GIB }] };
+  const f = fake({ freeGib: 690, breakdown: bd }); let calls = 0; const inner = f.d.breakdown; f.d.breakdown = (p) => { calls++; assert.equal(p, prev); return inner(); };
+  f.log.state = { lastFree: 700 * GIB, breakdown: prev, retentionAt: NOW };
+  const rows = []; f.d.passLog = (r) => rows.push(r);
+  await pass({}, f.d);
+  assert.equal(calls, 1, 'measured at once, not in a day');
+  assert.equal(rows[0].breakdown.why, 'free space fell');
+  assert.equal(rows[0].breakdown.drop, 10 * GIB);
+  assert.deepEqual(rows[0].breakdown.grew.map((x) => x.name), ['swap', 'caches'], 'only roots that moved by more than 1 GiB');
+  assert.ok('breakdown (free space fell)' in rows[0].phases);
+  assert.equal(f.log.state.lastFree, 690 * GIB);
+  // a small fall, or a fall measured less than 30 minutes ago, stays cheap
+  const g = fake({ freeGib: 698, breakdown: bd }); g.d.breakdown = () => { throw new Error('should not measure'); };
+  g.log.state = { lastFree: 700 * GIB, breakdown: prev, retentionAt: NOW }; g.d.passLog = (r) => rows.push(r);
+  await pass({}, g.d);
+  const h = fake({ freeGib: 690, breakdown: bd }); h.d.breakdown = () => { throw new Error('too soon'); };
+  h.log.state = { lastFree: 700 * GIB, breakdown: { ...prev, at: NOW - 600000 }, retentionAt: NOW };
+  await pass({}, h.d);
+  assert.equal(rows[1].breakdown, undefined);
+});
