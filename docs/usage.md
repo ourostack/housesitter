@@ -87,6 +87,7 @@ housesitter restart-copilot --os-updates [--now] [--window 2-5] [--dry-run]   on
     [--listing <file>]                   with --os-updates: read a saved softwareupdate -l (rehearse with --dry-run)
 housesitter restart-copilot --install-recovery [--mac <mac>] [--dry-run]   write and load the launchd agents for the above (the heartbeat every 30 s, the OS-update check every 5 min, and the rest) and a
                                          caffeinate that keeps the Mac awake; --mac also installs that Mac's apple-account agent; --uninstall-recovery removes them
+housesitter restart-copilot --cancel   call off the restart that is running (before the quit it touches nothing and tells the sessions it asked to carry on)
 housesitter restart-copilot --install-keeper [--dry-run]   write and load the launchd agent (bot.ouro.housesitter.copilot-resume)
                                          that runs --resume-only --watch --open-at-login at login and keeps it running
 housesitter restart-copilot --plugin-updates [--dry-run]   one pass: when a plugin the app loaded is older than the
@@ -97,7 +98,7 @@ housesitter restart-copilot --install-plugin-updates [--dry-run]   write and loa
                                          that runs --plugin-updates every 5 minutes; --uninstall-plugin-updates removes it
     [--why "a Desk runtime upgrade"] [--also <session id>]... [--skip <session id>]... [--sigterm] [--hackamore "<command>"] [--app "<name>"]
     [--settle 600] [--settle-max 10800] [--grace 25] [--person-wait 600] [--copilot-home <dir>]
-housesitter deploy housesitter|shepherd [--ref <tag|branch|sha>] [--clone <dir>] [--dry-run] [--json] --why "<who asked, and what they said>"
+housesitter deploy housesitter|shepherd [--ref <tag|branch|sha>] [--clone <dir>] [--allow-downgrade] [--dry-run] [--json] --why "<who asked, and what they said>"
                                          build and check the newest v* tag (or --ref) as a release folder, then point current at it
                                          in one rename; jobs that ran the clone are rewritten to current and reloaded, and the three
                                          newest releases are kept. Never git pull in a live clone (README: Updating)

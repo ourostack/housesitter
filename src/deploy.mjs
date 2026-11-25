@@ -62,6 +62,14 @@ export function programArgs(text) {
   return block ? [...block[1].matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) => unesc(m[1])) : [];
 }
 
+const nums = (v) => String(v).replace(/^v/, '').split(/[.-]/).map((x) => Number(x) || 0);
+export function versionLess(a, b) {
+  const x = nums(a), y = nums(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] ?? 0) - (y[i] ?? 0); if (d) return d < 0; }
+  return false;
+}
+function liveVersion(dir) { try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version || null; } catch { return null; } }
+
 // Tags are v-prefixed versions; the newest by its numbers.
 export function newestTag(tags) {
   const nums = (t) => t.slice(1).split(/[.-]/).map((x) => Number(x) || 0);
@@ -158,7 +166,7 @@ const toolPathRe = (bin) => {
 };
 
 
-export async function deploy({ name, ref = null, clone = null, why = null, home = os.homedir(), uid = process.getuid(), dry = false, launchctl = defaultLaunchctl, sleep = sleepSync } = {}) {
+export async function deploy({ name, ref = null, clone = null, why = null, home = os.homedir(), uid = process.getuid(), dry = false, allowDowngrade = false, launchctl = defaultLaunchctl, sleep = sleepSync } = {}) {
   if (!Object.hasOwn(TARGETS, name)) throw new Refusal('input-invalid', `deploy takes housesitter or shepherd, not ${name || 'nothing'}`);
   const t = TARGETS[name];
   const cloneDir = path.resolve(clone || defaultClone(name, home));
@@ -225,6 +233,13 @@ export async function deploy({ name, ref = null, clone = null, why = null, home 
     }
     step('check', true, `node --check on every tracked .mjs; ${t.bin} --version: ${c.version}`);
     base.version = c.version;
+  }
+
+  // A release older than the live one is a downgrade: it silently reverts shipped fixes (2026-11-25: a fleet sync that misread
+  // the version put v0.6.50 over a build with the restart cap). It takes --allow-downgrade, so a caller cannot do it by mistake.
+  if (!dry && !allowDowngrade && previous && base.version) {
+    const liveV = liveVersion(previous);
+    if (liveV && versionLess(base.version, liveV)) return fail('downgrade', `${want} is ${base.version} and the live release is ${liveV}: not replaced. Pass --allow-downgrade to go back on purpose`, false);
   }
 
   // The swap: a temporary link next to `current`, renamed over it. A rename replaces the old link in one step.

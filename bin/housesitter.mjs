@@ -273,6 +273,14 @@ async function restartCopilot() {
     if (json) emit({ ...s, recovery: rec, load_shed: load }); else say(`${Copilot.renderState(s)}\n${Rec.renderRecovery(rec)}\n${Load.renderLoad(load.last, load.ledger)}\n${Mem.renderMemory(Mem.readMemory(stateDir))}`);
     return 0; // read-only: the exit code says the status was read; a failed restart is in the text and in --json (state, failed)
   }
+  if (opt.cancel) {
+    const busy = Copilot.runInProgress(stateDir);
+    if (!busy) { if (json) emit({ ok: true, cancelled: false, why: 'no restart is running' }); else say('no restart is running; nothing to call off'); return 0; }
+    const r = await Copilot.cancelRun({ stateDir });
+    if (json) emit(r); else say(r.ok ? `called off: ${r.state.step}${r.state.told_to_carry_on ? `; ${r.state.told_to_carry_on.length} asked sessions told to carry on` : ''}` : `✗ ${r.why}`);
+    if (!r.ok) throw new Refusal('action-failed', r.why);
+    return 0;
+  }
   if (!!opt['install-recovery'] || !!opt['uninstall-recovery']) {
     const env = { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: os.homedir() };
     const node = Watch.stableNode(process.execPath), bin = Deploy.liveBin(fileURLToPath(import.meta.url));
@@ -390,9 +398,10 @@ async function restartCopilot() {
   fs.mkdirSync(stateDir, { recursive: true });
   const log = (m) => console.log(`${new Date().toISOString()} restart-copilot: ${m}`);
   // A stopped job leaves a record saying so, never a status stuck on "running".
-  const stopped = (sig) => () => { log(`stopped by ${sig}`); try { deps.status?.({ started: new Date().toISOString(), updated: new Date().toISOString(), state: 'failed', step: `stopped by ${sig}`, failed: { stage: 'stopped', why: `the job received ${sig}; the app may be half restarted: read the run log` } }); } catch { /* the log has it */ } process.exit(1); };
-  for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, stopped(sig));
-  const report = await Copilot.restart(opts, deps, log);
+  const run = {};
+  const stop = (sig) => () => { Copilot.stopped({ sig, run, opts, deps, log }).finally(() => process.exit(1)); };
+  for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, stop(sig));
+  const report = await Copilot.restart(opts, deps, log, run);
   fs.writeFileSync(path.join(stateDir, 'last.json'), JSON.stringify(report, null, 2));
   if (json) emit(report);
   return report.ok ? 0 : 1;
@@ -550,8 +559,8 @@ async function main() {
   }
 
   if (cmd === 'deploy') {
-    need(name, 'housesitter deploy <housesitter|shepherd> [--ref <tag|branch|sha>] [--clone <dir>] [--dry-run] [--json] --why "<who asked, and what they said>"');
-    const r = await Deploy.deploy({ name, ref: opt.ref, clone: opt.clone, why: opt.why, dry: !!opt['dry-run'] });
+    need(name, 'housesitter deploy <housesitter|shepherd> [--ref <tag|branch|sha>] [--clone <dir>] [--allow-downgrade] [--dry-run] [--json] --why "<who asked, and what they said>"');
+    const r = await Deploy.deploy({ name, ref: opt.ref, clone: opt.clone, why: opt.why, dry: !!opt['dry-run'], allowDowngrade: !!opt['allow-downgrade'] });
     if (!r.ok) { if (!json) say(Deploy.renderDeploy(r)); throw new Refusal('action-failed', `deploy ${name} did not finish: ${r.detail || 'a step failed'}. The live release is unchanged unless the steps above say otherwise`); }
     if (json) emit(r); else say(Deploy.renderDeploy(r));
     return 0;

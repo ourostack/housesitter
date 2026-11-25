@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { clearDeadScratch, configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, settleVerdict, watch, settleText } from '../src/copilot-app.mjs';
+import { clearDeadScratch, configPath, family, findMain, installKeeper, KEEPER_LABEL, parsePs, plan, quitItem, readState, realDeps, renderState, lastReply, readSkipConfig, recheckAfter, recheckText, restart, resumeOnly, windowFromLs, runInProgress, stopped, settleVerdict, watch, settleText } from '../src/copilot-app.mjs';
 import { DONE, MID_TURN, haveSqlite, makeHome, startApp } from './fake_app.mjs';
 
 // The app's socket needs Node 22's global WebSocket; sqlite3 reads the pretend database.
@@ -705,4 +705,17 @@ test('realDeps lists the scratch folders under the home it was given', () => {
     assert.equal(clearDeadScratch(d).removed, 1);
     assert.equal(fs.readdirSync(root).length, 0);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('stopped: a job stopped by hand keeps its start time and the sessions it asked, and says whether the app was touched', async () => {
+  const seen = [];
+  const deps = { now: () => Date.parse('2026-11-25T07:16:21Z'), status: (o) => seen.push(o) };
+  const before = await stopped({ sig: 'SIGTERM', run: { started: '2026-11-25T07:04:21.000Z', asked: [A, B] }, deps });
+  assert.equal(before.started, '2026-11-25T07:04:21.000Z', 'the start time is not overwritten with the stop time');
+  assert.deepEqual(before.asked, [A, B]);
+  assert.match(before.failed.why, /before it quit the app: the app was not touched, and the 2 sessions it asked were told to carry on/);
+  const after = await stopped({ sig: 'SIGTERM', run: { started: 'x', asked: [A], quitting: true }, deps });
+  assert.match(after.failed.why, /after it sent the quit/);
+  assert.equal(after.told_to_carry_on, undefined, 'after the quit nobody is told to carry on');
+  assert.equal(seen.length, 2);
 });
