@@ -2,21 +2,22 @@
 // nothing. The laptop here is a small simulation behind the route's `sh` and `gate`; the always-on Mac's own parts are fakes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { jobUsable, realArrivalDeps, SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, pickCoordinators, renderPass, reportText } from '../src/laptop-arrival.mjs';
+import { jobUsable, realArrivalDeps, SCRIPTS, appNeed, parseRestartRuns, restartHistory, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, pickCoordinators, renderPass, reportText } from '../src/laptop-arrival.mjs';
 
 const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, macd_poll_ms: 0, macd_poll_tries: 3, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, restart_per_day: 2, idle_min_ms: 600000, step_tries: 6 };
 
 // A laptop: what is on it, and what the route can ask of it.
 function laptop(over = {}) {
-  const L = { online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 700 s', macdRun: { pid: 10, dir: '/Users/x/Library/Application Support/mac-fleet/macd-old' }, restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, plan: { retire: [], size: [], errors: [] }, applied: [], shepherdUpdates: 0, ...over };
+  const L = { runs: [], online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 700 s', macdRun: { pid: 10, dir: '/Users/x/Library/Application Support/mac-fleet/macd-old' }, restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, plan: { retire: [], size: [], errors: [] }, applied: [], shepherdUpdates: 0, ...over };
   const sh = async (cmd) => {
     if (!L.bus) return { ok: false, noRelay: true, out: '', err: 'no-relay', code: 1 };
     if (cmd === SCRIPTS.facts) return { ok: true, out: `boot=${L.boot}\nnow=2000\nuser=microsoft\napp=${L.app}\napp_pid=1\nnode=v22\nhs=${L.hs || ''}\njobs=${L.jobs.join(',')}\nplists=${L.plists.join(',')}\n`, err: '', code: 0 };
     if (cmd.includes('rev-parse --short HEAD 2>/dev/null; true')) return { ok: true, out: `${L.hs || ''}\n`, err: '', code: 0 };
     if (cmd.includes('git clone -q') && cmd.includes('/code/shepherd')) { L.shepherdUpdates += 1; return { ok: true, out: 'sh=def5678\n', err: '', code: 0 }; }
     if (cmd.includes('git clone')) { L.hs = 'abc1234'; return { ok: true, out: 'hs=abc1234\n', err: '', code: 0 }; }
+    if (cmd === SCRIPTS.restartRuns) return { ok: L.runsReadable !== false, out: L.runs.map((t) => `run-${t.replace(/[:.]/g, '-')}.log`).join('\n'), err: 'no answer', code: 0 };
     if (cmd === SCRIPTS.restartStatus) return { ok: true, out: JSON.stringify(L.restart || { state: 'none' }), err: '', code: 0 };
-    if (cmd === SCRIPTS.plugins) return { ok: true, out: JSON.stringify({ decision: { action: 'hold' }, updates: [], loaded: [{ name: 'desk', version: L.desk }] }), err: '', code: 0 };
+    if (cmd === SCRIPTS.plugins) return { ok: true, out: JSON.stringify({ decision: { action: 'hold' }, updates: L.plugUpdates || [], loaded: [{ name: 'desk', version: L.desk }] }), err: '', code: 0 };
     if (cmd.includes('restart-copilot --resume --detach')) { L.restarts.push(cmd.includes('--sigterm') ? 'sigterm' : 'menu'); L.restart = { state: 'running', step: 'quit sent' }; return { ok: true, out: 'started', err: '', code: 0 }; }
     if (cmd.includes('launchctl bootout')) { const lab = cmd.match(/retired=([^"\n]+)/)[1]; L.jobs = L.jobs.filter((j) => j !== lab); L.plists = L.plists.filter((j) => j !== lab); L.retired.push(lab); return { ok: true, out: `retired=${lab}\n`, err: '', code: 0 }; }
     if (cmd.includes('steer --repair')) return { ok: true, out: JSON.stringify({ ok: L.hubOk, problems: L.hubOk ? [] : ['hub-disconnected'], remote: { default: 'on' }, peer: { name: 'Aris-Mac-Mini', online: L.peerOnline, activeSessionCount: 120 } }), err: '', code: 0 };
@@ -37,7 +38,7 @@ function rig(over = {}, { miniApp = '1.4.2', cfg = CFG } = {}) {
   const deps = {
     now: () => now,
     hubDevice: async () => (L.online ? { listed: true, online: true, lastSeenAt: 'now' } : { listed: false, online: false }),
-    sh,
+    sh: async (cmd) => { const r = await sh(cmd); if (cmd.includes('restart-copilot --resume --detach')) L.runs.push(new Date(now).toISOString()); return r; },
     gate: async () => parseGate(L.gate),
     mac: async (argv) => {
       if (argv[0] !== 'macd') throw new Error('unexpected mac call');
@@ -390,4 +391,44 @@ test('a new arrival does not reset the restart budget for the day', async () => 
   await r.tick();
   assert.equal(r.L.restarts.length, 2);
   assert.match(r.state.epoch.steps.app.detail, /in the last day/);
+});
+
+test('the laptop\'s own run logs count toward the daily cap, whatever this Mac recorded', async () => {
+  const r = rig({ runs: ['2026-11-16T03:00:00.000Z', '2026-11-16T09:00:00.000Z'] });
+  await r.tick();
+  assert.deepEqual(r.L.restarts, []);
+  assert.match(r.state.epoch.steps.app.detail, /restarted 2 times in the last day/);
+  assert.deepEqual(restartHistory(['2026-11-16T09:00:00.000Z'], ['2026-11-16T09:00:20.000Z', '2026-11-14T09:00:00.000Z'], Date.parse('2026-11-16T17:00:00Z')), ['2026-11-16T09:00:20Z']);
+  assert.deepEqual(parseRestartRuns('run-2026-11-25T07-04-21-932Z.log\nstatus.json'), ['2026-11-25T07:04:21.932Z']);
+});
+
+test('no restart while the laptop\'s restart history cannot be read', async () => {
+  const r = rig({ runsReadable: false });
+  await r.tick();
+  assert.deepEqual(r.L.restarts, []);
+  assert.match(r.state.epoch.steps.app.detail, /cannot read how often/);
+});
+
+test('a Hub flap on the same boot keeps the arrival\'s restart count', async () => {
+  const r = rig({ runs: [] });
+  await r.tick();
+  assert.equal(r.state.epoch.restarts, 1);
+  const first = r.state.epoch.id;
+  r.L.online = false;
+  await r.tick();
+  r.advance(20 * 60000);
+  r.L.online = true;
+  await r.tick();
+  assert.notEqual(r.state.epoch.id, first, 'the flap started a new arrival');
+  assert.equal(r.state.epoch.restarts, 1, 'same boot: it keeps the first arrival\'s count');
+});
+
+test('a plugin waiting in the cache alone waits out the six-hour cooldown after any restart', async () => {
+  const r = rig({ app: '1.4.2', desk: '3.2.163', plugUpdates: [{ name: 'desk', from: '3.2.557', to: '3.2.558' }], runs: ['2026-11-16T14:00:00.000Z'] });
+  await r.tick();
+  assert.deepEqual(r.L.restarts, []);
+  assert.match(r.state.epoch.steps.app.detail, /6 hours between such restarts/);
+  r.advance(4 * 3600000);
+  await r.tick();
+  assert.equal(r.L.restarts.length, 1);
 });

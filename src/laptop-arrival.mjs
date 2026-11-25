@@ -26,6 +26,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { hhmm, iso, readJson, realTell, writeJson } from './recovery.mjs';
 import { stateDir } from './copilot-app.mjs';
+import { COOLDOWN_MS } from './plugin-updates.mjs';
 import { HUB_BASE, HUB_RESOURCE } from './steer.mjs';
 
 export const DEFAULTS = {
@@ -100,6 +101,9 @@ cd ${HS} 2>/dev/null && [ -f node_modules/@ouro.bot/hackamore/bin/hackamore.mjs 
 cd ${HS} && node bin/housesitter.mjs restart-copilot --plugin-updates --dry-run --json 2>/dev/null | tail -1`,
   restartStatus: `${PATH_PREFIX}
 cd ${HS} && node bin/housesitter.mjs restart-copilot --status --json 2>/dev/null | tail -1`,
+  // Every restart-copilot job that was ever started leaves one run-<time>.log here: the laptop's own record, whichever version
+  // or trigger (an arrival, the plugin-update job, a person) started it.
+  restartRuns: `ls "$HOME/Library/Caches/housesitter/restart-copilot" 2>/dev/null | grep '^run-'; true`,
   restart: ({ sigterm, why }) => `${PATH_PREFIX}
 cd ${HS} && node bin/housesitter.mjs restart-copilot --resume --detach ${sigterm ? '--sigterm ' : ''}--why '${why.replace(/'/g, '')}' 2>&1 | tail -3`,
   retire: (label) => `uid=$(id -u)
@@ -216,7 +220,8 @@ export function realArrivalDeps(cfg, { home = os.homedir(), state = stateDir(), 
 
 // ---------- one pass ----------
 
-const newEpoch = (now, boot) => ({ id: iso(now), started: iso(now), boot: boot || null, steps: {}, told: {}, restarts: 0 });
+// A Hub flap on the same boot is the same arrival as far as restarts go: it carries the count over.
+const newEpoch = (now, boot, prev = null) => ({ id: iso(now), started: iso(now), boot: boot || null, steps: {}, told: {}, restarts: boot && prev?.boot === boot ? prev.restarts || 0 : 0 });
 
 async function readFacts(deps) {
   const r = await deps.sh(SCRIPTS.facts, 25);
@@ -250,6 +255,23 @@ async function stepHousesitter({ cfg, deps, opts }) {
   return { status: 'done', detail: `housesitter ${parseKv(r.out).hs || '?'} on the laptop` };
 }
 
+// The times of the restart jobs the laptop has run, from the names of their run logs (run-2026-11-25T07-04-21-932Z.log).
+export const parseRestartRuns = (text) => String(text || '').split('\n').map((l) => l.match(/run-(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d+)Z\.log/)).filter(Boolean).map((m) => `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
+
+// Every restart the laptop ran, plus those this Mac recorded that the laptop's run logs do not show. A record and its run log
+// are the same restart when the log follows the record within a minute.
+export function restartHistory(recorded, runs, now, windowMs = 86400000) {
+  const ts = (xs) => (xs || []).map((x) => Date.parse(x)).filter((t) => Number.isFinite(t) && now - t < windowMs).sort((a, b) => a - b);
+  const ran = ts(runs), left = [...ran];
+  const extra = ts(recorded).filter((t) => {
+    const i = left.findIndex((r) => r - t >= -5000 && r - t <= 45000);
+    if (i < 0) return true;
+    left.splice(i, 1);
+    return false;
+  });
+  return [...ran, ...extra].sort((a, b) => a - b).map(iso);
+}
+
 export function appNeed({ app, desk, plug, target, minDesk, running = true }) {
   const why = [];
   if (!app) why.push('its version is unreadable');
@@ -259,7 +281,8 @@ export function appNeed({ app, desk, plug, target, minDesk, running = true }) {
   if (plug && !(plug.loaded || []).length) { if (!running) why.push('no Desk is loaded (the app is not running)'); }
   else if (dv && cmpVersion(dv, minDesk) < 0) why.push(`Desk ${dv} is older than ${minDesk}`);
   if (plug?.updates?.length) why.push(`${plug.updates.map((u) => `${u.name} ${u.from} → ${u.to}`).join(', ')} waiting in the plugin cache`);
-  return { need: why.length > 0, why, desk: dv };
+  // A floor is a version the Mac cannot do without; a plugin waiting in the cache is only a newer one.
+  return { need: why.length > 0, why, desk: dv, floor: why.some((w) => !/waiting in the plugin cache/.test(w)) };
 }
 
 async function stepApp({ cfg, deps, st, now, facts, opts }) {
@@ -283,8 +306,12 @@ async function stepApp({ cfg, deps, st, now, facts, opts }) {
     return { status: 'wait', detail: `brew upgrade for the app: ${b.out.trim().split('\n').at(-1) || b.err}` };
   }
   if (ep.restarts >= cfg.restart_max) return { status: 'wait', detail: `restarted ${ep.restarts} times this arrival and still behind (${n.why.join('; ')}); waiting for the app's own updater` };
-  const day = (st.restart_log || []).filter((x) => now - Date.parse(x) < 86400000);
+  // The laptop's run logs are the record of what was done to it; this Mac's own list only adds what it started and could not see.
+  const runs = await deps.sh(SCRIPTS.restartRuns, 25);
+  if (!runs.ok) return { status: 'wait', detail: `cannot read how often the app was restarted today (${(runs.err || runs.out).trim().split('\n').at(-1) || 'no answer'}); no restart until it can` };
+  const day = restartHistory(st.restart_log, parseRestartRuns(runs.out), now);
   if (day.length >= cfg.restart_per_day) return { status: 'wait', detail: `restarted ${day.length} times in the last day and still behind (${n.why.join('; ')}); no more until the oldest is a day old` };
+  if (!n.floor && day.length && now - Date.parse(day.at(-1)) < COOLDOWN_MS) return { status: 'wait', detail: `only a newer plugin is waiting (${n.why.join('; ')}) and the app was restarted at ${hhmm(Date.parse(day.at(-1)))}; ${Math.round(COOLDOWN_MS / 3600000)} hours between such restarts` };
   const g = await deps.gate();
   if (g.state === 'idle' && !(g.idle_s != null && g.idle_s * 1000 >= cfg.idle_min_ms)) return { status: 'wait', detail: `the laptop was used ${g.idle_s != null ? `${g.idle_s} s` : 'recently'} ago; waiting for ${Math.round(cfg.idle_min_ms / 60000)} minutes with no input (${g.why}); needs: ${n.why.join('; ')}` };
   if (g.state === 'active') return { status: 'wait', detail: `waiting for the laptop to be idle or locked (${g.why}); needs: ${n.why.join('; ')}` };
@@ -410,7 +437,7 @@ export async function pass(opts, deps, say = () => {}) {
   const boot = facts.boot || null;
   const gapped = st.phase !== 'up' && (!st.epoch || !st.down_at || now - Date.parse(st.down_at) >= cfg.down_gap_ms);
   if (!st.epoch || gapped || (boot && st.epoch.boot && boot !== st.epoch.boot)) {
-    st.epoch = newEpoch(now, boot);
+    st.epoch = newEpoch(now, boot, st.epoch);
     out(`the laptop is back (app ${facts.app || '?'}, up since ${boot ? hhmm(Number(boot) * 1000) : '?'}): starting the arrival steps`);
   }
   st.epoch.boot = st.epoch.boot || boot;

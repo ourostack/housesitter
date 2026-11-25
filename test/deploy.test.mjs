@@ -347,3 +347,18 @@ test('deploy writes the ~/.local/bin command for the tool, refreshes it, runs th
   assert.match(fs.readFileSync(shim, 'utf8'), /echo mine/);
   fs.rmSync(f.base, { recursive: true, force: true });
 });
+
+test('a release older than the live one is refused unless the downgrade is asked for', async () => {
+  const f = fixture();
+  f.publish('0.11.0');
+  await deploy({ name: 'housesitter', ref: 'v0.11.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  const before = liveTarget(f);
+  const r = await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, launchctl: fakeLaunchctl().fn });
+  assert.equal(r.ok, false);
+  assert.equal(r.failed, 'downgrade');
+  assert.equal(liveTarget(f), before, 'current still points at the newer release');
+  const back = await deploy({ name: 'housesitter', ref: 'v0.9.0', clone: f.clone, why: 'test', home: f.home, uid: UID, allowDowngrade: true, launchctl: fakeLaunchctl().fn });
+  assert.equal(back.ok, true);
+  assert.notEqual(liveTarget(f), before);
+  fs.rmSync(f.base, { recursive: true, force: true });
+});

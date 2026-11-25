@@ -99,6 +99,44 @@ export const settleText = ({ by, stallSec, why, what = 'the GitHub Copilot app r
 export const recheckText = ({ by, why }) => `Recheck for the restart${why ? ` for ${why}` : ''}: are you at a safe point yet? Answer with a line of its own: ${READY}, or ${DEFER}: <n> lanes running, about <m> min again. The restart goes ahead at about ${hhmm(by)} whatever the answers.`;
 export const cancelText = ({ why }) => `The restart${why ? ` for ${why}` : ''} was called off: the app did not quit and is still running, so nothing was stopped. Carry on with what you were doing; there is nothing to resume.`;
 
+// The job was stopped from outside (SIGTERM, SIGINT, `restart-copilot --cancel`). Before the quit nothing was touched, so the
+// sessions it asked to reach a safe point are told to carry on, as when the quit itself fails. The status keeps when the job
+// started and which sessions it asked.
+export async function stopped({ sig, run, opts = {}, deps, log = () => {} }) {
+  log(`stopped by ${sig}`);
+  const at = new Date(deps.now()).toISOString();
+  const asked = run?.asked || [];
+  const beforeQuit = !run?.quitting;
+  let told = [];
+  if (beforeQuit && asked.length) {
+    told = await Promise.race([
+      Promise.all(asked.map((id) => sendTo(deps, id, cancelText({ why: opts.why }), 15000).then((r) => ({ id, ok: Boolean(r.ok) }), () => ({ id, ok: false })))),
+      new Promise((res) => setTimeout(() => res(null), 60000)),
+    ]);
+    log(told ? `restart called off: told ${told.filter((r) => r.ok).length} of ${asked.length} asked sessions to carry on` : 'restart called off: the sessions did not all answer in time');
+  }
+  const o = {
+    started: run?.started || at, updated: at, state: 'failed', step: `stopped by ${sig}`,
+    ...(asked.length ? { asked } : {}),
+    ...(beforeQuit && asked.length ? { told_to_carry_on: (told || []).filter((r) => r.ok).map((r) => r.id) } : {}),
+    failed: { stage: 'stopped', why: beforeQuit ? `the job received ${sig} before it quit the app: the app was not touched${asked.length ? `, and the ${asked.length} sessions it asked were told to carry on` : ''}` : `the job received ${sig} after it sent the quit; the app may be half restarted: read the run log` },
+  };
+  try { deps.status?.(o); } catch { /* the log has it */ }
+  return o;
+}
+
+// Call off a restart that is running: stopping its launchd job sends it SIGTERM, which `stopped` answers. Waits for the status.
+export async function cancelRun({ stateDir: dir = stateDir(), launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), tries = 90 } = {}) {
+  const r = await launchctl(['bootout', `gui/${uid}/${LABEL}`]);
+  if (r.code !== 0 && !runInProgress(dir)) return { ok: true, state: readState(dir) };
+  for (let i = 0; i < tries; i++) {
+    const s = readState(dir);
+    if (s.state !== 'running') return { ok: true, state: s };
+    await sleep(1000);
+  }
+  return { ok: false, why: `the job was told to stop but its status still says running; read it with restart-copilot --status${r.code !== 0 ? ` (launchctl: ${r.stderr.trim()})` : ''}` };
+}
+
 // When to ask a deferring session again: its own estimate, kept between recheckMin and recheckMax.
 export const recheckAfter = (reply, t) => Math.min(t.recheckMax, Math.max(t.recheckMin, reply.minutes == null ? t.recheckMax / 2 : reply.minutes * 60000));
 
@@ -333,10 +371,14 @@ export async function plan(opts, deps) {
 
 // Runs the sequence and keeps status.json current (state running|done|failed, the step, when), which the Mac's peer
 // watch reads: a job that dies mid-way leaves "running" with an old time, and that is how someone learns of it.
-export async function restart(opts, deps, log = () => {}) {
+// `run` is filled in as the job goes (who it asked, whether it has sent the quit) so that a job stopped from outside can say
+// what it left behind and tell the sessions it asked to carry on.
+export async function restart(opts, deps, log = () => {}, run = {}) {
   const started = new Date(deps.now()).toISOString();
-  const write = (o) => { try { deps.status?.({ started, updated: new Date(deps.now()).toISOString(), ...o }); } catch { /* the status file is a courtesy */ } };
-  const r = await restartSteps(opts, deps, (m) => { log(m); write({ state: 'running', step: m.split(' {')[0] }); });
+  run.started = started;
+  const write = (o) => { try { deps.status?.({ started, updated: new Date(deps.now()).toISOString(), ...(run.asked?.length ? { asked: run.asked } : {}), ...o }); } catch { /* the status file is a courtesy */ } };
+  run.write = write;
+  const r = await restartSteps({ ...opts, run }, deps, (m) => { log(m); write({ state: 'running', step: m.split(' {')[0] }); });
   if (r.restarted_at) {
     // The app can restart itself right after a relaunch (an update): mark the process that is up now too.
     try {
@@ -368,6 +410,8 @@ async function restartSteps(opts, deps, log) {
   report.before = before.map(({ id, title, mode, state, why, interrupted }) => ({ id, title, mode, state, why, interrupted }));
   step('snapshot', { sessions: before.length, busy: before.filter((s) => s.state === 'busy').length, pid: mainBefore.pid });
   const asked = before.filter((s) => s.state === 'busy');
+  if (opts.run) opts.run.asked = asked.map((s) => s.id);
+  if (asked.length) log(`asked sessions: ${asked.map((s) => s.id).join(' ')}`);
 
   // 1. Ask the working sessions to reach a safe point. Each answers ready or defer (with its lanes); a deferring session is asked
   // again when its estimate is up. The wait ends when every session is ready, its turn ended or it went quiet, or at the ceiling.
@@ -432,6 +476,7 @@ async function restartSteps(opts, deps, log) {
   }
 
   // 2. Quit, then wait for every process of the app.
+  if (opts.run) opts.run.quitting = true;
   const psAtQuit = await deps.ps();
   const familyPids = family(psAtQuit, mainBefore.pid, dir);
   const cmdAt = new Map(psAtQuit.map((x) => [x.pid, x.command]));
