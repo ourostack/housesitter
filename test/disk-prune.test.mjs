@@ -679,6 +679,64 @@ test('real landed worktrees: squash-merged goes; unpushed, dirty, recent, tandem
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('near the floor: a landed, clean worktree idle 2 h is kept when space is plentiful and removed within the margin; dirty, open and unlanded ones stay in both', async () => {
+  const fsx = await import('node:fs'), osx = await import('node:os'), pathx = await import('node:path'), { execFileSync } = await import('node:child_process');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-C', cwd, ...a], { encoding: 'utf8' });
+  const run = async (freeGib) => {
+    const root = fsx.realpathSync(fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'dp-near-')));
+    const origin = pathx.join(root, 'origin.git'), main = pathx.join(root, 'code', 'repo');
+    fsx.mkdirSync(pathx.join(root, 'code'));
+    git(root, 'init', '-q', '--bare', '-b', 'main', origin); git(root, 'clone', '-q', origin, main);
+    fsx.writeFileSync(pathx.join(main, 'a'), '1'); git(main, 'add', 'a'); git(main, 'commit', '-qm', 'a'); git(main, 'push', '-q', 'origin', 'main');
+    git(main, 'remote', 'set-head', 'origin', 'main');
+    const wts = pathx.join(root, 'code', 'repo-worktrees');
+    const mk = (name, landed) => {
+      const dir = pathx.join(wts, name);
+      fsx.mkdirSync(wts, { recursive: true });
+      git(main, 'worktree', 'add', '-q', '-b', name, dir);
+      if (!landed) { fsx.writeFileSync(pathx.join(dir, name), name); git(dir, 'add', name); git(dir, 'commit', '-qm', name); }
+      return dir;
+    };
+    const clean = mk('clean', true), dirty = mk('dirty', true), busy = mk('busy', true), unlanded = mk('unlanded', false), fresh = mk('fresh', true);
+    fsx.writeFileSync(pathx.join(dirty, 'untracked'), 'u');
+    const twoHours = new Date(Date.now() - 2 * 3600000);
+    for (const w of [clean, dirty, busy, unlanded]) for (const f of fsx.readdirSync(w, { withFileTypes: true })) fsx.utimesSync(pathx.join(w, f.name), twoHours, twoHours);
+    for (const w of [clean, dirty, busy, unlanded]) fsx.utimesSync(w, twoHours, twoHours);
+    const real = realDiskDeps({ home: root, state: pathx.join(root, 'st'), extraProtected: [main] });
+    const deps = {
+      ...real, usage: () => ({ pct: 80, free: freeGib * GIB, size: 926 * GIB }), tell: async () => {}, readState: () => ({}), writeState: () => {},
+      sessionRows: async () => null, load: async () => {}, open: (x) => x === busy, appWorktrees: () => new Set(),
+      caches: () => [], scratch: () => [], junk: () => [], clones: () => [], worktrees: () => [], histories: () => [], leakedClones: () => [], ensureLeanHooks: () => {},
+      ghCacheOld: () => [], size: () => GIB,
+    };
+    const r = await pass({}, deps);
+    const left = [clean, dirty, busy, unlanded, fresh].filter((w) => fsx.existsSync(w)).map((w) => pathx.basename(w)).sort();
+    const listed = git(main, 'worktree', 'list');
+    fsx.rmSync(root, { recursive: true, force: true });
+    return { r, left, listed };
+  };
+  // 926 GiB volume: floor 185.2 GiB, margin 46.3 GiB, so the near zone ends at 231.5 GiB.
+  const plenty = await run(300);
+  assert.equal(plenty.r.action, 'ok');
+  assert.deepEqual(plenty.left, ['busy', 'clean', 'dirty', 'fresh', 'unlanded'], 'plentiful space: nothing is released after 2 h');
+  const near = await run(187);
+  assert.equal(near.r.action, 'ok');
+  assert.deepEqual(near.left, ['busy', 'dirty', 'fresh', 'unlanded'], 'near the floor: only the clean landed one goes');
+  assert.ok(!near.listed.includes('/clean'), 'git forgot it');
+  assert.equal(near.r.reclaimedBytes, GIB);
+});
+
+test('near the floor: the 1 h gate applies only within the margin, still needs an hour of quiet, and stops once free space is back above floor + margin', async () => {
+  const { d, log } = fake({ freeGib: 520, landed: { '/c/two-hours': {}, '/c/recent': {} }, cloneAge: { '/c/two-hours': 2 * 3600000, '/c/recent': 600000 } });
+  const r = await pass({}, d);
+  assert.deepEqual(log.landed, ['/c/two-hours']);
+  assert.deepEqual(r.keeps['landed worktrees'], { 'something in it changed in the last 1 hour': 1 });
+  const plenty = fake({ freeGib: 560, landed: { '/c/two-hours': {} }, cloneAge: { '/c/two-hours': 2 * 3600000 } });
+  await pass({}, plenty.d);
+  assert.deepEqual(plenty.log.landed || [], []);
+});
+
 test('scheduling: a pass between hourly ones only checks free space; the retention walk runs once an hour', async () => {
   const hist = [{ id: 'arch-1', file: '/s/arch-1/events.jsonl', size: 100 * 1048576, mtime: NOW - 9 * DAY }];
   const { d, log } = fake({ freeGib: 600, hist, archived: ['arch-1'], scratchOf: { 'arch-1': { id: 'arch-1', dir: '/s/arch-1', files: '/s/arch-1/files' } } });
