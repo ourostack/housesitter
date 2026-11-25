@@ -3,6 +3,9 @@
 // the floor. Below it, it reclaims safe classes in this order and stops once free space is back at floor + 5% of the volume:
 //   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh), except one a running process has open or one a
 //      pass removed that came back within a week: that one is in use, and removing it again only buys a download
+//   1b. landed worktrees: a linked git worktree anywhere (under ~/code, the desk, the CIT workspace) whose work is already on
+//      the default branch on origin, with nothing uncommitted or untracked, nothing changed for 24 hours, no live process
+//      or app session in it; removed with `git worktree remove` and logged with its size (see `landedWorktreeKeep`)
 //   2. thin: a worktree whose session Shepherd reports idle (never busy) is made sparse with the repository's own
 //      .github/scripts/lean-worktree.sh (images, video, audio and bundles leave the working tree and stay in Git;
 //      modified and untracked files stay where they are)
@@ -56,6 +59,7 @@ export const DP = {
   junkQuiet: 3 * 24 * 3600000, // loose non-git work under ~/code goes only after this long untouched
   cloneQuiet: 3 * 24 * 3600000, // a full clone is removed only after this long untouched
   archivedQuiet: 72 * 3600000, // an archived session's files/ scratch goes only after its whole folder was untouched this long
+  ghLookups: 25, // `gh pr list` calls one pass may spend asking whether a branch's PR merged
   ghCacheMaxAge: 24 * 3600000, // an entry in gh's HTTP response cache older than this goes
   rest: 3600000, // after a pass that found nothing safe, or that ended still under the floor, the next scan waits this long
   urgent: 50 * 1073741824, // below this much free space a pass never rests
@@ -81,6 +85,20 @@ export function whyKeep(w, now, t = DP) {
   if (w.usedByApp) return 'an unarchived app session uses it';
   if (w.open) return 'a running process has it open';
   if (!(now - w.changedAt >= t.quiet)) return 'something in it changed in the last 24 hours';
+  return null;
+}
+
+// Why a linked worktree of a repository may not be removed as landed, or null when it may. `w`: { dir, protectedBy, usedByApp,
+// open, quiet, dirty, landed }; the last three are asked in this order only while the earlier ones pass, since each costs more.
+// The caller never lists a primary clone, ~/code/tandem-wt.noindex or anything under ~/.copilot/copilot-worktrees (see `isOffLimits`).
+export const isOffLimits = (dir, copilotWorktrees) => dir.split('/').includes('tandem-wt.noindex') || dir === copilotWorktrees || dir.startsWith(`${copilotWorktrees}/`);
+export function landedWorktreeKeep(w) {
+  if (w.protectedBy) return 'launchd or Housesitter runs from it';
+  if (w.usedByApp()) return 'an unarchived app session uses it';
+  if (w.open()) return 'a running process has it open';
+  if (!w.quiet()) return 'something in it changed in the last 24 hours';
+  if (w.dirty()) return 'it has uncommitted or untracked changes';
+  if (!w.landed()) return 'its work has not landed on the default branch';
   return null;
 }
 
@@ -124,7 +142,7 @@ export async function pass(opts, deps, say = () => {}) {
   }
   const keeps = {};
   const keep = (cat, why) => { const c = (keeps[cat] ||= {}); c[why] = (c[why] || 0) + 1; };
-  const reclaimed = { caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
+  const reclaimed = { landed: [], landedBytes: 0, caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   const rows = (await deps.sessionRows?.()) || null;
 
   // Retention for agent storage, every pass and above the floor too. Only files/ of an archived session nobody has touched
@@ -214,6 +232,25 @@ export async function pass(opts, deps, say = () => {}) {
     if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove ${dir}: ${e.message}`); continue; } }
     reclaimed.junk.push(dir); reclaimed.junked += n; out(`removed loose work ${dir}: ${gib(n)}`);
   }
+
+  // Linked worktrees agents made with `git worktree add` whose work is already on origin's default branch (a squash merge
+  // included). Cheap rules first; a kept one is only counted, since a Mac holds hundreds.
+  reclaimed.landed = []; reclaimed.landedBytes = 0;
+  for (const w of deps.landedWorktrees?.() || []) {
+    if (done()) break;
+    let landedBy = null;
+    const why = landedWorktreeKeep({
+      protectedBy: deps.protectedBy?.(w.dir), usedByApp: () => used.has(w.dir), open: () => deps.open(w.dir),
+      quiet: () => (deps.quietSince ? deps.quietSince(w.dir, t.quiet) : now - deps.changedAt(w.dir) >= t.quiet),
+      dirty: () => deps.dirty(w.dir), landed: () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); },
+    });
+    if (why) { keep('landed worktrees', why); continue; }
+    const n = deps.size(w.dir);
+    if (!opts.dry_run && !deps.removeLanded(w.dir)) { out(`could not remove landed worktree ${w.dir}`); continue; }
+    reclaimed.landed.push({ dir: w.dir, bytes: n, why: landedBy }); reclaimed.landedBytes += n;
+    out(`${opts.dry_run ? 'would remove' : 'removed'} landed worktree ${w.dir}: ${gib(n)} (${landedBy})`);
+  }
+  if (reclaimed.landed.length) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(reclaimed.landedBytes)} from ${reclaimed.landed.length} landed worktree(s)`);
 
   const idle = deps.idleSessions?.() || new Set();
   for (const w of deps.thinnable?.() || []) {
@@ -305,8 +342,8 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   const after = deps.usage();
-  const total = retainedTotal + reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
-  const res = { action: reclaimed.worktrees.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, reclaimedBytes: total - reclaimed.thinned.length + reclaimed.thin, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
+  const total = retainedTotal + reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.landedBytes + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const res = { action: reclaimed.worktrees.length || reclaimed.landed.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, reclaimedBytes: total - reclaimed.thinned.length + reclaimed.thin, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return res;
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
@@ -314,7 +351,7 @@ export async function pass(opts, deps, say = () => {}) {
   if (why) out(`kept, by reason (${why})`);
   const tail = `${why ? ` Kept, by reason: ${why}.` : ''}${kept.length ? ` Kept ${kept.length} cache(s) in use (${kept.map((c) => path.basename(c)).join(', ')}): removing them again would only make the next run download them.` : ''}${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.landed.length} landed worktree(s) (${gib(reclaimed.landedBytes)}), ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag || kept.length) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
@@ -366,7 +403,7 @@ export function drainTargets(home) {
   return ids;
 }
 
-export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [] } = {}) {
+export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
   const wt = path.join(copilotHome, 'copilot-worktrees');
@@ -374,6 +411,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   const rescueRoot = path.join(home, 'AgentBundles', 'disk-rescue');
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
   const fetched = new Set();
+  let ghLookups = 0;
+  const ghBin = ghPath || [path.join(home, '.local', 'bin', 'gh'), '/opt/homebrew/bin/gh', '/usr/local/bin/gh'].find((p) => fs.existsSync(p)) || 'gh';
   let drainIds = new Set(), idleKnown = false, runningIds = new Set(), autoIds = new Set(), appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
   const LEAN = '.github/scripts/lean-worktree.sh';
   // Linked worktrees agents make inside a session's files/ (a worktree's .git is a file).
@@ -679,6 +718,61 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       sh('/usr/bin/git', ['-C', d, 'bundle', 'create', path.join(dir, 'repo.bundle'), 'HEAD', '--not', '--remotes']);
       return dir;
     },
+    // Linked worktrees of every repository agents work in (~/code/*, the desk, the CIT workspace), never the primary clone,
+    // Tandem's live keepers or the app's own folder.
+    landedWorktrees: () => {
+      const cands = [path.join(home, 'personal-desk'), path.join(home, 'CIT-workspace')];
+      try { for (const n of fs.readdirSync(path.join(home, 'code'))) cands.push(path.join(home, 'code', n)); } catch { /* none */ }
+      const seen = new Set(), out = [];
+      for (const c of cands) {
+        try { if (!fs.statSync(path.join(c, '.git')).isDirectory()) continue; } catch { continue; }
+        const common = gitCommon(c); if (!common || seen.has(common)) continue;
+        seen.add(common);
+        const r = sh('/usr/bin/git', ['-C', c, 'worktree', 'list', '--porcelain'], { timeout: 60000 });
+        const blocks = String(r.stdout).split('\n\n').filter(Boolean);
+        for (const b of blocks.slice(1)) {
+          const m = b.match(/^worktree (.+)$/m);
+          if (!m || /^bare$/m.test(b) || isOffLimits(m[1], wt) || !fs.existsSync(m[1])) continue;
+          out.push({ dir: m[1], repo: c });
+        }
+      }
+      return out;
+    },
+    dirty: (d) => { const r = sh('/usr/bin/git', ['-C', d, 'status', '--porcelain'], { timeout: 120000 }); return r.status !== 0 || r.stdout.trim() !== ''; },
+    // How the worktree's work landed, or null: HEAD is in origin's default branch; every path the branch changed has the
+    // default branch's content (a squash merge); or its branch's PR, at this very commit, is merged (the one call that costs quota).
+    landedWhy: (d) => {
+      const g = (...a) => sh('/usr/bin/git', ['-C', d, ...a], { timeout: 120000 });
+      const common = gitCommon(d); if (!common) return null;
+      if (!fetched.has(common)) { fetched.add(common); g('fetch', '--prune', '--quiet', 'origin'); }
+      let ref = g('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD').stdout.trim();
+      if (!ref) ref = ['refs/remotes/origin/main', 'refs/remotes/origin/master'].find((c) => g('rev-parse', '--verify', '--quiet', c).status === 0);
+      if (!ref) return null;
+      const short = ref.replace(/^refs\/remotes\//, '');
+      if (g('merge-base', '--is-ancestor', 'HEAD', ref).status === 0) return `in ${short}`;
+      const mb = g('merge-base', ref, 'HEAD').stdout.trim();
+      if (mb) {
+        // git diff takes no pathspec file, so the paths that still differ from the default branch are intersected with the branch's own.
+        const mine = g('diff', '--name-only', '-z', '--no-renames', mb, 'HEAD').stdout.split('\0').filter(Boolean);
+        if (mine.length) {
+          const diff = g('diff', '--name-only', '-z', '--no-renames', ref, 'HEAD');
+          if (diff.status === 0) { const differ = new Set(diff.stdout.split('\0')); if (!mine.some((n) => differ.has(n))) return `every changed path matches ${short}`; }
+        }
+      }
+      const branch = g('symbolic-ref', '--quiet', '--short', 'HEAD').stdout.trim();
+      if (!branch || ghLookups >= DP.ghLookups) return null;
+      ghLookups += 1;
+      const head = g('rev-parse', 'HEAD').stdout.trim();
+      const r = sh(ghBin, ['pr', 'list', '--head', branch, '--state', 'merged', '--json', 'number,headRefOid', '--limit', '10'], { cwd: d, timeout: 30000 });
+      try { const pr = JSON.parse(r.stdout).find((x) => x.headRefOid === head); return pr ? `PR #${pr.number} merged` : null; } catch { return null; }
+    },
+    // `git worktree remove` without --force: git itself refuses a worktree with changes or a lock.
+    removeLanded: (d) => {
+      const common = gitCommon(d); if (!common) return false;
+      sh('/usr/bin/git', ['--git-dir', common, 'worktree', 'remove', d], { timeout: 600000 });
+      sh('/usr/bin/git', ['--git-dir', common, 'worktree', 'prune']);
+      return !fs.existsSync(d);
+    },
     removeWorktree: (d) => {
       const common = sh('/usr/bin/git', ['-C', d, 'rev-parse', '--git-common-dir']).stdout.trim();
       const g = path.resolve(d, common);
@@ -709,7 +803,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     writeState: (o) => writeJson(path.join(state, 'disk-prune.json'), o),
     // Reads the app's database once per pass; the pass calls this first.
     load: async () => {
-      openList = undefined; protectedPaths = null; fetched.clear(); commons.clear();
+      openList = undefined; protectedPaths = null; ghLookups = 0; fetched.clear(); commons.clear();
       const w = await q('SELECT w.path AS p FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL');
       const s = await q('SELECT id FROM sessions WHERE archived_at IS NULL');
       const wr = await q('SELECT w.path AS p, k.session_id AS sid FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL AND k.session_id IS NOT NULL');
