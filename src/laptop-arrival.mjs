@@ -147,7 +147,7 @@ export const STEPS = ['housesitter', 'app', 'retire', 'verify', 'sessions', 'rep
 
 export function describePlan(cfg) {
   return [
-    `detect: Hub lists the laptop's device online and its bus answers a shell command`,
+    `detect: its bus answers a shell command (Hub saying the device is offline only delays that check to the next probe)`,
     `housesitter: a current checkout of this tool on the laptop (${cfg.housesitter_git})`,
     `app: the Copilot app at least ${cfg.target_app === 'mini' ? "this Mac's version" : cfg.target_app} and Desk at least ${cfg.min_desk}; otherwise restart it with its sessions saved and resumed (waits while someone uses the laptop)`,
     `retire: ${cfg.retire.length ? `unload and move aside ${cfg.retire.map((r) => r.label).join(', ')}` : 'nothing configured'}`,
@@ -233,10 +233,11 @@ export async function detect(cfg, st, deps, now) {
   let hub = null;
   try { hub = await deps.hubDevice(cfg.hub_device_id); } catch (e) { hub = { error: String(e.message || e).slice(0, 100) }; }
   const probeDue = !st?.last_probe || now - Date.parse(st.last_probe) >= cfg.probe_every_ms;
-  if (!hub.error && !hub.online) return { kind: 'down', why: hub.listed ? `Hub lists the laptop's device offline (last seen ${hub.lastSeenAt})` : "Hub does not list the laptop's device" };
-  if (hub.error && !probeDue) return { kind: st?.phase === 'up' ? 'up-unchecked' : 'down', why: `Hub's service could not be read (${hub.error}); next probe of the bus is not due`, hub };
+  const hubSays = hub.error ? `Hub's service could not be read (${hub.error})` : hub.online ? null : hub.listed ? `Hub lists the laptop's device offline (last seen ${hub.lastSeenAt})` : "Hub does not list the laptop's device";
+  // Hub drops the device on a boot that is still running, so its word alone is not "down": the route to the laptop decides, on the probe's schedule.
+  if (hubSays && !probeDue) return { kind: !hub.error || st?.phase !== 'up' ? 'down' : 'up-unchecked', why: hub.error ? `${hubSays}; next probe of the bus is not due` : hubSays, hub };
   const f = await readFacts(deps);
-  if (!f.ok) return { kind: hub.error ? 'down' : 'hub-only', why: f.noRelay ? 'its Mac bus does not answer yet (no relay)' : `its shell did not answer: ${f.err}`, hub, probed: true };
+  if (!f.ok) return hubSays ? { kind: 'down', why: `${hubSays}, and ${f.noRelay ? 'its Mac bus does not answer (no relay)' : `its shell did not answer: ${f.err}`}`, hub, probed: true } : { kind: 'hub-only', why: f.noRelay ? 'its Mac bus does not answer yet (no relay)' : `its shell did not answer: ${f.err}`, hub, probed: true };
   return { kind: 'up', facts: f.facts, hub, probed: true };
 }
 
