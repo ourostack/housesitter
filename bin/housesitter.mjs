@@ -389,6 +389,9 @@ async function restartCopilot() {
   }
   fs.mkdirSync(stateDir, { recursive: true });
   const log = (m) => console.log(`${new Date().toISOString()} restart-copilot: ${m}`);
+  // A stopped job leaves a record saying so, never a status stuck on "running".
+  const stopped = (sig) => () => { log(`stopped by ${sig}`); try { deps.status?.({ started: new Date().toISOString(), updated: new Date().toISOString(), state: 'failed', step: `stopped by ${sig}`, failed: { stage: 'stopped', why: `the job received ${sig}; the app may be half restarted: read the run log` } }); } catch { /* the log has it */ } process.exit(1); };
+  for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, stopped(sig));
   const report = await Copilot.restart(opts, deps, log);
   fs.writeFileSync(path.join(stateDir, 'last.json'), JSON.stringify(report, null, 2));
   if (json) emit(report);

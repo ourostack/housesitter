@@ -46,7 +46,9 @@ export const DEFAULTS = {
   down_gap_ms: 10 * 60000,
   blocked_tell_ms: 20 * 60000,
   app_fallback_ms: 45 * 60000, // how long the app's own updater gets before brew is tried
-  restart_max: 2,
+  restart_max: 2, // per arrival
+  restart_per_day: 2, // across arrivals: a Hub flap starts a new arrival but never a new budget
+  idle_min_ms: 10 * 60000, // an unlocked laptop must have had no keyboard or mouse input this long
   step_tries: 6,
 };
 
@@ -61,7 +63,7 @@ export const parseKv = (text) => Object.fromEntries(String(text || '').split('\n
 // The first line of `gate check` is OPEN or CLOSED with the reason. A locked screen is not a person at work.
 export function parseGate(text) {
   const t = String(text || '');
-  if (/^OPEN/m.test(t)) return { state: 'idle', why: t.trim().split('\n')[0] };
+  if (/^OPEN/m.test(t)) { const m = t.match(/idle (\d+) ?s/i); return { state: 'idle', why: t.trim().split('\n')[0], idle_s: m ? Number(m[1]) : null }; }
   if (/locked|login window|screen saver/i.test(t)) return { state: 'locked', why: t.trim().split('\n')[0] };
   if (/CLOSED/.test(t)) return { state: 'active', why: t.trim().split('\n')[0] };
   return { state: 'unknown', why: t.trim().split('\n')[0] || 'no answer' };
@@ -248,12 +250,13 @@ async function stepHousesitter({ cfg, deps, opts }) {
   return { status: 'done', detail: `housesitter ${parseKv(r.out).hs || '?'} on the laptop` };
 }
 
-export function appNeed({ app, desk, plug, target, minDesk }) {
+export function appNeed({ app, desk, plug, target, minDesk, running = true }) {
   const why = [];
   if (!app) why.push('its version is unreadable');
   else if (target && cmpVersion(app, target) < 0) why.push(`app ${app} is older than ${target}`);
   const dv = (plug?.loaded || []).find((l) => l.name === 'desk')?.version || desk || null;
-  if (plug && !(plug.loaded || []).length) why.push('no Desk is loaded (the app is not running)');
+  // An empty list from a running app is an unreadable list, not proof that the app is down: it never causes a restart.
+  if (plug && !(plug.loaded || []).length) { if (!running) why.push('no Desk is loaded (the app is not running)'); }
   else if (dv && cmpVersion(dv, minDesk) < 0) why.push(`Desk ${dv} is older than ${minDesk}`);
   if (plug?.updates?.length) why.push(`${plug.updates.map((u) => `${u.name} ${u.from} → ${u.to}`).join(', ')} waiting in the plugin cache`);
   return { need: why.length > 0, why, desk: dv };
@@ -266,7 +269,7 @@ async function stepApp({ cfg, deps, st, now, facts, opts }) {
   if (opts.dry_run && !facts.hs) return { status: 'would', detail: 'after the checkout, would compare the app and Desk against their floors and restart it if behind' };
   const plug = parseJsonLine((await deps.sh(SCRIPTS.plugins, 60)).out);
   if (!plug) return { status: 'fail', detail: 'could not read which Desk the laptop\'s app has loaded' };
-  const n = appNeed({ app: facts.app, plug, target, minDesk: cfg.min_desk });
+  const n = appNeed({ app: facts.app, plug, target, minDesk: cfg.min_desk, running: Boolean(facts.app_pid) });
   if (!n.need) return { status: 'done', detail: `app ${facts.app}, Desk ${n.desk || 'current'}` };
   const ep = st.epoch;
   const sinceArrival = now - Date.parse(ep.started);
@@ -280,13 +283,17 @@ async function stepApp({ cfg, deps, st, now, facts, opts }) {
     return { status: 'wait', detail: `brew upgrade for the app: ${b.out.trim().split('\n').at(-1) || b.err}` };
   }
   if (ep.restarts >= cfg.restart_max) return { status: 'wait', detail: `restarted ${ep.restarts} times this arrival and still behind (${n.why.join('; ')}); waiting for the app's own updater` };
+  const day = (st.restart_log || []).filter((x) => now - Date.parse(x) < 86400000);
+  if (day.length >= cfg.restart_per_day) return { status: 'wait', detail: `restarted ${day.length} times in the last day and still behind (${n.why.join('; ')}); no more until the oldest is a day old` };
   const g = await deps.gate();
+  if (g.state === 'idle' && !(g.idle_s != null && g.idle_s * 1000 >= cfg.idle_min_ms)) return { status: 'wait', detail: `the laptop was used ${g.idle_s != null ? `${g.idle_s} s` : 'recently'} ago; waiting for ${Math.round(cfg.idle_min_ms / 60000)} minutes with no input (${g.why}); needs: ${n.why.join('; ')}` };
   if (g.state === 'active') return { status: 'wait', detail: `waiting for the laptop to be idle or locked (${g.why}); needs: ${n.why.join('; ')}` };
   if (g.state === 'unknown') return { status: 'wait', detail: `cannot tell whether someone is using the laptop (${g.why})` };
   if (opts.dry_run) return { status: 'would', detail: `would restart the app (${g.state}): ${n.why.join('; ')}` };
   const r = await deps.sh(SCRIPTS.restart({ sigterm: g.state === 'locked', why: `the laptop is back online: ${n.why.join('; ')}`.slice(0, 160) }), 60);
   if (!r.ok) return { status: 'fail', detail: `the restart did not start: ${r.err || r.out.trim().split('\n').at(-1)}` };
   ep.restarts += 1;
+  st.restart_log = [...day, iso(now)];
   return { status: 'wait', detail: `restart started (${g.state}): ${n.why.join('; ')}` };
 }
 

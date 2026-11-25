@@ -415,6 +415,18 @@ test('restart: a frozen app (no Quit item, every settle message refused) is not 
   assert.ok(lines.some((l) => /quit sent.*sigterm.*its UI is not answering/.test(l)), lines.join(' | '));
 });
 
+test('restart: sessions that take no message while the menu answers are not quit; the restart is called off', { skip }, async () => {
+  const w = await world({ sessions: sessions(), appOpts: { refuse: [A, C] } });
+  w.opts.t = { ...w.opts.t, sendTries: 2, sendPause: 10 };
+  const lines = [];
+  const r = await restart({ ...w.opts, resume: false }, w.deps, (m) => lines.push(m));
+  await w.done();
+  assert.equal(r.ok, false);
+  assert.equal(r.failed.stage, 'settle');
+  assert.equal(w.kills.length, 0, 'nothing was signalled');
+  assert.ok(lines.some((l) => /slow, not frozen/.test(l)), lines.join(' | '));
+});
+
 test('plan: changes nothing and names what it would do; no Quit item or no hackamore is said plainly', { skip }, async () => {
   const w = await world({ sessions: sessions() });
   const p = await plan(w.opts, w.deps);

@@ -4,11 +4,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { jobUsable, realArrivalDeps, SCRIPTS, appNeed, cmpVersion, describePlan, detect, loadConfig, parseGate, parseKv, pass, pickCoordinators, renderPass, reportText } from '../src/laptop-arrival.mjs';
 
-const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, macd_poll_ms: 0, macd_poll_tries: 3, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, step_tries: 6 };
+const CFG = { peer: 'laptop', route: ['mac'], hub_device_id: 'dev', mini_device_name: 'Aris-Mac-Mini', target_app: 'mini', min_desk: '3.2.154', housesitter_git: 'https://example.invalid/housesitter.git', retire: [{ label: 'x.arrival-post' }, { label: 'bot.ouro.daemon', requires_local_job: 'bot.ouro.daemon' }], macd_update: false, macd_poll_ms: 0, macd_poll_tries: 3, probe_every_ms: 300000, down_gap_ms: 600000, blocked_tell_ms: 1200000, app_fallback_ms: 2700000, restart_max: 2, restart_per_day: 2, idle_min_ms: 600000, step_tries: 6 };
 
 // A laptop: what is on it, and what the route can ask of it.
 function laptop(over = {}) {
-  const L = { online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 500 s', macdRun: { pid: 10, dir: '/Users/x/Library/Application Support/mac-fleet/macd-old' }, restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, plan: { retire: [], size: [], errors: [] }, applied: [], shepherdUpdates: 0, ...over };
+  const L = { online: true, bus: true, boot: 1000, app: '1.1.35', desk: '3.2.110', hs: null, jobs: ['x.arrival-post', 'bot.ouro.daemon', 'other'], plists: ['x.arrival-post', 'bot.ouro.daemon', 'other'], gate: 'OPEN: unlocked, idle 700 s', macdRun: { pid: 10, dir: '/Users/x/Library/Application Support/mac-fleet/macd-old' }, restart: null, restarts: [], upgrades: 0, retired: [], hubOk: true, peerOnline: true, plan: { retire: [], size: [], errors: [] }, applied: [], shepherdUpdates: 0, ...over };
   const sh = async (cmd) => {
     if (!L.bus) return { ok: false, noRelay: true, out: '', err: 'no-relay', code: 1 };
     if (cmd === SCRIPTS.facts) return { ok: true, out: `boot=${L.boot}\nnow=2000\nuser=microsoft\napp=${L.app}\napp_pid=1\nnode=v22\nhs=${L.hs || ''}\njobs=${L.jobs.join(',')}\nplists=${L.plists.join(',')}\n`, err: '', code: 0 };
@@ -61,7 +61,7 @@ test('versions and gate answers are read plainly', () => {
   assert.equal(cmpVersion('1.1.35', '1.4.2'), -1);
   assert.equal(cmpVersion('1.4.2', '1.4.2'), 0);
   assert.equal(cmpVersion('3.2.154', '3.2.9'), 1);
-  assert.equal(parseGate('OPEN: unlocked, idle 500 s (via bus)').state, 'idle');
+  assert.equal(parseGate('OPEN: unlocked, idle 700 s (via bus)').idle_s, 700);
   assert.equal(parseGate('CLOSED: locked').state, 'locked');
   assert.equal(parseGate('CLOSED: someone used this Mac 7 s ago (need 90 s idle)').state, 'active');
   assert.deepEqual(parseKv('app=1.1.35\nnode=v22\nnoise'), { app: '1.1.35', node: 'v22' });
@@ -154,7 +154,7 @@ test('a restart is not started while one is running, and at most restart_max per
 test('an app still old after 45 minutes gets the cask upgrade once, never while someone is using the laptop', async () => {
   const r = rig({ gate: 'CLOSED: someone used this Mac 7 s ago (need 90 s idle)' });
   await r.tick();
-  r.L.gate = 'OPEN: unlocked, idle 500 s';
+  r.L.gate = 'OPEN: unlocked, idle 700 s';
   await r.tick();
   assert.equal(r.L.restarts.length, 1);
   r.L.restart = { state: 'done' };
@@ -162,7 +162,7 @@ test('an app still old after 45 minutes gets the cask upgrade once, never while 
   r.advance(2800000);
   await r.tick();
   assert.equal(r.L.upgrades, 0, 'a person is using it');
-  r.L.gate = 'OPEN: unlocked, idle 500 s';
+  r.L.gate = 'OPEN: unlocked, idle 700 s';
   await r.tick();
   assert.equal(r.L.upgrades, 1);
   await r.tick();
@@ -361,4 +361,33 @@ test("the gate runs hackamore's gate check on the laptop through the bus shell a
   assert.doesNotMatch(SCRIPTS.gate, /mac gate/);
   const g = await d.gate();
   assert.equal(g.state, 'locked');
+});
+
+test('three minutes idle is not enough to restart; ten is', async () => {
+  const r = rig({ gate: 'OPEN: unlocked, idle 170 s' });
+  await r.tick();
+  assert.deepEqual(r.L.restarts, []);
+  assert.match(r.state.epoch.steps.app.detail, /waiting for 10 minutes with no input/);
+  r.L.gate = 'OPEN: unlocked, idle 700 s';
+  await r.tick();
+  assert.equal(r.L.restarts.length, 1);
+});
+
+test('an empty plugin list from a running app is unknown, not a reason to restart; a missing app is', () => {
+  const plug = { loaded: [], updates: [] };
+  assert.equal(appNeed({ app: '1.4.2', plug, target: '1.4.2', minDesk: '3.2.154', running: true }).need, false);
+  assert.equal(appNeed({ app: '1.4.2', plug, target: '1.4.2', minDesk: '3.2.154', running: false }).need, true);
+});
+
+test('a new arrival does not reset the restart budget for the day', async () => {
+  const r = rig();
+  await r.tick();
+  r.L.restart = { state: 'done' };
+  await r.tick();
+  assert.equal(r.L.restarts.length, 2);
+  r.L.restart = { state: 'done' };
+  r.L.boot = 2000; // the laptop rebooted: a new arrival
+  await r.tick();
+  assert.equal(r.L.restarts.length, 2);
+  assert.match(r.state.epoch.steps.app.detail, /in the last day/);
 });
