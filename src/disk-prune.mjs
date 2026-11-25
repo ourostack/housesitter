@@ -149,7 +149,9 @@ export async function pass(opts, deps, say = () => {}) {
   const retentionDue = Boolean(opts.force || opts.dry_run) || !(now - (st0.retentionAt || 0) < t.retainEvery);
   const record = (res) => {
     const ms = Date.now() - started;
-    const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, ms, phases };
+    // What the pass removed and why it kept the rest, so the log alone answers "what went, and what stayed".
+    const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, after: res.after ?? (res.reclaimed?.landedBytes ? deps.usage().free : before.free), ms, phases,
+      reclaimedBytes: res.reclaimedBytes ?? 0, landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), keeps: res.keeps || {} };
     if (!opts.dry_run) { try { deps.passLog?.(row); } catch { /* a courtesy */ } }
     out(`pass took ${(ms / 1000).toFixed(1)} s (${res.action}${retentionDue ? ', with retention' : ', free-space check only'}${Object.keys(phases).length ? `: ${Object.entries(phases).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`).join(', ')}` : ''})`);
     return { ...res, ms, phases };
@@ -225,20 +227,24 @@ export async function pass(opts, deps, say = () => {}) {
   const reclaimLanded = (quietMs, quietLabel) => {
     const used = deps.appWorktrees();
     reclaimed.landed = []; reclaimed.landedBytes = 0;
+    // Where the loop's time goes, by step, so a slow pass says which check was slow (these add to the phase that holds the loop).
+    const steps = {};
+    const step = (name, fn) => { const t0 = Date.now(); try { return fn(); } finally { steps[name] = (steps[name] || 0) + (Date.now() - t0); } };
     for (const w of deps.landedWorktrees?.() || []) {
       if (done()) break;
       let landedBy = null;
       const why = landedWorktreeKeep({
-        protectedBy: (deps.protectedDirect || deps.protectedBy)?.(w.dir), usedByApp: () => used.has(w.dir), open: () => deps.open(w.dir),
-        quiet: () => (deps.quietSince ? deps.quietSince(w.dir, quietMs) : now - deps.changedAt(w.dir) >= quietMs),
-        dirty: () => deps.dirty(w.dir), landed: () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); },
+        protectedBy: (deps.protectedDirect || deps.protectedBy)?.(w.dir), usedByApp: () => used.has(w.dir), open: () => step('open', () => deps.open(w.dir)),
+        quiet: () => step('quiet', () => (deps.quietSince ? deps.quietSince(w.dir, quietMs) : now - deps.changedAt(w.dir) >= quietMs)),
+        dirty: () => step('dirty', () => deps.dirty(w.dir)), landed: () => step('landed', () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); }),
       }, quietLabel);
       if (why) { keep('landed worktrees', why); continue; }
-      const n = deps.size(w.dir);
-      if (!opts.dry_run && !deps.removeLanded(w.dir)) { out(`could not remove landed worktree ${w.dir}`); continue; }
+      const n = step('size', () => deps.size(w.dir));
+      if (!opts.dry_run && !step('remove', () => deps.removeLanded(w.dir))) { out(`could not remove landed worktree ${w.dir}`); continue; }
       reclaimed.landed.push({ dir: w.dir, bytes: n, why: landedBy }); reclaimed.landedBytes += n;
       out(`${opts.dry_run ? 'would remove' : 'removed'} landed worktree ${w.dir}: ${gib(n)} (${landedBy})`);
     }
+    for (const [k, v] of Object.entries(steps)) phases[`landed ${k}`] = v;
     if (reclaimed.landed.length) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(reclaimed.landedBytes)} from ${reclaimed.landed.length} landed worktree(s)`);
   };
 
