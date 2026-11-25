@@ -737,6 +737,19 @@ test('near the floor: the 1 h gate applies only within the margin, still needs a
   assert.deepEqual(plenty.log.landed || [], []);
 });
 
+test('the pass row says what went and why the rest stayed, near the floor too', async () => {
+  const { d } = fake({ freeGib: 520, landed: { '/c/old': {}, '/c/dirty': { dirty: true }, '/c/recent': {} }, cloneAge: { '/c/old': 2 * 3600000, '/c/dirty': 2 * 3600000, '/c/recent': 600000 } });
+  const rows = []; d.passLog = (row) => rows.push(row);
+  await pass({}, d);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].landed, [{ dir: '/c/old', bytes: 2 * GIB }]);
+  assert.equal(rows[0].reclaimedBytes, 2 * GIB);
+  assert.deepEqual(rows[0].keeps['landed worktrees'], { 'it has uncommitted or untracked changes': 1, 'something in it changed in the last 1 hour': 1 });
+  assert.equal(rows[0].free, 520 * GIB);
+  assert.ok('landed worktrees (near floor)' in rows[0].phases);
+  for (const k of ['quiet', 'dirty', 'landed', 'size', 'remove']) assert.ok(`landed ${k}` in rows[0].phases, k);
+});
+
 test('scheduling: a pass between hourly ones only checks free space; the retention walk runs once an hour', async () => {
   const hist = [{ id: 'arch-1', file: '/s/arch-1/events.jsonl', size: 100 * 1048576, mtime: NOW - 9 * DAY }];
   const { d, log } = fake({ freeGib: 600, hist, archived: ['arch-1'], scratchOf: { 'arch-1': { id: 'arch-1', dir: '/s/arch-1', files: '/s/arch-1/files' } } });
