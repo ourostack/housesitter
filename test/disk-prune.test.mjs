@@ -23,11 +23,15 @@ function fake(over = {}) {
     branchDone: (x) => (over.done || []).includes(x),
     sessionPin: (x) => (over.pins || {})[x] || null,
     archiveSessions: async (x) => { log.archived = [...(log.archived || []), x]; return over.archiveFail ? { ok: false, error: 'refused' } : { ok: true }; },
-    open: (x) => (over.wts?.[x]?.open) || (over.openFiles || []).includes(x),
+    open: (x) => (over.wts?.[x]?.open) || (over.landed?.[x]?.open) || (over.openFiles || []).includes(x),
     changedAt: (x) => NOW - (over.wts?.[x]?.ageMs ?? over.cloneAge?.[x] ?? 9 * DAY),
     git: (x) => ({ dirty: Boolean((over.wts?.[x] || over.gits?.[x] || {}).dirty), unpushed: Boolean((over.wts?.[x] || over.gits?.[x] || {}).unpushed) }),
     rescue: (x) => { log.rescued.push(x); return `/bundles/${x.split('/').pop()}`; },
     removeWorktree: (x) => { log.removed.push(x); free += 20 * GIB; },
+    landedWorktrees: () => Object.keys(over.landed || {}).map((dir) => ({ dir })),
+    dirty: (x) => Boolean(over.landed?.[x]?.dirty),
+    landedWhy: (x) => (over.landed?.[x] && 'why' in over.landed[x] ? over.landed[x].why : 'in origin/main'),
+    removeLanded: (x) => { log.landed = [...(log.landed || []), x]; return true; },
     histories: () => over.hist || [],
     protectedBy: (x) => (over.protect || []).includes(x) ? 'launchd' : null,
     deadSessions: () => over.dead || [],
@@ -587,4 +591,84 @@ test('real ghCacheOld and archivedScratch read a synthetic home', async () => {
   assert.equal(deps.archivedScratch(id).files, path.join(home, '.copilot/session-state', id, 'files'));
   assert.equal(deps.archivedScratch('../etc'), null);
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('landed worktrees: removed only when clean, quiet, idle, unused and landed; reasons are counted and the total is reported', async () => {
+  const { d, log } = fake({
+    freeGib: 60,
+    landed: {
+      '/c/a': { why: 'in origin/main' }, '/c/dirty': { dirty: true }, '/c/recent': {}, '/c/open': { open: true },
+      '/c/unlanded': { why: null }, '/c/app': { why: 'in origin/main' }, '/c/launchd': { why: 'in origin/main' },
+    },
+    used: ['/c/app'], protect: ['/c/launchd'], cloneAge: { '/c/recent': 3600000 },
+  });
+  const r = await pass({}, d);
+  assert.deepEqual(log.landed, ['/c/a']);
+  assert.equal(r.reclaimed.landedBytes, 2 * GIB);
+  assert.deepEqual(r.keeps['landed worktrees'], {
+    'it has uncommitted or untracked changes': 1, 'something in it changed in the last 24 hours': 1, 'a running process has it open': 1,
+    'its work has not landed on the default branch': 1, 'an unarchived app session uses it': 1, 'launchd or Housesitter runs from it': 1,
+  });
+  assert.match(log.told.join('\n'), /1 landed worktree\(s\) \(2\.0 GiB\)/);
+});
+
+test('landed worktrees: a dry run removes nothing; Tandem\'s keepers and the app\'s folder are off limits', async () => {
+  const { d, log } = fake({ freeGib: 60, landed: { '/c/a': { why: 'in origin/main' } } });
+  const r = await pass({ dry_run: true }, d);
+  assert.deepEqual(log.landed || [], []);
+  assert.equal(r.reclaimed.landedBytes, 2 * GIB);
+  const { isOffLimits } = await import('../src/disk-prune.mjs');
+  assert.ok(isOffLimits('/h/code/tandem-wt.noindex/x', '/h/.copilot/copilot-worktrees'));
+  assert.ok(isOffLimits('/h/.copilot/copilot-worktrees/r/n', '/h/.copilot/copilot-worktrees'));
+  assert.ok(!isOffLimits('/h/code/CIT-pages-worktrees/x', '/h/.copilot/copilot-worktrees'));
+});
+
+test('real landed worktrees: squash-merged goes; unpushed, dirty, recent, tandem-wt and copilot-worktrees stay', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path'), { execFileSync } = await import('node:child_process');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dp-lw-')));
+  const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-C', cwd, ...a], { encoding: 'utf8' });
+  const origin = path.join(root, 'origin.git'), main = path.join(root, 'code', 'repo');
+  fs.mkdirSync(path.join(root, 'code'));
+  git(root, 'init', '-q', '--bare', '-b', 'main', origin); git(root, 'clone', '-q', origin, main);
+  fs.writeFileSync(path.join(main, 'a'), '1'); git(main, 'add', 'a'); git(main, 'commit', '-qm', 'a'); git(main, 'push', '-q', 'origin', 'main');
+  git(main, 'remote', 'set-head', 'origin', 'main');
+  const wt = (dir, br, file, body) => {
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    git(main, 'worktree', 'add', '-q', '-b', br, dir);
+    if (file) { fs.writeFileSync(path.join(dir, file), body); git(dir, 'add', file); git(dir, 'commit', '-qm', br); }
+    return dir;
+  };
+  const wts = path.join(root, 'code', 'repo-worktrees');
+  const squash = wt(path.join(wts, 'squash'), 'squash', 'x', 'same');
+  const merged = wt(path.join(wts, 'pr'), 'pr', 'p', 'pr-content');
+  const unpushed = wt(path.join(wts, 'unpushed'), 'unpushed', 'y', 'mine');
+  const dirty = wt(path.join(wts, 'dirty'), 'dirty', 'z', 'zz');
+  const recent = wt(path.join(wts, 'recent'), 'recent', 'r', 'rr');
+  const tandem = wt(path.join(root, 'code', 'tandem-wt.noindex', 'k'), 'k', 'k', 'kk');
+  const app = wt(path.join(root, '.copilot', 'copilot-worktrees', 'repo', 'n'), 'n', 'n', 'nn');
+  // The squash merge: main gets the same content in a new commit, so HEAD is not its ancestor.
+  fs.writeFileSync(path.join(main, 'x'), 'same'); git(main, 'add', 'x'); git(main, 'commit', '-qm', 'squash merge (#1)'); git(main, 'push', '-q', 'origin', 'main');
+  for (const w of [squash, merged, unpushed, dirty, tandem, app, recent]) git(w, 'push', '-q', ...(w === unpushed ? ['--dry-run'] : []), 'origin', `${path.basename(w) === 'pr' ? 'pr' : 'HEAD'}`.replace('HEAD', `HEAD:refs/heads/keep-${path.basename(w)}`));
+  fs.writeFileSync(path.join(dirty, 'untracked'), 'u');
+  const old = (dir) => { const past = new Date(Date.now() - 3 * DAY); const walk = (p) => { for (const e of fs.readdirSync(p, { withFileTypes: true })) { if (e.name === '.git' && e.isDirectory()) continue; const f = path.join(p, e.name); if (e.isDirectory()) walk(f); fs.utimesSync(f, past, past); } fs.utimesSync(p, past, past); }; walk(dir); };
+  for (const w of [squash, merged, unpushed, dirty, tandem, app]) old(w);
+  fs.writeFileSync(path.join(wts, 'recent', 'now'), 'n');
+  const gh = path.join(root, 'gh'); fs.writeFileSync(gh, '#!/bin/sh\ncat "$(dirname "$0")/pr.json"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(root, 'pr.json'), JSON.stringify([{ number: 7, headRefOid: git(merged, 'rev-parse', 'HEAD').trim() }]));
+  const real = realDiskDeps({ home: root, state: path.join(root, 'st'), ghPath: gh });
+  const log = [];
+  const deps = {
+    ...real, usage: () => ({ pct: 90, free: 10 * GIB, size: 926 * GIB }), tell: async () => {}, readState: () => ({}), writeState: () => {},
+    sessionRows: async () => null, load: async () => {}, open: () => false, appWorktrees: () => new Set(), protectedBy: () => null,
+    caches: () => [], scratch: () => [], junk: () => [], clones: () => [], worktrees: () => [], histories: () => [], leakedClones: () => [], ensureLeanHooks: () => {},
+    ghCacheOld: () => [], size: () => 0,
+  };
+  const r = await pass({ force: true }, deps, (l) => log.push(l));
+  const gone = [squash, merged].filter((w) => !fs.existsSync(w));
+  assert.deepEqual(gone.sort(), [merged, squash].sort(), log.join('\n'));
+  for (const w of [unpushed, dirty, recent, tandem, app]) assert.ok(fs.existsSync(w), `${w} must stay`);
+  assert.ok(!git(main, 'worktree', 'list').includes('squash'));
+  assert.deepEqual(r.reclaimed.landed.map((x) => x.why).sort(), ['PR #7 merged', 'every changed path matches origin/main']);
+  fs.rmSync(root, { recursive: true, force: true });
 });
