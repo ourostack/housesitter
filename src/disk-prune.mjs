@@ -240,7 +240,7 @@ export async function pass(opts, deps, say = () => {}) {
     if (done()) break;
     let landedBy = null;
     const why = landedWorktreeKeep({
-      protectedBy: deps.protectedBy?.(w.dir), usedByApp: () => used.has(w.dir), open: () => deps.open(w.dir),
+      protectedBy: (deps.protectedDirect || deps.protectedBy)?.(w.dir), usedByApp: () => used.has(w.dir), open: () => deps.open(w.dir),
       quiet: () => (deps.quietSince ? deps.quietSince(w.dir, t.quiet) : now - deps.changedAt(w.dir) >= t.quiet),
       dirty: () => deps.dirty(w.dir), landed: () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); },
     });
@@ -538,6 +538,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       load_protected();
       return protectedPaths.find((p) => d === p || d.startsWith(`${p}/`)) || (gitCommon(d) ? protectedPaths.find((p) => gitCommon(d) === gitCommon(p)) : null) || null;
     },
+    // Narrower than protectedBy: only the folder launchd or Housesitter runs from, not every worktree of its repository.
+    protectedDirect: (d) => { load_protected(); return protectedPaths.find((p) => d === p || d.startsWith(`${p}/`)) || null; },
     // Why a session using this worktree must keep its folder: running, an automation (or owner of one), or a drain target.
     sessionPin: (d) => {
       if (!idleKnown || !appRows) return 'session state unknown';

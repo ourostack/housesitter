@@ -656,11 +656,11 @@ test('real landed worktrees: squash-merged goes; unpushed, dirty, recent, tandem
   fs.writeFileSync(path.join(wts, 'recent', 'now'), 'n');
   const gh = path.join(root, 'gh'); fs.writeFileSync(gh, '#!/bin/sh\ncat "$(dirname "$0")/pr.json"\n', { mode: 0o755 });
   fs.writeFileSync(path.join(root, 'pr.json'), JSON.stringify([{ number: 7, headRefOid: git(merged, 'rev-parse', 'HEAD').trim() }]));
-  const real = realDiskDeps({ home: root, state: path.join(root, 'st'), ghPath: gh });
+  const real = realDiskDeps({ home: root, state: path.join(root, 'st'), ghPath: gh, extraProtected: [main] });
   const log = [];
   const deps = {
     ...real, usage: () => ({ pct: 90, free: 10 * GIB, size: 926 * GIB }), tell: async () => {}, readState: () => ({}), writeState: () => {},
-    sessionRows: async () => null, load: async () => {}, open: () => false, appWorktrees: () => new Set(), protectedBy: () => null,
+    sessionRows: async () => null, load: async () => {}, open: () => false, appWorktrees: () => new Set(),
     caches: () => [], scratch: () => [], junk: () => [], clones: () => [], worktrees: () => [], histories: () => [], leakedClones: () => [], ensureLeanHooks: () => {},
     ghCacheOld: () => [], size: () => 0,
   };
@@ -669,6 +669,7 @@ test('real landed worktrees: squash-merged goes; unpushed, dirty, recent, tandem
   assert.deepEqual(gone.sort(), [merged, squash].sort(), log.join('\n'));
   for (const w of [unpushed, dirty, recent, tandem, app]) assert.ok(fs.existsSync(w), `${w} must stay`);
   assert.ok(!git(main, 'worktree', 'list').includes('squash'));
+  assert.ok(fs.existsSync(main), 'the protected primary clone stays, and does not shield its other worktrees');
   assert.deepEqual(r.reclaimed.landed.map((x) => x.why).sort(), ['PR #7 merged', 'every changed path matches origin/main']);
   fs.rmSync(root, { recursive: true, force: true });
 });
