@@ -259,12 +259,12 @@ async function stepHousesitter({ cfg, deps, opts }) {
 export const parseRestartRuns = (text) => String(text || '').split('\n').map((l) => l.match(/run-(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d+)Z\.log/)).filter(Boolean).map((m) => `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
 
 // Every restart the laptop ran, plus those this Mac recorded that the laptop's run logs do not show. A record and its run log
-// are the same restart when the log follows the record within a minute.
+// are the same restart when the log follows the record within five minutes (the arrival steps before it take 1-2 min).
 export function restartHistory(recorded, runs, now, windowMs = 86400000) {
   const ts = (xs) => (xs || []).map((x) => Date.parse(x)).filter((t) => Number.isFinite(t) && now - t < windowMs).sort((a, b) => a - b);
   const ran = ts(runs), left = [...ran];
   const extra = ts(recorded).filter((t) => {
-    const i = left.findIndex((r) => r - t >= -5000 && r - t <= 45000);
+    const i = left.findIndex((r) => r - t >= -5000 && r - t <= 300000);
     if (i < 0) return true;
     left.splice(i, 1);
     return false;
