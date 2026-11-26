@@ -864,6 +864,22 @@ test('a slow decline fires the breakdown once free space is 3 GiB below the last
   await pass({}, g.d);
 });
 
+test('a fall after a recovery fires from the peak since the last breakdown; a rise alone never fires', async () => {
+  const bd = { top: [{ name: 'code', size: 100 * GIB, grew: 2 * GIB }] };
+  const f = fake({ freeGib: 156, breakdown: bd }); let calls = 0; const inner = f.d.breakdown; f.d.breakdown = (p) => { calls++; return inner(p); };
+  f.log.state = { lastFree: 156 * GIB, breakdown: { at: NOW - 3 * 3600000, free: 156 * GIB, roots: {} }, retentionAt: NOW };
+  const rows = []; f.d.passLog = (r) => rows.push(r);
+  const run = async (freeGib) => { f.d.usage = () => ({ pct: 50, free: freeGib * GIB, size: 1000 * GIB }); await pass({}, f.d); };
+  await run(187); assert.equal(calls, 0, 'a rise alone never fires');
+  assert.equal(f.log.state.peakFree.free, 187 * GIB);
+  await run(190); await run(188); assert.equal(calls, 0);
+  assert.equal(f.log.state.peakFree.free, 190 * GIB, 'the peak keeps the highest');
+  await run(163);
+  assert.equal(calls, 1, 'a fall from the recovery fires although 163 is above 156 - 3');
+  assert.equal(rows.at(-1).breakdown.fallSince.free, 190 * GIB);
+  assert.equal(f.log.state.peakFree.free, 163 * GIB, 'a breakdown restarts the peak');
+});
+
 test('a git that never answers keeps its worktree ("git did not answer"), the pass finishes, and every git runs without fsmonitor', async () => {
   const fsx = await import('node:fs'), osx = await import('node:os'), pathx = await import('node:path'), { execFileSync } = await import('node:child_process');
   const { realDiskDeps } = await import('../src/disk-prune.mjs');

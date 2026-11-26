@@ -157,15 +157,20 @@ export async function pass(opts, deps, say = () => {}) {
   let rows;
   const getRows = async () => (rows === undefined ? (rows = (await deps.sessionRows?.()) || null) : rows);
   // Where the bytes are: daily, and at once (at most every `triggerEvery`) when free space fell by more than `dropBytes` since the
-  // last breakdown (a slow decline counts, a swing does not reset it), so a drop names its owner. A cheap pass stays cheap: only the fall pays for the walk.
+  // highest free space seen since the last breakdown (a slow decline counts, a recovery then a fall counts), so a drop names its owner. A cheap pass stays cheap: only the fall pays for the walk.
   let bdInfo = null, bdRan = false, deadlineAt = null;
   const runBreakdown = (why, extra = {}) => timed(why === 'daily' ? 'breakdown' : 'breakdown (free space fell)', async () => {
     const b = deps.breakdown?.(st0.breakdown); if (!b) return;
-    stamp({ breakdown: { ...b, at: now, free: before.free } }); bdRan = true;
+    stamp({ breakdown: { ...b, at: now, free: before.free }, peakFree: { at: now, free: before.free } }); bdRan = true;
     bdInfo = { why, since: st0.breakdown?.at ? iso(st0.breakdown.at) : null, ...extra, ...(fallBase ? { fallSince: { at: iso(fallBase.at), free: fallBase.free } } : {}), grew: (b.top || []).filter((x) => Math.abs(x.grew || 0) > t.growRow).map((x) => ({ name: x.name, size: x.size, grew: x.grew })) };
   });
-  // The fall is measured from the free space recorded at the last breakdown; a state from before that was recorded falls back to the previous pass.
-  const fallBase = typeof st0.breakdown?.free === 'number' ? { at: st0.breakdown.at, free: st0.breakdown.free } : null;
+  // The fall is measured from the highest free space seen since the last breakdown (the breakdown's own free space to begin with), so a
+  // fall after a recovery counts; a state from before that was recorded falls back to the previous pass.
+  const lastBd = typeof st0.breakdown?.free === 'number' ? { at: st0.breakdown.at, free: st0.breakdown.free } : null;
+  const sawPeak = lastBd && typeof st0.peakFree?.free === 'number' && st0.peakFree.at >= lastBd.at ? st0.peakFree : null;
+  let fallBase = lastBd && sawPeak && sawPeak.free > lastBd.free ? { at: sawPeak.at, free: sawPeak.free } : lastBd;
+  if (fallBase && before.free > fallBase.free) { fallBase = { at: now, free: before.free }; if (!opts.dry_run) stamp({ peakFree: fallBase }); }
+  else if (lastBd && !sawPeak && !opts.dry_run) stamp({ peakFree: fallBase });
   const dropped = fallBase ? fallBase.free - before.free : typeof st0.lastFree === 'number' ? st0.lastFree - before.free : 0;
   const needBreakdown = !opts.dry_run && dropped > t.dropBytes && !(now - (st0.breakdown?.at || 0) < t.triggerEvery);
   if (!opts.dry_run) stamp({ lastFree: before.free });
