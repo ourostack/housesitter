@@ -74,6 +74,9 @@ export const DP = {
   dropBytes: 3 * 1073741824, // free space down by more than this since the previous pass measures where the bytes are at once
   triggerEvery: 30 * 60000, // but a fall-triggered measurement runs at most this often (it walks ~/Library and home)
   growRow: 1073741824, // a pass row names the roots whose growth since the last measurement is more than this
+  gitRead: 60000, // every read-only git a pass spawns is killed after this; a git that did not answer is "unknown", and its worktree is kept
+  gitRemove: 600000, // `git worktree remove` is given longer: it deletes a whole tree
+  passDeadline: 20 * 60000, // a pass records what it finished and ends after this, so launchd can start the next one
 };
 
 const GIB = 1073741824;
@@ -105,8 +108,12 @@ export function landedWorktreeKeep(w, quietLabel = '24 hours') {
   if (w.usedByApp()) return 'an unarchived app session uses it';
   if (w.open()) return 'a running process has it open';
   if (!w.quiet()) return `something in it changed in the last ${quietLabel}`;
-  if (w.dirty()) return 'it has uncommitted or untracked changes';
-  if (!w.landed()) return 'its work has not landed on the default branch';
+  const dirty = w.dirty();
+  if (w.hung?.()) return 'git did not answer';
+  if (dirty) return 'it has uncommitted or untracked changes';
+  const landed = w.landed();
+  if (w.hung?.()) return 'git did not answer';
+  if (!landed) return 'its work has not landed on the default branch';
   return null;
 }
 
@@ -151,7 +158,7 @@ export async function pass(opts, deps, say = () => {}) {
   const getRows = async () => (rows === undefined ? (rows = (await deps.sessionRows?.()) || null) : rows);
   // Where the bytes are: daily, and at once (at most every `triggerEvery`) when free space fell by more than `dropBytes` since the
   // last breakdown (a slow decline counts, a swing does not reset it), so a drop names its owner. A cheap pass stays cheap: only the fall pays for the walk.
-  let bdInfo = null, bdRan = false;
+  let bdInfo = null, bdRan = false, deadlineAt = null;
   const runBreakdown = (why, extra = {}) => timed(why === 'daily' ? 'breakdown' : 'breakdown (free space fell)', async () => {
     const b = deps.breakdown?.(st0.breakdown); if (!b) return;
     stamp({ breakdown: { ...b, at: now, free: before.free } }); bdRan = true;
@@ -169,10 +176,14 @@ export async function pass(opts, deps, say = () => {}) {
     if (needBreakdown && !bdRan) await runBreakdown('free space fell', { drop: dropped });
     const ms = Date.now() - started;
     // What the pass removed and why it kept the rest, so the log alone answers "what went, and what stayed".
+    const gt = deps.gitTimeouts?.() || [];
     const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, ...(dataUsed == null ? {} : { dataUsed }), after: res.after ?? (res.reclaimed?.landedBytes ? deps.usage().free : before.free), ms, phases,
-      reclaimedBytes: res.reclaimedBytes ?? 0, ...(bdInfo ? { breakdown: bdInfo } : {}), landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), keeps: res.keeps || {} };
+      reclaimedBytes: res.reclaimedBytes ?? 0, ...(bdInfo ? { breakdown: bdInfo } : {}), landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), keeps: res.keeps || {},
+      ...(gt.length ? { gitTimeouts: gt } : {}), ...(deadlineAt ? { deadline: { seconds: Math.round(t.passDeadline / 1000), after: deadlineAt } } : {}) };
     if (!opts.dry_run) { try { deps.passLog?.(row); } catch { /* a courtesy */ } }
     out(`pass took ${(ms / 1000).toFixed(1)} s (${res.action}${retentionDue ? ', with retention' : ', free-space check only'}${Object.keys(phases).length ? `: ${Object.entries(phases).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`).join(', ')}` : ''})`);
+    if (gt.length) out(`git did not answer within its timeout: ${gt.map((x) => `${x.cmd} (${x.seconds} s)`).join('; ')}`);
+    if (deadlineAt) out(`pass deadline of ${Math.round(t.passDeadline / 60000)} min reached after ${deadlineAt}; what it finished is recorded, the rest waits for the next pass`);
     return { ...res, ms, phases };
   };
 
@@ -191,6 +202,7 @@ export async function pass(opts, deps, say = () => {}) {
     const rows = await timed('session rows', getRows);
     await timed('archived files/', async () => {
       for (const id of rows?.archived || []) {
+        if (late()) break;
         if (rows.live.has(id)) continue;
         const s = deps.archivedScratch?.(id);
         if (!s) continue;
@@ -213,6 +225,7 @@ export async function pass(opts, deps, say = () => {}) {
 
     await timed('compress histories', async () => {
       for (const id of rows?.archived || []) {
+        if (late()) break;
         if (rows.live.has(id)) continue;
         const r = await deps.compress(id, { dryRun: Boolean(opts.dry_run) });
         if (!r.ok) continue;
@@ -238,7 +251,10 @@ export async function pass(opts, deps, say = () => {}) {
     stamp({ retentionAt: now, ...(retainedTotal ? { retention: { at: iso(now), reclaimedBytes: retainedTotal, ...retained } } : {}) });
   };
 
-  const done = () => deps.usage().free >= floor + margin;
+  const expired = () => Date.now() - started > t.passDeadline;
+  // Every stage loop asks this to stop; past the deadline the pass records what it finished and ends.
+  const late = () => { if (!expired()) return false; deadlineAt ??= Object.keys(phases).pop() ?? 'start'; return true; };
+  const done = () => late() || deps.usage().free >= floor + margin;
   // Linked worktrees agents made with `git worktree add` whose work is already on origin's default branch (a squash merge
   // included). Cheap rules first; a kept one is only counted, since a Mac holds hundreds. Near the floor the idle gate is shorter.
   const reclaimLanded = (quietMs, quietLabel) => {
@@ -253,7 +269,7 @@ export async function pass(opts, deps, say = () => {}) {
       const why = landedWorktreeKeep({
         protectedBy: (deps.protectedDirect || deps.protectedBy)?.(w.dir), usedByApp: () => used.has(w.dir), open: () => step('open', () => deps.open(w.dir)),
         quiet: () => step('quiet', () => (deps.quietSince ? deps.quietSince(w.dir, quietMs) : now - deps.changedAt(w.dir) >= quietMs)),
-        dirty: () => step('dirty', () => deps.dirty(w.dir)), landed: () => step('landed', () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); }),
+        dirty: () => step('dirty', () => deps.dirty(w.dir)), hung: () => Boolean(deps.gitHung?.(w.dir)), landed: () => step('landed', () => { landedBy = deps.landedWhy(w.dir); return Boolean(landedBy); }),
       }, quietLabel);
       if (why) { keep('landed worktrees', why); continue; }
       const n = step('size', () => deps.size(w.dir));
@@ -349,10 +365,17 @@ export async function pass(opts, deps, say = () => {}) {
     if (why) continue;
     const n = sdir.heavy.reduce((a, h) => a + deps.size(h), 0); if (!n) continue;
     if (!opts.dry_run) {
+      let unknown = false;
       for (const c of deps.clonesIn(sdir.heavy)) {
-        const g = deps.git(c);
-        if (g.dirty || g.unpushed) { const b = deps.rescue(c); reclaimed.rescued.push(b); out(`saved ${c}'s unsaved work to ${b}`); }
+        let b = null;
+        try {
+          const g = deps.git(c);
+          if (g.unknown) unknown = true;
+          else if (g.dirty || g.unpushed) b = deps.rescue(c);
+        } catch { unknown = true; }
+        if (b) { reclaimed.rescued.push(b); out(`saved ${c}'s unsaved work to ${b}`); }
       }
+      if (unknown) { keep('unlisted sessions', 'git did not answer'); out(`kept the files of unlisted session ${sdir.id.slice(0, 8)}: git did not answer`); continue; }
       for (const h of sdir.heavy) deps.remove(h);
     }
     reclaimed.sessions += n; out(`dropped the files of unlisted session ${sdir.id.slice(0, 8)}: ${gib(n)}`);
@@ -392,8 +415,13 @@ export async function pass(opts, deps, say = () => {}) {
     if (why) { keep('worktrees', pin || why); out(`kept ${dir}: ${why}${pin ? ` (${pin})` : ''}`); continue; }
     const n = deps.size(dir);
     if (!opts.dry_run) {
-      const g = deps.git(dir);
-      if (g.dirty || g.unpushed) { const b = deps.rescue(dir); reclaimed.rescued.push(b); out(`saved ${dir}'s unsaved work to ${b}`); }
+      let g, b = null;
+      try {
+        g = deps.git(dir);
+        if (!g.unknown && (g.dirty || g.unpushed)) b = deps.rescue(dir);
+      } catch { g = { unknown: true }; }
+      if (g.unknown) { keep('worktrees', 'git did not answer'); out(`kept ${dir}: git did not answer`); continue; }
+      if (b) { reclaimed.rescued.push(b); out(`saved ${dir}'s unsaved work to ${b}`); }
       // A session that still lists the folder is archived first (reversible), so none is left pointing at a missing folder.
       if (used.has(dir)) { const a = await deps.archiveSessions(dir); if (!a.ok) { out(`kept ${dir}: could not archive its session first (${a.error})`); continue; } }
       deps.removeWorktree(dir);
@@ -490,7 +518,7 @@ export function drainTargets(home) {
   return ids;
 }
 
-export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null } = {}) {
+export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {} } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
   const wt = path.join(copilotHome, 'copilot-worktrees');
@@ -499,6 +527,18 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
   const fetched = new Set();
   let ghLookups = 0;
+  // Every git runs without fsmonitor (a worktree's daemon that stops answering blocks `status` and `diff` for ever) and under a
+  // timeout. A git that timed out is unknown: its directory is remembered in `hung`, its command is logged in `gitTimeouts`.
+  const readMs = gitMs.read ?? DP.gitRead, removeMs = gitMs.remove ?? DP.gitRemove;
+  const hung = new Set(), gitTimeouts = [];
+  const runGit = (key, pre, args, o = {}) => {
+    const timeout = o.timeout ?? readMs;
+    const r = sh(gitPath, ['-c', 'core.fsmonitor=false', ...pre, ...args], { killSignal: 'SIGKILL', ...o, timeout });
+    if (r.error?.code === 'ETIMEDOUT') { hung.add(key); gitTimeouts.push({ cmd: `git ${[...pre, ...args].join(' ')}`.slice(0, 200), seconds: Math.round(timeout / 1000) }); }
+    return r;
+  };
+  const git = (d, args, o) => runGit(d, ['-C', d], args, o);
+  const gitAt = (common, args, o) => runGit(common, ['--git-dir', common], args, o);
   const ghBin = ghPath || [path.join(home, '.local', 'bin', 'gh'), '/opt/homebrew/bin/gh', '/usr/local/bin/gh'].find((p) => fs.existsSync(p)) || 'gh';
   let drainIds = new Set(), idleKnown = false, runningIds = new Set(), autoIds = new Set(), appPaths = null, liveIds = null, openList, appRows = null, idleIds = null;
   const LEAN = '.github/scripts/lean-worktree.sh';
@@ -508,7 +548,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     return String(r.stdout).split('\n').filter((l) => /\/files\//.test(l)).map((l) => path.dirname(l));
   };
   const leanScript = (d) => {
-    for (const ref of ['HEAD', 'origin/HEAD', 'origin/main']) { const r = sh('/usr/bin/git', ['-C', d, 'show', `${ref}:${LEAN}`]); if (r.status === 0 && r.stdout.trim()) return r.stdout; }
+    for (const ref of ['HEAD', 'origin/HEAD', 'origin/main']) { const r = git(d, ['show', `${ref}:${LEAN}`]); if (r.status === 0 && r.stdout.trim()) return r.stdout; }
     return null;
   };
   // The session-state index (see session-index.mjs): read once per process, written when a pass changed it.
@@ -626,11 +666,11 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     },
     // `unique`: anything here a clone would not give back (unsaved changes, a stash, a commit on no remote, a second worktree, no remote at all).
     clone: (d) => {
-      const g = (...a) => sh('/usr/bin/git', ['-C', d, ...a]);
+      const g = (...a) => git(d, a);
       const worktrees = g('worktree', 'list', '--porcelain').stdout.split('\n').filter((l) => l.startsWith('worktree ')).length;
       const unique = g('status', '--porcelain').stdout.trim() !== '' || g('stash', 'list').stdout.trim() !== '' || g('remote').stdout.trim() === '' ||
         g('log', '--oneline', '--branches', '--tags', '--not', '--remotes').stdout.trim() !== '' || worktrees !== 1 || g('rev-parse', '--git-dir').status !== 0;
-      return { unique };
+      return { unique: unique || hung.has(d) };
     },
     // What launchd runs from, and the clone Housesitter itself runs from, with their own worktrees: never removed.
     protectedBy: (d) => {
@@ -665,8 +705,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     // True when the worktree's branch is merged into the default branch or deleted on the remote (fetched once per repository per pass).
     branchDone: (d) => {
       const common = gitCommon(d); if (!common) return false;
-      if (!fetched.has(common)) { fetched.add(common); sh('/usr/bin/git', ['-C', d, 'fetch', '--prune', '--quiet', 'origin'], { timeout: 90000 }); }
-      const g = (...a) => sh('/usr/bin/git', ['-C', d, ...a]);
+      if (!fetched.has(common)) { fetched.add(common); git(d, ['fetch', '--prune', '--quiet', 'origin'], { timeout: 90000 }); }
+      const g = (...a) => git(d, a);
       const br = g('symbolic-ref', '--quiet', '--short', 'HEAD').stdout.trim();
       if (br) {
         const up = g('for-each-ref', '--format=%(upstream:track)', `refs/heads/${br}`).stdout;
@@ -674,7 +714,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       }
       const head = g('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD').stdout.trim() || 'refs/remotes/origin/main';
       // A branch still at the default branch's tip has done no work yet; that is a new session, not a finished one.
-      return g('rev-parse', 'HEAD').stdout.trim() !== g('rev-parse', head).stdout.trim() && g('merge-base', '--is-ancestor', 'HEAD', head).status === 0;
+      const done = g('rev-parse', 'HEAD').stdout.trim() !== g('rev-parse', head).stdout.trim() && g('merge-base', '--is-ancestor', 'HEAD', head).status === 0;
+      return done && !hung.has(d);
     },
     linked: (d) => { try { return fs.statSync(path.join(d, '.git')).isFile(); } catch { return false; } },
     // One lsof snapshot per pass; when it cannot be read, everything counts as open.
@@ -738,7 +779,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       for (const c of cands) {
         try {
           if (!fs.statSync(path.join(c, '.git')).isDirectory()) continue;
-          if (sh('/usr/bin/git', ['-C', c, 'config', '--get', 'core.hooksPath']).stdout.trim()) continue;
+          if (git(c, ['config', '--get', 'core.hooksPath']).stdout.trim()) continue;
           if (leanScript(c) == null) continue;
           const f = path.join(c, '.git', 'hooks', 'post-checkout');
           const had = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null;
@@ -775,7 +816,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       const owned = sessionWorktrees().map((d) => ({ dir: d, session: path.relative(sessions, d).split(path.sep)[0] }));
       return [...appRows.filter((r) => fs.existsSync(r.p)).map((r) => ({ dir: r.p, session: r.sid })), ...owned].filter((w, i, all) => all.findIndex((x) => x.dir === w.dir) === i).filter((w) => {
         try { if (!fs.statSync(path.join(w.dir, '.git')).isFile()) return false; } catch { return false; }
-        return sh('/usr/bin/git', ['-C', w.dir, 'config', '--get', 'core.sparseCheckout']).stdout.trim() !== 'true' && leanScript(w.dir) != null;
+        return git(w.dir, ['config', '--get', 'core.sparseCheckout']).stdout.trim() !== 'true' && !hung.has(w.dir) && leanScript(w.dir) != null;
       });
     },
     thin: (d) => { const text = leanScript(d); if (text == null) return false; const r = sh('/bin/bash', ['-s'], { input: text, cwd: d, timeout: 600000, env: { ...process.env, COPILOT_WORKSPACE_PATH: d, COPILOT_ROOT_PATH: '' } }); return r.status === 0; },
@@ -831,20 +872,26 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     changedAt: (d, days = 1) => {
       const rec = sh('/usr/bin/find', [d, '-mtime', `-${days}`, '-print', '-quit'], { timeout: 300000 });
       if (rec.error || rec.stdout.trim()) return Date.now();
-      const c = Number(sh('/usr/bin/git', ['-C', d, 'log', '-1', '--format=%ct']).stdout.trim());
+      const c = Number(git(d, ['log', '-1', '--format=%ct']).stdout.trim());
+      if (hung.has(d)) return Date.now();
       try { return Math.max(fs.statSync(d).mtimeMs, (Number.isFinite(c) ? c : 0) * 1000); } catch { return Date.now(); }
     },
-    git: (d) => ({
-      dirty: sh('/usr/bin/git', ['-C', d, 'status', '--porcelain']).stdout.trim() !== '',
-      unpushed: sh('/usr/bin/git', ['-C', d, 'log', '--oneline', 'HEAD', '--not', '--remotes']).stdout.trim() !== '',
-    }),
+    git: (d) => {
+      const dirty = git(d, ['status', '--porcelain']).stdout.trim() !== '';
+      const unpushed = git(d, ['log', '--oneline', 'HEAD', '--not', '--remotes']).stdout.trim() !== '';
+      return { dirty, unpushed, unknown: hung.has(d) };
+    },
+    // A git that did not answer throws: a bundle made from half an answer would be a lost-work bundle.
     rescue: (d) => {
       const dir = path.join(rescueRoot, `${path.relative(home, d).replace(/\//g, '__')}-${Date.now()}`);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'diff.patch'), sh('/usr/bin/git', ['-C', d, 'diff', 'HEAD']).stdout);
-      const files = sh('/usr/bin/git', ['-C', d, 'ls-files', '--others', '--exclude-standard', '-z']).stdout;
+      const patch = git(d, ['diff', 'HEAD']).stdout;
+      const files = git(d, ['ls-files', '--others', '--exclude-standard', '-z']).stdout;
+      if (hung.has(d)) throw new Error('git did not answer');
+      fs.writeFileSync(path.join(dir, 'diff.patch'), patch);
       if (files) sh('/usr/bin/tar', ['-cf', path.join(dir, 'untracked.tar'), '-C', d, '--null', '-T', '-'], { input: files });
-      sh('/usr/bin/git', ['-C', d, 'bundle', 'create', path.join(dir, 'repo.bundle'), 'HEAD', '--not', '--remotes']);
+      git(d, ['bundle', 'create', path.join(dir, 'repo.bundle'), 'HEAD', '--not', '--remotes']);
+      if (hung.has(d)) throw new Error('git did not answer');
       return dir;
     },
     // Linked worktrees of every repository agents work in (~/code/*, the desk, the CIT workspace), never the primary clone,
@@ -857,7 +904,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
         try { if (!fs.statSync(path.join(c, '.git')).isDirectory()) continue; } catch { continue; }
         const common = gitCommon(c); if (!common || seen.has(common)) continue;
         seen.add(common);
-        const r = sh('/usr/bin/git', ['-C', c, 'worktree', 'list', '--porcelain'], { timeout: 60000 });
+        const r = git(c, ['worktree', 'list', '--porcelain']);
         const blocks = String(r.stdout).split('\n\n').filter(Boolean);
         for (const b of blocks.slice(1)) {
           const m = b.match(/^worktree (.+)$/m);
@@ -867,11 +914,15 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       }
       return out;
     },
-    dirty: (d) => { const r = sh('/usr/bin/git', ['-C', d, 'status', '--porcelain'], { timeout: 120000 }); return r.status !== 0 || r.stdout.trim() !== ''; },
+    dirty: (d) => { const r = git(d, ['status', '--porcelain']); return r.status !== 0 || r.stdout.trim() !== ''; },
+    // True when a git on this worktree timed out this pass: what it said is unknown, so the worktree is kept.
+    gitHung: (d) => hung.has(d),
+    // Every git that timed out this pass, for the pass row.
+    gitTimeouts: () => gitTimeouts.slice(),
     // How the worktree's work landed, or null: HEAD is in origin's default branch; every path the branch changed has the
     // default branch's content (a squash merge); or its branch's PR, at this very commit, is merged (the one call that costs quota).
     landedWhy: (d) => {
-      const g = (...a) => sh('/usr/bin/git', ['-C', d, ...a], { timeout: 120000 });
+      const g = (...a) => git(d, a);
       const common = gitCommon(d); if (!common) return null;
       if (!fetched.has(common)) { fetched.add(common); g('fetch', '--prune', '--quiet', 'origin'); }
       let ref = g('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD').stdout.trim();
@@ -898,15 +949,16 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     // `git worktree remove` without --force: git itself refuses a worktree with changes or a lock.
     removeLanded: (d) => {
       const common = gitCommon(d); if (!common) return false;
-      sh('/usr/bin/git', ['--git-dir', common, 'worktree', 'remove', d], { timeout: 600000 });
-      sh('/usr/bin/git', ['--git-dir', common, 'worktree', 'prune']);
+      gitAt(common, ['worktree', 'remove', d], { timeout: removeMs });
+      gitAt(common, ['worktree', 'prune']);
       return !fs.existsSync(d);
     },
     removeWorktree: (d) => {
-      const common = sh('/usr/bin/git', ['-C', d, 'rev-parse', '--git-common-dir']).stdout.trim();
+      const common = git(d, ['rev-parse', '--git-common-dir']).stdout.trim();
+      if (!common) return;
       const g = path.resolve(d, common);
-      sh('/usr/bin/git', ['--git-dir', g, 'worktree', 'remove', '--force', d]);
-      sh('/usr/bin/git', ['--git-dir', g, 'worktree', 'prune']);
+      gitAt(g, ['worktree', 'remove', '--force', d], { timeout: removeMs });
+      gitAt(g, ['worktree', 'prune']);
     },
     histories: () => {
       if (!liveIds) return [];
@@ -932,7 +984,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     writeState: (o) => writeJson(path.join(state, 'disk-prune.json'), o),
     // Reads the app's database once per pass; the pass calls this first.
     load: async () => {
-      openList = undefined; protectedPaths = null; ghLookups = 0; fetched.clear(); commons.clear();
+      openList = undefined; protectedPaths = null; ghLookups = 0; fetched.clear(); commons.clear(); hung.clear(); gitTimeouts.length = 0;
       const w = await q('SELECT w.path AS p FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL');
       const s = await q('SELECT id FROM sessions WHERE archived_at IS NULL');
       const wr = await q('SELECT w.path AS p, k.session_id AS sid FROM worktrees w JOIN workspaces k ON k.worktree_id = w.id WHERE k.archived_at IS NULL AND k.session_id IS NOT NULL');
