@@ -863,3 +863,61 @@ test('a slow decline fires the breakdown once free space is 3 GiB below the last
   g.log.state = { lastFree: 695 * GIB, breakdown: { at: NOW - 10 * MIN, free: 700 * GIB, roots: {} }, retentionAt: NOW };
   await pass({}, g.d);
 });
+
+test('a git that never answers keeps its worktree ("git did not answer"), the pass finishes, and every git runs without fsmonitor', async () => {
+  const fsx = await import('node:fs'), osx = await import('node:os'), pathx = await import('node:path'), { execFileSync } = await import('node:child_process');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const root = fsx.realpathSync(fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'dp-hang-')));
+  const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-C', cwd, ...a], { encoding: 'utf8' });
+  const origin = pathx.join(root, 'origin.git'), main = pathx.join(root, 'code', 'repo');
+  fsx.mkdirSync(pathx.join(root, 'code'));
+  git(root, 'init', '-q', '--bare', '-b', 'main', origin); git(root, 'clone', '-q', origin, main);
+  fsx.writeFileSync(pathx.join(main, 'a'), '1'); git(main, 'add', 'a'); git(main, 'commit', '-qm', 'a'); git(main, 'push', '-q', 'origin', 'main');
+  git(main, 'remote', 'set-head', 'origin', 'main');
+  const wts = pathx.join(root, 'code', 'repo-worktrees');
+  fsx.mkdirSync(wts);
+  const hang = pathx.join(wts, 'hang'), fine = pathx.join(wts, 'fine');
+  for (const w of [hang, fine]) git(main, 'worktree', 'add', '-q', '-b', pathx.basename(w), w);
+  const past = new Date(Date.now() - 3 * DAY);
+  for (const w of [hang, fine]) { for (const f of fsx.readdirSync(w, { withFileTypes: true })) fsx.utimesSync(pathx.join(w, f.name), past, past); fsx.utimesSync(w, past, past); }
+  // A git that hangs on the one worktree, like one blocked on a dead fsmonitor daemon; every call is logged.
+  const calls = pathx.join(root, 'calls.log'), wrapper = pathx.join(root, 'git');
+  fsx.writeFileSync(wrapper, `#!/bin/sh\necho "$*" >> '${calls}'\ncase "$*" in *"/hang "*|*"/hang") exec sleep 30;; esac\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+  const rows = [];
+  const real = realDiskDeps({ home: root, state: pathx.join(root, 'st'), gitPath: wrapper, gitMs: { read: 500 }, extraProtected: [main] });
+  const deps = {
+    ...real, usage: () => ({ pct: 90, free: 10 * GIB, size: 926 * GIB }), tell: async () => {}, readState: () => ({}), writeState: () => {}, passLog: (r) => rows.push(r),
+    sessionRows: async () => null, open: () => false, appWorktrees: () => new Set(),
+    caches: () => [], scratch: () => [], junk: () => [], clones: () => [], worktrees: () => [], histories: () => [], leakedClones: () => [], ensureLeanHooks: () => {},
+    ghCacheOld: () => [], size: () => 0,
+  };
+  const t0 = Date.now();
+  const r = await pass({ force: true }, deps, () => {});
+  const took = Date.now() - t0;
+  assert.ok(took < 15000, `the pass must not wait for the hung git (${took} ms)`);
+  assert.ok(fsx.existsSync(hang), 'the worktree whose git did not answer is kept');
+  assert.ok(!fsx.existsSync(fine), 'the other worktree is still judged and removed');
+  assert.equal(r.keeps['landed worktrees']['git did not answer'], 1);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].gitTimeouts.length, 1);
+  assert.match(rows[0].gitTimeouts[0].cmd, /git -C .*\/hang status --porcelain/);
+  const lines = fsx.readFileSync(calls, 'utf8').split('\n').filter(Boolean);
+  assert.ok(lines.length > 3);
+  for (const l of lines) assert.ok(l.startsWith('-c core.fsmonitor=false '), `fsmonitor must be off: ${l}`);
+  fsx.rmSync(root, { recursive: true, force: true });
+});
+
+test('a pass that would run for ever ends at its deadline, and its row says where', async () => {
+  const landed = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`/c/w${i}`, {}]));
+  const { d } = fake({ freeGib: 60, landed });
+  const rows = [];
+  d.passLog = (r) => rows.push(r);
+  d.removeLanded = (x) => { const end = Date.now() + 25; while (Date.now() < end); return true; };
+  const log = [];
+  const r = await pass({ force: true, t: { passDeadline: 150 } }, d, (l) => log.push(l));
+  assert.ok(r.reclaimed.landed.length > 0 && r.reclaimed.landed.length < 40, `some finished, not all: ${r.reclaimed.landed.length}`);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].deadline.after, 'loose work');
+  assert.equal(rows[0].landed.length, r.reclaimed.landed.length, 'what it finished is recorded');
+  assert.ok(log.some((l) => /pass deadline/.test(l)));
+});
