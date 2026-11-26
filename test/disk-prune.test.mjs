@@ -841,3 +841,25 @@ test('free space falling more than 3 GiB since the last pass measures where the 
   await pass({}, h.d);
   assert.equal(rows[1].breakdown, undefined);
 });
+
+test('a slow decline fires the breakdown once free space is 3 GiB below the last breakdown; a rise resets nothing; spacing holds', async () => {
+  const MIN = 60000, bd = { top: [{ name: 'code', size: 100 * GIB, grew: 2 * GIB }] };
+  const f = fake({ freeGib: 700, breakdown: bd }); let calls = 0; const inner = f.d.breakdown; f.d.breakdown = (p) => { calls++; return inner(p); };
+  f.log.state = { lastFree: 700 * GIB, breakdown: { at: NOW - 3 * 3600000, free: 700 * GIB, roots: {} }, retentionAt: NOW };
+  const rows = []; f.d.passLog = (r) => rows.push(r); f.d.dataUsed = () => 759 * GIB;
+  const run = async (freeGib) => { f.d.usage = () => ({ pct: 50, free: freeGib * GIB, size: 1000 * GIB }); await pass({}, f.d); };
+  for (const g of [699.4, 698.8, 698.2, 697.6]) { await run(g); assert.equal(calls, 0, `${g} GiB is within 3 GiB of the last breakdown`); }
+  await run(699); await run(697.2); // a rise in between resets nothing
+  assert.equal(calls, 0, '2.8 GiB below');
+  await run(696.9);
+  assert.equal(calls, 1, 'the pass that crosses 3 GiB below the last breakdown fires');
+  const row = rows.at(-1);
+  assert.equal(row.breakdown.fallSince.free, 700 * GIB);
+  assert.equal(row.dataUsed, 759 * GIB);
+  assert.equal(f.log.state.breakdown.free, 696.9 * GIB, 'the baseline moves to this breakdown');
+  await run(693); assert.equal(calls, 1, 'a new 3 GiB fall counts from the new baseline');
+  // within 30 minutes of the last breakdown the spacing holds
+  const g = fake({ freeGib: 690, breakdown: bd }); g.d.breakdown = () => { throw new Error('too soon'); };
+  g.log.state = { lastFree: 695 * GIB, breakdown: { at: NOW - 10 * MIN, free: 700 * GIB, roots: {} }, retentionAt: NOW };
+  await pass({}, g.d);
+});

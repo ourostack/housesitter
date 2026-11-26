@@ -150,22 +150,26 @@ export async function pass(opts, deps, say = () => {}) {
   let rows;
   const getRows = async () => (rows === undefined ? (rows = (await deps.sessionRows?.()) || null) : rows);
   // Where the bytes are: daily, and at once (at most every `triggerEvery`) when free space fell by more than `dropBytes` since the
-  // previous pass, so a drop names its owner. A cheap pass stays cheap: only the fall pays for the walk.
+  // last breakdown (a slow decline counts, a swing does not reset it), so a drop names its owner. A cheap pass stays cheap: only the fall pays for the walk.
   let bdInfo = null, bdRan = false;
   const runBreakdown = (why, extra = {}) => timed(why === 'daily' ? 'breakdown' : 'breakdown (free space fell)', async () => {
     const b = deps.breakdown?.(st0.breakdown); if (!b) return;
-    stamp({ breakdown: { ...b, at: now } }); bdRan = true;
-    bdInfo = { why, since: st0.breakdown?.at ? iso(st0.breakdown.at) : null, ...extra, grew: (b.top || []).filter((x) => Math.abs(x.grew || 0) > t.growRow).map((x) => ({ name: x.name, size: x.size, grew: x.grew })) };
+    stamp({ breakdown: { ...b, at: now, free: before.free } }); bdRan = true;
+    bdInfo = { why, since: st0.breakdown?.at ? iso(st0.breakdown.at) : null, ...extra, ...(fallBase ? { fallSince: { at: iso(fallBase.at), free: fallBase.free } } : {}), grew: (b.top || []).filter((x) => Math.abs(x.grew || 0) > t.growRow).map((x) => ({ name: x.name, size: x.size, grew: x.grew })) };
   });
-  const dropped = typeof st0.lastFree === 'number' ? st0.lastFree - before.free : 0;
+  // The fall is measured from the free space recorded at the last breakdown; a state from before that was recorded falls back to the previous pass.
+  const fallBase = typeof st0.breakdown?.free === 'number' ? { at: st0.breakdown.at, free: st0.breakdown.free } : null;
+  const dropped = fallBase ? fallBase.free - before.free : typeof st0.lastFree === 'number' ? st0.lastFree - before.free : 0;
   const needBreakdown = !opts.dry_run && dropped > t.dropBytes && !(now - (st0.breakdown?.at || 0) < t.triggerEvery);
   if (!opts.dry_run) stamp({ lastFree: before.free });
+  let dataUsed = null;
+  try { dataUsed = deps.dataUsed?.() ?? null; } catch { /* a courtesy */ }
   const retentionDue = Boolean(opts.force || opts.dry_run) || !(now - (st0.retentionAt || 0) < t.retainEvery);
   const record = async (res) => {
     if (needBreakdown && !bdRan) await runBreakdown('free space fell', { drop: dropped });
     const ms = Date.now() - started;
     // What the pass removed and why it kept the rest, so the log alone answers "what went, and what stayed".
-    const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, after: res.after ?? (res.reclaimed?.landedBytes ? deps.usage().free : before.free), ms, phases,
+    const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, ...(dataUsed == null ? {} : { dataUsed }), after: res.after ?? (res.reclaimed?.landedBytes ? deps.usage().free : before.free), ms, phases,
       reclaimedBytes: res.reclaimedBytes ?? 0, ...(bdInfo ? { breakdown: bdInfo } : {}), landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), keeps: res.keeps || {} };
     if (!opts.dry_run) { try { deps.passLog?.(row); } catch { /* a courtesy */ } }
     out(`pass took ${(ms / 1000).toFixed(1)} s (${res.action}${retentionDue ? ', with retention' : ', free-space check only'}${Object.keys(phases).length ? `: ${Object.entries(phases).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`).join(', ')}` : ''})`);
@@ -542,6 +546,8 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
   return {
     now: () => Date.now(),
     usage: () => { const r = sh('/bin/df', ['-k', volume]).stdout.trim().split('\n').pop().split(/\s+/); const size = Number(r[1]), used = Number(r[2]), free = Number(r[3]) * 1024; return { pct: Math.round((used / size) * 100), free, size: size * 1024 }; },
+    // The Data volume's own consumed bytes: free space swings with builds that write and delete, this does not.
+    dataUsed: () => Number(sh('/bin/df', ['-k', '/System/Volumes/Data']).stdout.trim().split('\n').pop().split(/\s+/)[2]) * 1024,
     caches: () => CACHES.map((c) => path.join(home, c)).filter((p) => fs.existsSync(p)),
     size: sizeOf,
     // rmSync can lose a race with a process still writing into the folder (ENOTEMPTY); retry, then let rm have a go.
