@@ -3,6 +3,9 @@
 // the floor. Below it, it reclaims safe classes in this order and stops once free space is back at floor + 5% of the volume:
 //   1. caches that rebuild themselves (npm, pip, Go, pnpm, Playwright, gh), except one a running process has open or one a
 //      pass removed that came back within a week: that one is in use, and removing it again only buys a download
+//   1a. lane build output: the Rust `target` folders (`**/engine/target`, or any `target` holding CACHEDIR.TAG) inside a lane checkout
+//      (`/Volumes/LaneWork/work`, `~/.lane/work`, `~/.lane/work.noindex`) whose run is stopped (its `~/.lane/runs/<run>/copilot.pid` is
+//      missing or names a dead process) and that no process has open; source, `.git`, worktrees and run state stay (see `reclaimLane`)
 //   1b. landed worktrees: a linked git worktree anywhere (under ~/code, the desk, the CIT workspace) whose work is already on
 //      the default branch on origin, with nothing uncommitted or untracked, nothing changed for 24 hours, no live process
 //      or app session in it (one hour, not 24, in the margin above the floor: `nearQuiet`); removed with `git worktree remove` and logged with its size (see `landedWorktreeKeep`)
@@ -182,8 +185,8 @@ export async function pass(opts, deps, say = () => {}) {
     const ms = Date.now() - started;
     // What the pass removed and why it kept the rest, so the log alone answers "what went, and what stayed".
     const gt = deps.gitTimeouts?.() || [];
-    const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, ...(dataUsed == null ? {} : { dataUsed }), after: res.after ?? (res.reclaimed?.landedBytes ? deps.usage().free : before.free), ms, phases,
-      reclaimedBytes: res.reclaimedBytes ?? 0, ...(bdInfo ? { breakdown: bdInfo } : {}), landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), keeps: res.keeps || {},
+    const row = { at: iso(now), action: res.action, retention: retentionDue, free: before.free, ...(dataUsed == null ? {} : { dataUsed }), after: res.after ?? (res.reclaimed?.landedBytes || res.reclaimed?.laneBytes ? deps.usage().free : before.free), ms, phases,
+      reclaimedBytes: res.reclaimedBytes ?? 0, ...(bdInfo ? { breakdown: bdInfo } : {}), landed: (res.reclaimed?.landed || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), laneBuild: (res.reclaimed?.laneBuild || []).map((x) => ({ dir: x.dir, bytes: x.bytes })), laneBytes: res.reclaimed?.laneBytes ?? 0, keeps: res.keeps || {},
       ...(gt.length ? { gitTimeouts: gt } : {}), ...(deadlineAt ? { deadline: { seconds: Math.round(t.passDeadline / 1000), after: deadlineAt } } : {}) };
     if (!opts.dry_run) { try { deps.passLog?.(row); } catch { /* a courtesy */ } }
     out(`pass took ${(ms / 1000).toFixed(1)} s (${res.action}${retentionDue ? ', with retention' : ', free-space check only'}${Object.keys(phases).length ? `: ${Object.entries(phases).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`).join(', ')}` : ''})`);
@@ -197,7 +200,7 @@ export async function pass(opts, deps, say = () => {}) {
   }
   const keeps = {};
   const keep = (cat, why) => { const c = (keeps[cat] ||= {}); c[why] = (c[why] || 0) + 1; };
-  const reclaimed = { landed: [], landedBytes: 0, caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
+  const reclaimed = { landed: [], landedBytes: 0, caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, laneBuild: [], laneBytes: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   // Retention for agent storage, at most hourly: it walks session folders. Only files/ of an archived session nobody has touched
   // for 72 hours: events.jsonl(.gz), session.db, images/ and checkpoints stay, so the app can still restore the session.
   const retained = { archivedFiles: 0, ghCache: 0 };
@@ -286,14 +289,32 @@ export async function pass(opts, deps, say = () => {}) {
     if (reclaimed.landed.length) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(reclaimed.landedBytes)} from ${reclaimed.landed.length} landed worktree(s)`);
   };
 
+  // Rust build output in the lane pool's checkouts: a stopped run's `target` is rebuilt by its next build, and a live run (its
+  // copilot.pid names a live process) or one a process has open is never touched. Only the `target` folder goes.
+  const reclaimLane = () => {
+    const openRun = new Map();
+    for (const x of deps.laneBuildOutputs?.() || []) {
+      if (done()) break;
+      if (x.alive) { keep('lane build output', 'its run is live (copilot.pid)'); continue; }
+      if (!openRun.has(x.runDir)) openRun.set(x.runDir, deps.open(x.runDir));
+      if (openRun.get(x.runDir)) { keep('lane build output', 'a process has the run open'); continue; }
+      const n = deps.size(x.dir);
+      if (!opts.dry_run) { try { deps.remove(x.dir); } catch (e) { out(`could not remove lane build output ${x.dir}: ${e.message}`); continue; } }
+      reclaimed.laneBuild.push({ dir: x.dir, bytes: n }); reclaimed.laneBytes += n;
+      out(`${opts.dry_run ? 'would remove' : 'removed'} lane build output ${x.dir}: ${gib(n)}`);
+    }
+    if (reclaimed.laneBuild.length) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(reclaimed.laneBytes)} from ${reclaimed.laneBuild.length} lane build output folder(s)`);
+  };
+
   reclaimed.retention = retained;
   if (before.free >= floor && !opts.force) {
     if (retentionDue) await retain();
     // Within `margin` above the floor the next busy hour can cross it, and lane worktrees add about 1 GiB each: release landed ones after an hour.
     if (retentionDue && before.free < floor + margin) {
-      await timed('landed worktrees (near floor)', async () => { await deps.load?.(); reclaimLanded(t.nearQuiet, '1 hour'); });
+      await timed('lane build output (near floor)', async () => { await deps.load?.(); reclaimLane(); });
+      await timed('landed worktrees (near floor)', async () => { reclaimLanded(t.nearQuiet, '1 hour'); });
     }
-    return await record({ action: 'ok', free: before.free, reclaimed, reclaimedBytes: retainedTotal + reclaimed.landedBytes, keeps });
+    return await record({ action: 'ok', free: before.free, reclaimed, reclaimedBytes: retainedTotal + reclaimed.landedBytes + reclaimed.laneBytes, keeps });
   }
   if (!opts.force && !opts.dry_run && before.free >= t.urgent && now < (st0.restUntil || 0)) {
     if (retentionDue) await retain();
@@ -346,6 +367,9 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   lap('loose work');
+  reclaimLane();
+
+  lap('lane build output');
   // Linked worktrees agents made with `git worktree add` whose work is already on origin's default branch (a squash merge
   // included). Cheap rules first; a kept one is only counted, since a Mac holds hundreds.
   reclaimLanded(t.quiet, '24 hours');
@@ -461,8 +485,8 @@ export async function pass(opts, deps, say = () => {}) {
   lap('unlisted histories');
   if (retentionDue) await retain();
   const after = deps.usage();
-  const total = retainedTotal + reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.landedBytes + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
-  const res = { action: reclaimed.worktrees.length || reclaimed.landed.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, reclaimedBytes: total - reclaimed.thinned.length + reclaimed.thin, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
+  const total = retainedTotal + reclaimed.scratch + reclaimed.browserClones + reclaimed.junked + reclaimed.landedBytes + reclaimed.laneBytes + reclaimed.idled + reclaimed.cloned + reclaimed.caches + reclaimed.histories + reclaimed.sessions + reclaimed.thinned.length;
+  const res = { action: reclaimed.worktrees.length || reclaimed.landed.length || reclaimed.laneBuild.length || total ? 'pruned' : 'nothing-safe', before: before.free, after: after.free, reclaimed, reclaimedBytes: total - reclaimed.thinned.length + reclaimed.thin, keptCaches: kept, keeps, dry_run: Boolean(opts.dry_run) };
   if (opts.dry_run) return await record(res);
   const st = deps.readState() || {};
   const growers = top(st.breakdown);
@@ -470,7 +494,7 @@ export async function pass(opts, deps, say = () => {}) {
   if (why) out(`kept, by reason (${why})`);
   const tail = `${why ? ` Kept, by reason: ${why}.` : ''}${kept.length ? ` Kept ${kept.length} cache(s) in use (${kept.map((c) => path.basename(c)).join(', ')}): removing them again would only make the next run download them.` : ''}${growers ? ` Biggest sources: ${growers}.` : ''}`;
   if (res.action === 'pruned') {
-    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.landed.length} landed worktree(s) (${gib(reclaimed.landedBytes)}), ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
+    await deps.tell(`Free space was ${gib(before.free)}, below the ${gib(floor)} floor; disk prune reclaimed caches ${gib(reclaimed.caches)}, ${reclaimed.thinned.length} idle worktree(s) made sparse (${gib(reclaimed.thin)}), files of unlisted sessions ${gib(reclaimed.sessions)}, ${reclaimed.laneBuild.length} lane build output folder(s) (${gib(reclaimed.laneBytes)}), ${reclaimed.landed.length} landed worktree(s) (${gib(reclaimed.landedBytes)}), ${reclaimed.worktrees.length} unused worktree(s), ${reclaimed.clones.length} rebuildable clone(s) (${gib(reclaimed.cloned)}), scratch in the temp folders ${gib(reclaimed.scratch)}, ${reclaimed.junk.length} loose folder(s) of old work under ~/code (${gib(reclaimed.junked)}), regenerable files of ${reclaimed.idle.length} idle session(s) (${gib(reclaimed.idled)}), compressed histories ${gib(reclaimed.histories)}; now ${gib(after.free)} free.${reclaimed.rescued.length ? ` Unsaved work from ${reclaimed.rescued.length} worktree(s) was saved under ~/AgentBundles/disk-rescue.` : ''}${after.free < floor ? ' Still under the floor: what is left is not safe to prune without Ari.' : ''}${tail}`);
     st.toldAt = now;
   } else if (now - (st.toldAt || 0) >= t.nag || kept.length) {
     await deps.tell(`Free space is ${gib(after.free)}, under the ${gib(floor)} floor, and disk prune found nothing safe to remove. What is left belongs to Ari or to live sessions.${tail}`);
@@ -491,6 +515,47 @@ export async function pass(opts, deps, say = () => {}) {
 const sh = (cmd, args, o = {}) => spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 1 << 26, ...o });
 const nice = (cmd, args, o) => sh('/usr/bin/nice', ['-n', '10', cmd, ...args], o);
 const sizeOf = (p) => { const r = sh('/usr/bin/du', ['-sk', p], { timeout: 300000 }); return (Number(String(r.stdout).split(/\s+/)[0]) || 0) * 1024; };
+
+// Run folders of the lane pool: each holds one run's checkouts, and `<laneHome>/runs/<run>/copilot.pid` names its live process.
+// A pid file that is missing or names a dead process is a stopped run; one that cannot be read as a pid counts as live.
+export function pidAlive(file) {
+  let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch { return false; }
+  const pid = Number.parseInt(txt.trim(), 10);
+  if (!(pid > 0)) return true;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+// Rust build output inside a run's checkouts (including nested ones such as test/.tmp-lane-*-worktree): a `target` folder that is
+// `engine/target` or holds CACHEDIR.TAG. Never descends into `.git`, `node_modules`, symlinks or the folders it returns.
+export function laneBuildOutputsIn(runDir, maxDepth = 8) {
+  const found = [];
+  const walk = (dir, depth) => {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.isSymbolicLink() || e.name === '.git' || e.name === 'node_modules') continue;
+      const p = path.join(dir, e.name);
+      if (e.name === 'target') { if (path.basename(dir) === 'engine' || fs.existsSync(path.join(p, 'CACHEDIR.TAG'))) found.push(p); continue; }
+      if (depth < maxDepth) walk(p, depth + 1);
+    }
+  };
+  walk(runDir, 1);
+  return found;
+}
+
+// The other APFS volumes of the container that holds the Data volume, beyond Data and VM, that are mounted: [{ name, used }].
+// `apfs` is `diskutil apfs list -plist` as JSON; `mounted` is the set of mounted device identifiers (disk3s7).
+export function siblingVolumes(apfs, mounted) {
+  const out = [];
+  for (const c of apfs?.Containers || []) {
+    const vols = c.Volumes || [];
+    if (!vols.some((v) => (v.Roles || []).includes('Data'))) continue;
+    for (const v of vols) {
+      if ((v.Roles || []).some((r) => r === 'Data' || r === 'VM') || !mounted.has(v.DeviceIdentifier)) continue;
+      if (v.Name && Number.isFinite(v.CapacityInUse)) out.push({ name: v.Name, used: v.CapacityInUse });
+    }
+  }
+  return out;
+}
 
 // A listed session is a candidate for losing regenerable files only when nothing runs it and no automation will wake it.
 export const mayThinSession = (id, { live, running, automated }) => live.has(id) && !running.has(id) && !automated.has(id);
@@ -523,7 +588,7 @@ export function drainTargets(home) {
   return ids;
 }
 
-export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {} } = {}) {
+export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
   const wt = path.join(copilotHome, 'copilot-worktrees');
@@ -588,6 +653,15 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     } catch { /* none */ }
     protectedPaths = [...new Set(protectedPaths)];
   };
+  // Mounted APFS volumes beside Data and VM in the same container, so a volume that grows is named in the breakdown.
+  const siblingsNow = () => {
+    try {
+      const list = sh('/usr/sbin/diskutil', ['apfs', 'list', '-plist']);
+      const json = sh('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], { input: list.stdout });
+      const mounted = new Set([...String(sh('/sbin/mount').stdout).matchAll(/^\/dev\/(\S+) on /gm)].map((m) => m[1]));
+      return siblingVolumes(JSON.parse(json.stdout), mounted);
+    } catch { return []; }
+  };
   return {
     now: () => Date.now(),
     usage: () => { const r = sh('/bin/df', ['-k', volume]).stdout.trim().split('\n').pop().split(/\s+/); const size = Number(r[1]), used = Number(r[2]), free = Number(r[3]) * 1024; return { pct: Math.round((used / size) * 100), free, size: size * 1024 }; },
@@ -602,6 +676,20 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
         if (r.status !== 0 && fs.existsSync(p)) throw e;
       }
     },
+    // Build output of every lane checkout, with whether its run is live (see `pidAlive`).
+    laneBuildOutputs: () => {
+      const out = [];
+      for (const root of laneRoots) {
+        let runs; try { runs = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+        for (const r of runs) {
+          if (!r.isDirectory()) continue;
+          const runDir = path.join(root, r.name), alive = pidAlive(path.join(laneHome, 'runs', r.name, 'copilot.pid'));
+          for (const dir of laneBuildOutputsIn(runDir)) out.push({ run: r.name, runDir, dir, alive });
+        }
+      }
+      return out;
+    },
+    volumes: siblingsNow,
     // Without the app's database nothing is known to be unused, so nothing is removed.
     appWorktrees: () => appPaths || new Set(),
     liveSessions: () => liveIds || new Set(),
@@ -859,6 +947,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       if (m) sizes['swap used'] = Math.round(Number(m[1]) * (m[2] === 'G' ? GIB : 1048576));
       const vm = Number(String(sh('/bin/df', ['-k', '/System/Volumes/VM']).stdout).trim().split('\n').pop().split(/\s+/)[2]);
       if (Number.isFinite(vm)) sizes['swap VM volume'] = vm * 1024;
+      for (const v of siblingsNow()) sizes[`volume ${v.name}`] = v.used;
       const prevSes = prev?.sessionSizes || {};
       const list = [...Object.entries(sizes).map(([k, v]) => ({ name: k, size: v, grew: prev?.roots && k in prev.roots ? v - prev.roots[k] : 0 })), ...Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ name: `session ${k.slice(0, 8)}`, size: v, grew: prev ? v - (prevSes[k] || 0) : 0 }))];
       const sessionSizes = Object.fromEntries(Object.entries(ses).sort((a, b) => b[1] - a[1]).slice(0, 50));
