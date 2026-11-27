@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { sessionIndex } from '../src/session-index.mjs';
-import { realDiskDeps, CACHES, DP, floorOf, marginOf, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
+import { realDiskDeps, realOpenFresh, CACHES, DP, floorOf, marginOf, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
 
 const DAY = 24 * 3600000, GIB = 1073741824;
 const NOW = Date.parse('2026-11-16T12:00:00Z');
@@ -1101,4 +1101,28 @@ test('safeMode fails closed when no fresh lsof is available, and gzipLog never o
     assert.ok(fs.existsSync(f));
     fs.rmSync(h, { recursive: true });
   });
+});
+
+test('safeMode leaves gh cache alone; realOpenFresh fails closed; gzipLog keeps a log that changed during the open scan', async () => {
+  const { d, log } = fake({ ghOld: [{ path: '/h/.cache/gh/00/x', size: GIB }] });
+  await pass({ force: true, t: { safeMode: true } }, d);
+  assert.ok(!log.cache.includes('/h/.cache/gh/00/x'));
+  assert.equal(realOpenFresh('/definitely/not/there'), false, 'a gone path is not open');
+  const h = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-race-'));
+  const f = path.join(h, 'a.log'); fs.writeFileSync(f, 'data\n'.repeat(100));
+  let calls = 0;
+  const rd = realDiskDeps({ home: h, openFresh: () => { if (++calls === 2) fs.appendFileSync(f, 'late write\n'); return false; } });
+  assert.throws(() => rd.gzipLog(f), /changed while compressing/);
+  assert.ok(fs.existsSync(f) && !fs.existsSync(`${f}.gz`) && fs.readdirSync(h).length === 1, 'log kept, no gz, no temp left');
+  assert.match(fs.readFileSync(f, 'utf8'), /late write/);
+  const rd2 = realDiskDeps({ home: h, openFresh: () => true });
+  assert.throws(() => rd2.gzipLog(f), /open/);
+  assert.ok(fs.existsSync(f));
+  fs.rmSync(h, { recursive: true });
+});
+
+test('realOpenFresh counts a path it cannot stat (permission denied) as open', { skip: process.getuid?.() === 0 }, () => {
+  const h = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-perm-'));
+  fs.writeFileSync(path.join(h, 'a.log'), 'x'); fs.chmodSync(h, 0o000);
+  try { assert.equal(realOpenFresh(path.join(h, 'a.log')), true); } finally { fs.chmodSync(h, 0o755); fs.rmSync(h, { recursive: true }); }
 });

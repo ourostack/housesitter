@@ -232,7 +232,8 @@ export async function pass(opts, deps, say = () => {}) {
       }
     });
     await timed('gh cache', async () => {
-      for (const e of deps.ghCacheOld?.(now - t.ghCacheMaxAge) || []) {
+      // Off in safe mode: thousands of tiny entries cannot each get a fresh open check.
+      for (const e of t.safeMode ? [] : deps.ghCacheOld?.(now - t.ghCacheMaxAge) || []) {
         if (!opts.dry_run) { try { deps.remove(e.path); } catch (er) { out(`could not remove gh cache entry ${e.path}: ${er.message}`); continue; } }
         retained.ghCache += e.size;
       }
@@ -618,10 +619,11 @@ export function drainTargets(home) {
 
 // A fresh lsof for one path (a folder includes what is under it). Only "found nothing" (status 1, no output) means closed; any other result counts as open.
 export function realOpenFresh(p) {
-  let isDir = false; try { isDir = fs.statSync(p).isDirectory(); } catch { return false; }
+  let isDir;
+  try { isDir = fs.statSync(p).isDirectory(); } catch (e) { return e.code !== 'ENOENT'; }
   const r = spawnSync('/usr/sbin/lsof', ['-nP', '-w', '-F', 'p', ...(isDir ? ['+D', p] : ['--', p])], { encoding: 'utf8', timeout: 120000 });
   if (r.error || r.status === null) return true;
-  return !(r.status === 1 && !r.stdout.trim());
+  return !(r.status === 1 && !r.stdout.trim() && !String(r.stderr || '').trim());
 }
 export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, keepIgnored = false, openFresh = realOpenFresh, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
   const base = realDeps({ copilotHome, state });
@@ -948,19 +950,27 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     },
     // Gzip a log next to itself, check the copy reads back byte for byte, keep mode and mtime, then drop the original. Returns bytes saved.
     gzipLog: (f) => {
-      const st = fs.statSync(f), data = fs.readFileSync(f), gz = `${f}.gz`, tmp = `${f}.gz.${process.pid}.tmp`;
+      const same = (x, y) => x.ino === y.ino && x.size === y.size && x.mtimeMs === y.mtimeMs && x.ctimeMs === y.ctimeMs;
+      const gz = `${f}.gz`, tmp = `${f}.gz.${process.pid}.tmp`;
+      if (openFresh(f)) throw new Error('a process has it open');
+      const st = fs.statSync(f), data = fs.readFileSync(f);
       if (!st.isFile() || data.length !== st.size) throw new Error('it changed while reading');
       if (fs.existsSync(gz)) throw new Error('a .gz already exists');
-      const z = zlib.gzipSync(data);
-      fs.writeFileSync(tmp, z, { mode: st.mode & 0o777, flag: 'wx' });
+      fs.writeFileSync(tmp, zlib.gzipSync(data), { mode: st.mode & 0o777, flag: 'wx' });
+      let linked = false;
       try {
         if (!zlib.gunzipSync(fs.readFileSync(tmp)).equals(data)) throw new Error('the compressed copy did not read back identically');
         fs.utimesSync(tmp, st.atime, st.mtime);
-        const now = fs.statSync(f);
-        if (now.ino !== st.ino || now.size !== st.size || now.mtimeMs !== st.mtimeMs) throw new Error('it changed while compressing');
+        // The open check comes first and the source is re-read after it: a writer that finished during the scan shows as a changed file.
         if (openFresh(f)) throw new Error('a process has it open');
-        fs.linkSync(tmp, gz); // fails if a .gz appeared meanwhile: nothing is overwritten
-      } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+        if (!same(st, fs.statSync(f))) throw new Error('it changed while compressing');
+        fs.linkSync(tmp, gz); linked = true; // fails if a .gz appeared meanwhile: nothing is overwritten
+        if (!same(st, fs.statSync(f))) throw new Error('it changed while installing the copy');
+      } catch (e) {
+        if (linked) { try { fs.unlinkSync(gz); } catch { /* gone */ } }
+        try { fs.unlinkSync(tmp); } catch { /* gone */ }
+        throw e;
+      }
       fs.unlinkSync(tmp);
       fs.unlinkSync(f);
       return Math.max(0, st.blocks * 512 - fs.statSync(gz).blocks * 512);
