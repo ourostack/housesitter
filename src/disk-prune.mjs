@@ -37,6 +37,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { archive, compressHistory, deps as shepherdDeps } from '@ouro.bot/shepherd';
 import { realDeps, snapshot, stateDir } from './copilot-app.mjs';
@@ -48,6 +49,8 @@ export const DP = {
   // Free space below which a pass starts reclaiming is a share of the volume (the old backlog bar: keep it under 80% full),
   // not a fixed 500 GiB: on a 926 GiB disk that bar can never be met, so every pass was under it and cleared caches.
   floorPct: 0.2,
+  safeMode: false, // a host's `disk_prune.safe_mode` limits a pass to regenerable caches, compressed histories and logs, and verified landed worktrees
+  agencyLogQuiet: 24 * 3600000, // a closed Agency .log is gzipped in place only after this long untouched
   keepUnsaved: false, // a host's `disk_prune.keep_unsaved` keeps a worktree with unsaved work instead of saving it under ~/AgentBundles
   marginPct: 0.05, // it stops once free space is floor + this share
   floorFallback: 500 * 1073741824, // used only when the volume's size is unknown
@@ -93,6 +96,8 @@ export const marginOf = (t, size) => t.margin ?? (size ? Math.round(size * t.mar
 
 // Ignored entries a build puts back (any depth): never counted as unsaved work.
 const REBUILDABLE = /(^|\/)(node_modules|target|dist|build|out|coverage|\.next|\.nuxt|\.turbo|\.parcel-cache|\.gradle|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.tox|\.cache|\.DS_Store|[^/]*\.pyc)$/;
+// Never reclaimed in safe mode, wherever it is met (worktree copies included).
+export const HELD = /(^|\/)(AgentBundles|vault|tandem-wt\.noindex|vm-extra\.img)(\/|$)/i;
 export const CACHES = ['.npm/_cacache', '.cache/gh', 'Library/Caches/ms-playwright', 'Library/Caches/pip', 'Library/Caches/go-build', 'Library/Caches/pnpm'];
 
 // Why a worktree may not be removed now, or null when it may. `w`: { dir, linked, usedByApp, open, changedAt, protectedBy }.
@@ -206,13 +211,13 @@ export async function pass(opts, deps, say = () => {}) {
   const reclaimed = { landed: [], landedBytes: 0, caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, laneBuild: [], laneBytes: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   // Retention for agent storage, at most hourly: it walks session folders. Only files/ of an archived session nobody has touched
   // for 72 hours: events.jsonl(.gz), session.db, images/ and checkpoints stay, so the app can still restore the session.
-  const retained = { archivedFiles: 0, ghCache: 0 };
+  const retained = { archivedFiles: 0, ghCache: 0, agencyLogs: 0 };
   let retainedTotal = 0;
   const retain = async () => {
     if (!opts.dry_run) await timed('lean hooks', async () => { try { deps.ensureLeanHooks?.(); } catch { /* a courtesy; the pass goes on */ } });
     const rows = await timed('session rows', getRows);
     await timed('archived files/', async () => {
-      for (const id of rows?.archived || []) {
+      for (const id of t.safeMode ? [] : rows?.archived || []) {
         if (late()) break;
         if (rows.live.has(id)) continue;
         const s = deps.archivedScratch?.(id);
@@ -231,8 +236,20 @@ export async function pass(opts, deps, say = () => {}) {
       }
     });
     if (retained.ghCache) out(`${opts.dry_run ? 'would remove' : 'removed'} gh cache entries older than 24 h: ${gib(retained.ghCache)}`);
-    retainedTotal = retained.archivedFiles + retained.ghCache;
-    if (retainedTotal) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(retainedTotal)} of agent storage (archived files/ ${gib(retained.archivedFiles)}, gh cache ${gib(retained.ghCache)})`);
+    // Closed Agency logs: gzipped in place (CRC-checked, mode and mtime kept), never deleted. Only *.log one level down, quiet for a day and not open.
+    await timed('agency logs', async () => {
+      let files = 0;
+      for (const f of deps.agencyLogs?.(now - t.agencyLogQuiet) || []) {
+        if (late()) break;
+        if (deps.open(f.path)) continue;
+        let saved = f.size;
+        if (!opts.dry_run) { try { saved = deps.gzipLog(f.path); } catch (e) { out(`could not compress log ${f.path}: ${e.message}`); continue; } }
+        retained.agencyLogs += saved; files++;
+      }
+      if (files) out(`${opts.dry_run ? 'would compress' : 'compressed'} ${files} closed Agency log(s): ${gib(retained.agencyLogs)}`);
+    });
+    retainedTotal = retained.archivedFiles + retained.ghCache + retained.agencyLogs;
+    if (retainedTotal) out(`${opts.dry_run ? 'would reclaim' : 'reclaimed'} ${gib(retainedTotal)} of agent storage (archived files/ ${gib(retained.archivedFiles)}, gh cache ${gib(retained.ghCache)}, Agency logs ${gib(retained.agencyLogs)})`);
 
     await timed('compress histories', async () => {
       for (const id of rows?.archived || []) {
@@ -276,6 +293,7 @@ export async function pass(opts, deps, say = () => {}) {
     const step = (name, fn) => { const t0 = Date.now(); try { return fn(); } finally { steps[name] = (steps[name] || 0) + (Date.now() - t0); } };
     for (const w of deps.landedWorktrees?.() || []) {
       if (done()) break;
+      if (t.safeMode && HELD.test(w.dir)) { keep('landed worktrees', 'it is under AgentBundles, a vault or a held path'); continue; }
       let landedBy = null;
       const why = landedWorktreeKeep({
         protectedBy: (deps.protectedDirect || deps.protectedBy)?.(w.dir), usedByApp: () => used.has(w.dir), open: () => step('open', () => deps.open(w.dir)),
@@ -347,7 +365,8 @@ export async function pass(opts, deps, say = () => {}) {
 
   lap('caches');
   // Scratch is cheap to judge and often the biggest yield, so it goes before the slow per-worktree stages.
-  for (const dir of deps.scratch?.() || []) {
+  if (t.safeMode) out('safe mode: scratch, loose work, unlisted and idle session files, sparse thinning, unused worktrees and clones are left alone');
+  for (const dir of t.safeMode ? [] : deps.scratch?.() || []) {
     if (done()) break;
     if (deps.protectedBy?.(dir)) { keep('scratch', 'launchd or Housesitter runs from it'); continue; }
     if (deps.open(dir)) { keep('scratch', 'a process has it open'); continue; }
@@ -360,7 +379,7 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   lap('scratch');
-  for (const dir of deps.junk?.() || []) {
+  for (const dir of t.safeMode ? [] : deps.junk?.() || []) {
     if (done()) break;
     const jwhy = deps.protectedBy?.(dir) ? 'launchd or Housesitter runs from it' : used.has(dir) ? 'a session uses it' : deps.open(dir) ? 'a process has it open' : !(now - deps.changedAt(dir, 3) >= t.junkQuiet) ? 'changed within 3 days' : null;
     if (jwhy) { keep('loose', jwhy); continue; }
@@ -379,7 +398,7 @@ export async function pass(opts, deps, say = () => {}) {
 
   lap('landed worktrees');
   const idle = deps.idleSessions?.() || new Set();
-  for (const w of deps.thinnable?.() || []) {
+  for (const w of t.safeMode ? [] : deps.thinnable?.() || []) {
     if (done()) break;
     if (!idle.has(w.session)) { out(`kept ${w.dir} thick: its session is not idle`); continue; }
     if (opts.dry_run) { out(`would thin ${w.dir}`); reclaimed.thinned.push(w.dir); continue; }
@@ -391,7 +410,7 @@ export async function pass(opts, deps, say = () => {}) {
 
   lap('thin');
   const live = deps.liveSessions();
-  for (const sdir of deps.deadSessions?.() || []) {
+  for (const sdir of t.safeMode ? [] : deps.deadSessions?.() || []) {
     if (done()) break;
     const why = whyKeepSession({ live: live.has(sdir.id), open: deps.open(sdir.dir), quietFor: deps.quietFor(sdir.dir) }, t);
     if (why) continue;
@@ -416,7 +435,7 @@ export async function pass(opts, deps, say = () => {}) {
   lap('unlisted sessions');
   // A listed session nobody is running, with no automation, untouched for days: only what a build or a clone gives back.
   // Dependency folders always; a clone only when every branch is on a remote and nothing is uncommitted. History stays.
-  for (const s of deps.idleSessionFiles?.() || []) {
+  for (const s of t.safeMode ? [] : deps.idleSessionFiles?.() || []) {
     if (done()) break;
     if (deps.open(s.dir)) { out(`kept session ${s.id.slice(0, 8)}'s files: a running process has them open`); continue; }
     let n = 0;
@@ -435,7 +454,7 @@ export async function pass(opts, deps, say = () => {}) {
   }
 
   lap('idle sessions');
-  for (const dir of deps.worktrees()) {
+  for (const dir of t.safeMode ? [] : deps.worktrees()) {
     if (done()) break;
     // A session still lists the worktree, but its branch is merged or gone: the work is on the remote, so only the quiet and open rules remain.
     // Never when the session is running, has an automation, coordinates others or is a drain target: its wake would find no folder.
@@ -463,7 +482,7 @@ export async function pass(opts, deps, say = () => {}) {
 
 
   lap('worktrees');
-  for (const dir of deps.clones?.() || []) {
+  for (const dir of t.safeMode ? [] : deps.clones?.() || []) {
     if (done()) break;
     const why = deps.protectedBy?.(dir) ? 'launchd or Housesitter runs from it' : used.has(dir) ? 'an unarchived app session uses it' : deps.open(dir) ? 'a running process has it open' : !(now - deps.changedAt(dir) >= t.cloneQuiet) ? 'something in it changed in the last 3 days' : deps.clone(dir).unique ? 'it holds work that is not on a remote' : null;
     if (why) { keep('clones', why); out(`kept clone ${dir}: ${why}`); continue; }
@@ -899,6 +918,34 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       try { return fs.statSync(files).isDirectory() ? { id, dir, files } : null; } catch { return null; }
     },
     // Files in gh's HTTP response cache (~/.cache/gh/<00..ff>/...) last changed before `cutoff` (ms since the epoch).
+    // *.log files one level under ~/.local/agency/logs/<session>/ last changed before `cutoff`.
+    agencyLogs: (cutoff) => {
+      const root = path.join(home, '.local', 'agency', 'logs'), out = [];
+      let dirs; try { dirs = fs.readdirSync(root, { withFileTypes: true }); } catch { return out; }
+      for (const d of dirs) {
+        if (!d.isDirectory()) continue;
+        let ents; try { ents = fs.readdirSync(path.join(root, d.name), { withFileTypes: true }); } catch { continue; }
+        for (const e of ents) {
+          if (!e.isFile() || !e.name.endsWith('.log')) continue;
+          const f = path.join(root, d.name, e.name);
+          try { const st = fs.statSync(f); if (st.mtimeMs < cutoff && st.size > 0) out.push({ path: f, size: st.blocks * 512 }); } catch { /* gone */ }
+        }
+      }
+      return out;
+    },
+    // Gzip a log next to itself, check the copy reads back byte for byte, keep mode and mtime, then drop the original. Returns bytes saved.
+    gzipLog: (f) => {
+      const st = fs.statSync(f), data = fs.readFileSync(f), gz = `${f}.gz`, tmp = `${f}.gz.tmp`;
+      if (fs.existsSync(gz)) throw new Error('a .gz already exists');
+      const z = zlib.gzipSync(data);
+      fs.writeFileSync(tmp, z, { mode: st.mode & 0o777 });
+      if (!zlib.gunzipSync(fs.readFileSync(tmp)).equals(data)) { fs.unlinkSync(tmp); throw new Error('the compressed copy did not read back identically'); }
+      fs.utimesSync(tmp, st.atime, st.mtime);
+      fs.renameSync(tmp, gz);
+      if (fs.statSync(f).mtimeMs !== st.mtimeMs) { fs.unlinkSync(gz); throw new Error('it changed while compressing'); }
+      fs.unlinkSync(f);
+      return Math.max(0, st.blocks * 512 - fs.statSync(gz).blocks * 512);
+    },
     ghCacheOld: (cutoff) => {
       const root = path.join(home, '.cache', 'gh'), out = [];
       const walk = (d) => {
