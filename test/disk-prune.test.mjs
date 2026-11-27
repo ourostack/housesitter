@@ -1045,7 +1045,7 @@ test('keepIgnored counts ignored data (.env) as unsaved work, but not rebuildabl
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('safeMode leaves session files, scratch, loose work, unused worktrees and clones alone, and never removes a held landed worktree', async () => {
+test('safeMode leaves session files, scratch, loose work, worktrees, clones, lane output and hooks alone; a failed lsof means open', async () => {
   const landed = { '/w/r/ok': {}, '/h/AgentBundles/x': {}, '/h/vault/y': {}, '/w/r/vault/z': {} };
   const { d, log } = fake({
     wts: { '/w/r/clean': { ageMs: 2 * DAY } }, landed, archived: ['a1'], scratchOf: { a1: { dir: '/s/a1', files: '/s/a1/files' } }, quiet: { '/s/a1': 9 * DAY },
@@ -1056,9 +1056,13 @@ test('safeMode leaves session files, scratch, loose work, unused worktrees and c
   d.agencyLogs = () => [{ path: '/l/a/x.log', size: GIB }, { path: '/l/a/open.log', size: GIB }];
   d.gzipLog = (f) => { log.gz.push(f); return GIB; };
   d.junk = () => ['/code/junk'];
+  d.openFresh = (x) => x === '/l/a/open.log';
+  d.laneBuildOutputs = () => [{ dir: '/lane/engine/target', runDir: '/lane', alive: false }];
+  d.ensureLeanHooks = () => { throw new Error('hooks must not be written'); };
   await pass({ force: true, t: { safeMode: true } }, d);
   assert.deepEqual(log.removed, []);
-  assert.deepEqual(log.landed, ['/w/r/ok']);
+  assert.equal(log.landed, undefined, 'landed worktrees are off in safe mode');
+  assert.ok(!log.cache.includes('/lane/engine/target'));
   assert.deepEqual(log.rescued, []);
   assert.deepEqual(log.cache, []);
   assert.deepEqual(log.gz.filter((x) => x.startsWith('/')), ['/l/a/x.log'], 'a closed log is gzipped; an open one is not');
@@ -1080,4 +1084,21 @@ test('real agencyLogs/gzipLog: only closed *.log one level down are gzipped, byt
   assert.equal(fs.statSync(`${f}.gz`).mode & 0o777, 0o640);
   assert.ok(fs.existsSync(path.join(sd, 'keep.txt')) && fs.existsSync(path.join(sd, 'new.log')));
   fs.rmSync(h, { recursive: true });
+});
+
+test('safeMode fails closed when no fresh lsof is available, and gzipLog never overwrites a .gz or a log that changed', () => {
+  const { d, log } = fake({});
+  d.agencyLogs = () => [{ path: '/l/a/x.log', size: GIB }];
+  d.gzipLog = (f) => { log.gz.push(f); return GIB; };
+  return pass({ force: true, t: { safeMode: true } }, d).then(() => {
+    assert.deepEqual(log.gz, [], 'no openFresh: counted as open');
+    const h = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-gz-'));
+    const f = path.join(h, 'a.log'); fs.writeFileSync(f, 'data\n'.repeat(100));
+    fs.writeFileSync(`${f}.gz`, 'other');
+    const rd = realDiskDeps({ home: h });
+    assert.throws(() => rd.gzipLog(f), /already exists/);
+    assert.equal(fs.readFileSync(`${f}.gz`, 'utf8'), 'other');
+    assert.ok(fs.existsSync(f));
+    fs.rmSync(h, { recursive: true });
+  });
 });
