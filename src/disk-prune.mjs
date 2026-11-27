@@ -623,7 +623,7 @@ export function realOpenFresh(p) {
   if (r.error || r.status === null) return true;
   return !(r.status === 1 && !r.stdout.trim());
 }
-export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, keepIgnored = false, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
+export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, keepIgnored = false, openFresh = realOpenFresh, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
   const wt = path.join(copilotHome, 'copilot-worktrees');
@@ -958,14 +958,14 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
         fs.utimesSync(tmp, st.atime, st.mtime);
         const now = fs.statSync(f);
         if (now.ino !== st.ino || now.size !== st.size || now.mtimeMs !== st.mtimeMs) throw new Error('it changed while compressing');
-        if (realOpenFresh(f)) throw new Error('a process has it open');
+        if (openFresh(f)) throw new Error('a process has it open');
         fs.linkSync(tmp, gz); // fails if a .gz appeared meanwhile: nothing is overwritten
       } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
       fs.unlinkSync(tmp);
       fs.unlinkSync(f);
       return Math.max(0, st.blocks * 512 - fs.statSync(gz).blocks * 512);
     },
-    openFresh: realOpenFresh,
+    openFresh,
     ghCacheOld: (cutoff) => {
       const root = path.join(home, '.cache', 'gh'), out = [];
       const walk = (d) => {

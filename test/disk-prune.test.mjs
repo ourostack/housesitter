@@ -1075,7 +1075,7 @@ test('real agencyLogs/gzipLog: only closed *.log one level down are gzipped, byt
   const old = new Date(NOW - 3 * DAY), f = path.join(sd, 'a.log');
   fs.writeFileSync(f, 'line\n'.repeat(5000), { mode: 0o640 }); fs.utimesSync(f, old, old);
   fs.writeFileSync(path.join(sd, 'new.log'), 'x'); fs.writeFileSync(path.join(sd, 'keep.txt'), 'y'); fs.utimesSync(path.join(sd, 'keep.txt'), old, old);
-  const d = realDiskDeps({ home: h });
+  const d = realDiskDeps({ home: h, openFresh: () => false });
   const found = d.agencyLogs(NOW - DAY);
   assert.deepEqual(found.map((x) => x.path), [f]);
   d.gzipLog(f);
@@ -1095,7 +1095,7 @@ test('safeMode fails closed when no fresh lsof is available, and gzipLog never o
     const h = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-gz-'));
     const f = path.join(h, 'a.log'); fs.writeFileSync(f, 'data\n'.repeat(100));
     fs.writeFileSync(`${f}.gz`, 'other');
-    const rd = realDiskDeps({ home: h });
+    const rd = realDiskDeps({ home: h, openFresh: () => false });
     assert.throws(() => rd.gzipLog(f), /already exists/);
     assert.equal(fs.readFileSync(`${f}.gz`, 'utf8'), 'other');
     assert.ok(fs.existsSync(f));
