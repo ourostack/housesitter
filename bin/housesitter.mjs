@@ -314,8 +314,12 @@ async function restartCopilot() {
     return 0;
   }
   if (opt['disk-prune']) {
-    const floor = opt['floor-gib'] == null ? undefined : Number(opt['floor-gib']) * 1073741824;
-    const r = await Disk.pass({ ...opts, force: !!opt.now, t: floor == null ? undefined : { floor } }, Disk.realDiskDeps({ copilotHome: opt['copilot-home'] || undefined, state: stateDir }), (l) => { if (!json && !opt.quiet) console.log(l); });
+    // This host's own floor and rescue rule live in its config (`disk_prune`); --floor-gib wins, and a host without either keeps the defaults.
+    const hostDisk = loadConfig().disk_prune || {};
+    const floorGib = opt['floor-gib'] ?? hostDisk.floor_gib;
+    const floor = floorGib == null ? undefined : Number(floorGib) * 1073741824;
+    const t = { ...(floor == null ? {} : { floor }), ...(hostDisk.keep_unsaved ? { keepUnsaved: true } : {}) };
+    const r = await Disk.pass({ ...opts, force: !!opt.now, t }, Disk.realDiskDeps({ copilotHome: opt['copilot-home'] || undefined, state: stateDir }), (l) => { if (!json && !opt.quiet) console.log(l); });
     if (json) emit(r); else if (!opt.quiet) say(`disk prune: ${r.action}${r.after != null ? ` (${Disk.gib(r.before)} -> ${Disk.gib(r.after)} free)` : ` (${Disk.gib(r.free)} free)`}${r.reclaimedBytes ? `; reclaimed ${Disk.gib(r.reclaimedBytes)}` : ''}`);
     return 0;
   }

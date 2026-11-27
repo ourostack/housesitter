@@ -101,6 +101,23 @@ test('unsaved work is saved to a bundle before its worktree is removed', async (
   assert.match(log.told[0], /Unsaved work from 1 worktree\(s\) was saved under ~\/AgentBundles\/disk-rescue/);
 });
 
+test('keepUnsaved keeps a dirty or unpushed worktree and writes no bundle, while a clean one still goes', async () => {
+  const wts = { '/w/r/dirty': { ageMs: 2 * DAY, dirty: true }, '/w/r/ahead': { ageMs: 2 * DAY, unpushed: true }, '/w/r/clean': { ageMs: 2 * DAY } };
+  const { d, log } = fake({ wts });
+  await pass({ t: { keepUnsaved: true } }, d);
+  assert.deepEqual(log.rescued, []);
+  assert.deepEqual(log.removed, ['/w/r/clean']);
+});
+
+test('a cache that refuses to go (ENOTEMPTY) is said and the pass carries on', async () => {
+  const { d, log } = fake({ caches: ['/h/.npm/_cacache', '/h/.cache/gh'], wts: { '/w/r/clean': { ageMs: 2 * DAY } } });
+  const lines = [];
+  d.remove = (p) => { if (p.includes('_cacache')) throw new Error('ENOTEMPTY'); log.cache.push(p); };
+  await pass({}, d, (l) => lines.push(l));
+  assert.ok(lines.some((l) => /could not remove cache .*_cacache: ENOTEMPTY/.test(l)));
+  assert.deepEqual(log.removed, ['/w/r/clean']);
+});
+
 test('above the floor nothing is touched; it stops at floor + margin; a dry run changes nothing', async () => {
   const wts = { '/w/r/a': { ageMs: 2 * DAY }, '/w/r/b': { ageMs: 2 * DAY }, '/w/r/c': { ageMs: 2 * DAY } };
   let f = fake({ freeGib: 600, wts }); assert.equal((await pass({}, f.d)).action, 'ok'); assert.equal(f.log.removed.length, 0);
