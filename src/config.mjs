@@ -21,7 +21,7 @@
 //   "peer": { "user": "…", "standing_auth": { "by": "Ari", "on": "2026-11-20", "ops": ["root-key", "seal-secret"], "quote": "…" } }  // housesitter peer authorize
 //
 // Top level, beside "macs": "disk_prune": { "floor_gib": 300, "keep_unsaved": true }, this host's disk-prune floor and whether a worktree with
-// unsaved work is kept instead of saved under ~/AgentBundles (other hosts keep the defaults); and "launchd_disabled": ["<label>", …], the launchd jobs `housesitter hold` keeps off.
+// unsaved work (ignored files such as .env or notes included) is kept instead of saved under ~/AgentBundles (other hosts keep the defaults); and "launchd_disabled": ["<label>", …], the launchd jobs `housesitter hold` keeps off.
 //
 // Secret references (never the secret itself): keychain:<service>[/<account>] (macOS Keychain), env:<NAME>,
 // file:<path>. A secret is read when it's needed and passed on in a request body or on stdin, never in argv.

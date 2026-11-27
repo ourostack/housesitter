@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { sessionIndex } from '../src/session-index.mjs';
@@ -1029,4 +1030,17 @@ test('breakdown volumes: the other mounted volumes of the Data container are nam
     { Volumes: [{ DeviceIdentifier: 'disk5s1', Name: 'Other', Roles: [], CapacityInUse: 9e9 }] }] };
   const got = siblingVolumes(apfs, new Set(['disk3s1', 'disk3s5', 'disk3s3', 'disk3s7', 'disk5s1']));
   assert.deepEqual(got, [{ name: 'Macintosh HD', used: 15e9 }, { name: 'LaneWork', used: 187.8e9 }]);
+});
+
+test('keepIgnored counts ignored data (.env) as unsaved work, but not rebuildable output', async () => {
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-ign-'));
+  const sh = (...a) => execFileSync('/usr/bin/git', a, { cwd: root, stdio: 'pipe' });
+  sh('init', '-q'); fs.writeFileSync(path.join(root, '.gitignore'), '.env\nnode_modules/\n'); sh('add', '.'); sh('-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'x');
+  fs.mkdirSync(path.join(root, 'node_modules')); fs.writeFileSync(path.join(root, 'node_modules', 'a'), '1');
+  assert.equal(realDiskDeps({ home: root, keepIgnored: true }).dirty(root), false);
+  fs.writeFileSync(path.join(root, '.env'), 'SECRET=1');
+  assert.equal(realDiskDeps({ home: root, keepIgnored: true }).dirty(root), true);
+  assert.equal(realDiskDeps({ home: root }).dirty(root), false);
+  fs.rmSync(root, { recursive: true, force: true });
 });

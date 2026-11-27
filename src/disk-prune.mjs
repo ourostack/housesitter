@@ -91,6 +91,8 @@ export const COSTLY_CACHES = ['Library/Caches/ms-playwright'];
 export const floorOf = (t, size) => t.floor ?? (size ? Math.round(size * t.floorPct) : t.floorFallback);
 export const marginOf = (t, size) => t.margin ?? (size ? Math.round(size * t.marginPct) : t.marginFallback);
 
+// Ignored entries a build puts back (any depth): never counted as unsaved work.
+const REBUILDABLE = /(^|\/)(node_modules|target|dist|build|out|coverage|\.next|\.nuxt|\.turbo|\.parcel-cache|\.gradle|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.tox|\.cache|\.DS_Store|[^/]*\.pyc)$/;
 export const CACHES = ['.npm/_cacache', '.cache/gh', 'Library/Caches/ms-playwright', 'Library/Caches/pip', 'Library/Caches/go-build', 'Library/Caches/pnpm'];
 
 // Why a worktree may not be removed now, or null when it may. `w`: { dir, linked, usedByApp, open, changedAt, protectedBy }.
@@ -589,12 +591,20 @@ export function drainTargets(home) {
   return ids;
 }
 
-export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
+export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, keepIgnored = false, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
   const wt = path.join(copilotHome, 'copilot-worktrees');
   const sessions = path.join(copilotHome, 'session-state');
   const rescueRoot = path.join(home, 'AgentBundles', 'disk-rescue');
+  // `status --porcelain` leaves out ignored files (.env, notes, vault data). With `keepIgnored`, an ignored top-level entry that is not a
+  // known rebuildable output counts as unsaved work, so the worktree is kept.
+  const ignoredData = (d) => {
+    if (!keepIgnored) return false;
+    const r = git(d, ['status', '--porcelain', '--ignored=matching']);
+    if (r.status !== 0) return true;
+    return r.stdout.split('\n').some((l) => l.startsWith('!! ') && !REBUILDABLE.test(l.slice(3).replace(/\/$/, '')));
+  };
   const q = async (sql) => { try { return await base.sql(sql); } catch { return null; } };
   const fetched = new Set();
   let ghLookups = 0;
@@ -972,7 +982,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       try { return Math.max(fs.statSync(d).mtimeMs, (Number.isFinite(c) ? c : 0) * 1000); } catch { return Date.now(); }
     },
     git: (d) => {
-      const dirty = git(d, ['status', '--porcelain']).stdout.trim() !== '';
+      const dirty = git(d, ['status', '--porcelain']).stdout.trim() !== '' || ignoredData(d);
       const unpushed = git(d, ['log', '--oneline', 'HEAD', '--not', '--remotes']).stdout.trim() !== '';
       return { dirty, unpushed, unknown: hung.has(d) };
     },
@@ -1009,7 +1019,7 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
       }
       return out;
     },
-    dirty: (d) => { const r = git(d, ['status', '--porcelain']); return r.status !== 0 || r.stdout.trim() !== ''; },
+    dirty: (d) => { const r = git(d, ['status', '--porcelain']); return r.status !== 0 || r.stdout.trim() !== '' || ignoredData(d); },
     // True when a git on this worktree timed out this pass: what it said is unknown, so the worktree is kept.
     gitHung: (d) => hung.has(d),
     // Every git that timed out this pass, for the pass row.
