@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { which } from './peer-watch.mjs';
+import { loadConfig } from './config.mjs';
 
 export const incidentsDir = (home = os.homedir()) => path.join(home, 'Library', 'Logs', 'housesitter', 'incidents');
 
@@ -89,7 +90,9 @@ ${envs}
 export const agentPath = (label, home = os.homedir()) => path.join(home, 'Library', 'LaunchAgents', `${label}.plist`);
 
 // Write (and, unless dry, load) one agent. Loading replaces a running copy of the same label.
-export async function installAgent({ label, program, env, every, keepAlive, logName, home = os.homedir(), dry = false, launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid() }) {
+export async function installAgent({ label, program, env, every, keepAlive, logName, home = os.homedir(), dry = false, launchctl = (a) => run('/bin/launchctl', a), uid = process.getuid(), held = loadConfig().launchd_disabled }) {
+  // A label in the config's launchd_disabled list is held off: installing must not load it again.
+  if (Array.isArray(held) && held.includes(label)) return { ok: true, held: true, label, plist: agentPath(label, home), skipped: `${label} is in launchd_disabled` };
   const file = agentPath(label, home);
   const log = path.join(home, 'Library', 'Logs', logName);
   const text = agentPlist({ label, program, env, log, every, keepAlive });

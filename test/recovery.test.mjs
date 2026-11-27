@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AGENTS, agentPath, renderRecovery, retireAgents, RETIRED } from '../src/recovery.mjs';
+import { AGENTS, agentPath, installAgent, renderRecovery, retireAgents, RETIRED } from '../src/recovery.mjs';
 
 test('the retired health-watch job is unloaded and its plist removed; nothing else is touched', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-retire-'));
@@ -24,4 +24,10 @@ test('the retired health-watch job is unloaded and its plist removed; nothing el
 test('--status says the six-hour watch is Shepherd\'s and where to see it', () => {
   const text = renderRecovery({ beat_at: null, incidents: [] });
   assert.match(text, /health watch: Shepherd's; `shepherd watch --status`/);
+});
+
+test('installAgent leaves a label in launchd_disabled alone', async () => {
+  const calls = [];
+  const r = await installAgent({ label: 'x.held', program: ['n'], env: {}, every: 60, logName: 'x.log', home: fs.mkdtempSync(path.join(os.tmpdir(), 'hs-held-')), launchctl: async (a) => { calls.push(a); return { code: 0, stderr: '' }; }, held: ['x.held'] });
+  assert.equal(r.held, true); assert.equal(calls.length, 0); assert.equal(fs.existsSync(r.plist), false);
 });
