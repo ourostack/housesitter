@@ -211,10 +211,12 @@ export async function pass(opts, deps, say = () => {}) {
   const reclaimed = { landed: [], landedBytes: 0, caches: 0, thin: 0, thinned: [], worktrees: [], clones: [], cloned: 0, scratch: 0, browserClones: 0, junk: [], junked: 0, laneBuild: [], laneBytes: 0, idle: [], idled: 0, sessions: 0, histories: 0, rescued: [] };
   // Retention for agent storage, at most hourly: it walks session folders. Only files/ of an archived session nobody has touched
   // for 72 hours: events.jsonl(.gz), session.db, images/ and checkpoints stay, so the app can still restore the session.
+  // In safe mode a consumer is looked for again, with a fresh lsof, right before each mutation; an lsof that fails counts as open.
+  const isOpen = (p) => (t.safeMode ? (deps.openFresh ? deps.openFresh(p) : true) : deps.open(p));
   const retained = { archivedFiles: 0, ghCache: 0, agencyLogs: 0 };
   let retainedTotal = 0;
   const retain = async () => {
-    if (!opts.dry_run) await timed('lean hooks', async () => { try { deps.ensureLeanHooks?.(); } catch { /* a courtesy; the pass goes on */ } });
+    if (!opts.dry_run && !t.safeMode) await timed('lean hooks', async () => { try { deps.ensureLeanHooks?.(); } catch { /* a courtesy; the pass goes on */ } });
     const rows = await timed('session rows', getRows);
     await timed('archived files/', async () => {
       for (const id of t.safeMode ? [] : rows?.archived || []) {
@@ -241,7 +243,7 @@ export async function pass(opts, deps, say = () => {}) {
       let files = 0;
       for (const f of deps.agencyLogs?.(now - t.agencyLogQuiet) || []) {
         if (late()) break;
-        if (deps.open(f.path)) continue;
+        if (isOpen(f.path)) continue;
         let saved = f.size;
         if (!opts.dry_run) { try { saved = deps.gzipLog(f.path); } catch (e) { out(`could not compress log ${f.path}: ${e.message}`); continue; } }
         retained.agencyLogs += saved; files++;
@@ -266,7 +268,7 @@ export async function pass(opts, deps, say = () => {}) {
       const leaked = [];
       for (const dir of deps.leakedClones?.() || []) {
         if (now - (deps.mtimeOf?.(dir) ?? deps.changedAt(dir)) < t.leakedCloneQuiet) { keep('browser clones', 'changed within 1 h'); continue; }
-        if (deps.open(dir)) { keep('browser clones', 'a browser has it open'); continue; }
+        if (isOpen(dir)) { keep('browser clones', 'a browser has it open'); continue; }
         const n = deps.size(dir);
         if (!opts.dry_run) { try { deps.remove(dir); } catch (e) { out(`could not remove browser clone ${dir}: ${e.message}`); continue; } }
         leaked.push(dir); reclaimed.browserClones += n;
@@ -286,6 +288,8 @@ export async function pass(opts, deps, say = () => {}) {
   // Linked worktrees agents made with `git worktree add` whose work is already on origin's default branch (a squash merge
   // included). Cheap rules first; a kept one is only counted, since a Mac holds hundreds. Near the floor the idle gate is shorter.
   const reclaimLanded = (quietMs, quietLabel) => {
+    // Off in safe mode: landedWhy() fetches into the shared git metadata of a primary checkout and cannot prove every local commit is on a remote.
+    if (t.safeMode) return;
     const used = deps.appWorktrees();
     reclaimed.landed = []; reclaimed.landedBytes = 0;
     // Where the loop's time goes, by step, so a slow pass says which check was slow (these add to the phase that holds the loop).
@@ -313,6 +317,8 @@ export async function pass(opts, deps, say = () => {}) {
   // Rust build output in the lane pool's checkouts: a stopped run's `target` is rebuilt by its next build, and a live run (its
   // copilot.pid names a live process) or one a process has open is never touched. Only the `target` folder goes.
   const reclaimLane = () => {
+    // Off in safe mode: nothing here proves an engine/target folder is ignored, regenerable output.
+    if (t.safeMode) return;
     const openRun = new Map();
     for (const x of deps.laneBuildOutputs?.() || []) {
       if (done()) break;
@@ -350,7 +356,7 @@ export async function pass(opts, deps, say = () => {}) {
     if (done()) break;
     const n = deps.size(c); if (!n) continue;
     const rec = (deps.readState() || {}).caches?.[c] || {};
-    const why = whyKeepCache({ open: deps.open(c), removedAt: rec.removedAt, costly: COSTLY_CACHES.some((x) => c.endsWith(x)), urgent: before.free < t.urgent }, now, t);
+    const why = whyKeepCache({ open: isOpen(c), removedAt: rec.removedAt, costly: COSTLY_CACHES.some((x) => c.endsWith(x)), urgent: before.free < t.urgent }, now, t);
     if (why) {
       if (!rec.said) { out(`kept cache ${c} (${gib(n)}): ${why}`); kept.push(c); }
       continue;
@@ -365,7 +371,7 @@ export async function pass(opts, deps, say = () => {}) {
 
   lap('caches');
   // Scratch is cheap to judge and often the biggest yield, so it goes before the slow per-worktree stages.
-  if (t.safeMode) out('safe mode: scratch, loose work, unlisted and idle session files, sparse thinning, unused worktrees and clones are left alone');
+  if (t.safeMode) out('safe mode: scratch, loose work, session files, thinning, worktrees, clones and lane build output are left alone');
   for (const dir of t.safeMode ? [] : deps.scratch?.() || []) {
     if (done()) break;
     if (deps.protectedBy?.(dir)) { keep('scratch', 'launchd or Housesitter runs from it'); continue; }
@@ -497,7 +503,7 @@ export async function pass(opts, deps, say = () => {}) {
   const hrows = await getRows();
   for (const h of deps.histories()) {
     if (done()) break;
-    if (!hrows || hrows.known.has(h.id) || hlive.has(h.id) || now - h.mtime < t.quiet || h.size < t.minHistory || deps.open(h.file)) continue;
+    if (!hrows || hrows.known.has(h.id) || hlive.has(h.id) || now - h.mtime < t.quiet || h.size < t.minHistory || isOpen(h.file)) continue;
     const r = await deps.compress(h.id, { dryRun: Boolean(opts.dry_run) });
     if (!r.ok) continue;
     const saved = opts.dry_run ? r.before : r.before - r.after;
@@ -610,7 +616,14 @@ export function drainTargets(home) {
   return ids;
 }
 
-export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, keepIgnored = false, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
+// A fresh lsof for one path (a folder includes what is under it). Only "found nothing" (status 1, no output) means closed; any other result counts as open.
+export function realOpenFresh(p) {
+  let isDir = false; try { isDir = fs.statSync(p).isDirectory(); } catch { return false; }
+  const r = spawnSync('/usr/sbin/lsof', ['-nP', '-w', '-F', 'p', ...(isDir ? ['+D', p] : ['--', p])], { encoding: 'utf8', timeout: 120000 });
+  if (r.error || r.status === null) return true;
+  return !(r.status === 1 && !r.stdout.trim());
+}
+export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home, '.copilot'), state = stateDir(home), volume = '/System/Volumes/Data', extraProtected = [], ghPath = null, gitPath = '/usr/bin/git', gitMs = {}, keepIgnored = false, openFresh = realOpenFresh, laneHome = path.join(home, '.lane'), laneRoots = ['/Volumes/LaneWork/work', path.join(laneHome, 'work'), path.join(laneHome, 'work.noindex')] } = {}) {
   const base = realDeps({ copilotHome, state });
   const shepherd = shepherdDeps({ copilotHome, ledger: path.join(state, 'disk-ledger.jsonl') });
   const wt = path.join(copilotHome, 'copilot-worktrees');
@@ -935,17 +948,24 @@ export function realDiskDeps({ home = os.homedir(), copilotHome = path.join(home
     },
     // Gzip a log next to itself, check the copy reads back byte for byte, keep mode and mtime, then drop the original. Returns bytes saved.
     gzipLog: (f) => {
-      const st = fs.statSync(f), data = fs.readFileSync(f), gz = `${f}.gz`, tmp = `${f}.gz.tmp`;
+      const st = fs.statSync(f), data = fs.readFileSync(f), gz = `${f}.gz`, tmp = `${f}.gz.${process.pid}.tmp`;
+      if (!st.isFile() || data.length !== st.size) throw new Error('it changed while reading');
       if (fs.existsSync(gz)) throw new Error('a .gz already exists');
       const z = zlib.gzipSync(data);
-      fs.writeFileSync(tmp, z, { mode: st.mode & 0o777 });
-      if (!zlib.gunzipSync(fs.readFileSync(tmp)).equals(data)) { fs.unlinkSync(tmp); throw new Error('the compressed copy did not read back identically'); }
-      fs.utimesSync(tmp, st.atime, st.mtime);
-      fs.renameSync(tmp, gz);
-      if (fs.statSync(f).mtimeMs !== st.mtimeMs) { fs.unlinkSync(gz); throw new Error('it changed while compressing'); }
+      fs.writeFileSync(tmp, z, { mode: st.mode & 0o777, flag: 'wx' });
+      try {
+        if (!zlib.gunzipSync(fs.readFileSync(tmp)).equals(data)) throw new Error('the compressed copy did not read back identically');
+        fs.utimesSync(tmp, st.atime, st.mtime);
+        const now = fs.statSync(f);
+        if (now.ino !== st.ino || now.size !== st.size || now.mtimeMs !== st.mtimeMs) throw new Error('it changed while compressing');
+        if (openFresh(f)) throw new Error('a process has it open');
+        fs.linkSync(tmp, gz); // fails if a .gz appeared meanwhile: nothing is overwritten
+      } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+      fs.unlinkSync(tmp);
       fs.unlinkSync(f);
       return Math.max(0, st.blocks * 512 - fs.statSync(gz).blocks * 512);
     },
+    openFresh,
     ghCacheOld: (cutoff) => {
       const root = path.join(home, '.cache', 'gh'), out = [];
       const walk = (d) => {
