@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { sessionIndex } from '../src/session-index.mjs';
-import { CACHES, DP, floorOf, marginOf, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
+import { realDiskDeps, CACHES, DP, floorOf, marginOf, mayThinSession, pass, whyKeep, whyKeepCache, whyKeepSession } from '../src/disk-prune.mjs';
 
 const DAY = 24 * 3600000, GIB = 1073741824;
 const NOW = Date.parse('2026-11-16T12:00:00Z');
@@ -1043,4 +1043,41 @@ test('keepIgnored counts ignored data (.env) as unsaved work, but not rebuildabl
   assert.equal(realDiskDeps({ home: root, keepIgnored: true }).dirty(root), true);
   assert.equal(realDiskDeps({ home: root }).dirty(root), false);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('safeMode leaves session files, scratch, loose work, unused worktrees and clones alone, and never removes a held landed worktree', async () => {
+  const landed = { '/w/r/ok': {}, '/h/AgentBundles/x': {}, '/h/vault/y': {}, '/w/r/vault/z': {} };
+  const { d, log } = fake({
+    wts: { '/w/r/clean': { ageMs: 2 * DAY } }, landed, archived: ['a1'], scratchOf: { a1: { dir: '/s/a1', files: '/s/a1/files' } }, quiet: { '/s/a1': 9 * DAY },
+    scratchList: ['/tmp/x'], dead: [{ id: 'dead', dir: '/s/dead', heavy: ['/s/dead/files'] }], clonesList: ['/c/clone'], idleFiles: [{ id: 'i', dir: '/s/i', files: '/s/i/files' }],
+    regen: { '/s/i/files': ['/s/i/files/node_modules'] }, thin: [{ dir: '/w/t', session: 's' }], idle: ['s'],
+    agency: [{ path: '/l/a/x.log', size: GIB }, { path: '/l/a/open.log', size: GIB }], openFiles: ['/l/a/open.log'],
+  });
+  d.agencyLogs = () => [{ path: '/l/a/x.log', size: GIB }, { path: '/l/a/open.log', size: GIB }];
+  d.gzipLog = (f) => { log.gz.push(f); return GIB; };
+  d.junk = () => ['/code/junk'];
+  await pass({ force: true, t: { safeMode: true } }, d);
+  assert.deepEqual(log.removed, []);
+  assert.deepEqual(log.landed, ['/w/r/ok']);
+  assert.deepEqual(log.rescued, []);
+  assert.deepEqual(log.cache, []);
+  assert.deepEqual(log.gz.filter((x) => x.startsWith('/')), ['/l/a/x.log'], 'a closed log is gzipped; an open one is not');
+  assert.equal(log.thinned, undefined);
+});
+
+test('real agencyLogs/gzipLog: only closed *.log one level down are gzipped, byte for byte, mode and mtime kept, and nothing else is touched', () => {
+  const h = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-logs-'));
+  const sd = path.join(h, '.local/agency/logs/session_1'); fs.mkdirSync(sd, { recursive: true });
+  const old = new Date(NOW - 3 * DAY), f = path.join(sd, 'a.log');
+  fs.writeFileSync(f, 'line\n'.repeat(5000), { mode: 0o640 }); fs.utimesSync(f, old, old);
+  fs.writeFileSync(path.join(sd, 'new.log'), 'x'); fs.writeFileSync(path.join(sd, 'keep.txt'), 'y'); fs.utimesSync(path.join(sd, 'keep.txt'), old, old);
+  const d = realDiskDeps({ home: h });
+  const found = d.agencyLogs(NOW - DAY);
+  assert.deepEqual(found.map((x) => x.path), [f]);
+  d.gzipLog(f);
+  assert.equal(fs.existsSync(f), false);
+  assert.equal(fs.statSync(`${f}.gz`).mtimeMs, old.getTime());
+  assert.equal(fs.statSync(`${f}.gz`).mode & 0o777, 0o640);
+  assert.ok(fs.existsSync(path.join(sd, 'keep.txt')) && fs.existsSync(path.join(sd, 'new.log')));
+  fs.rmSync(h, { recursive: true });
 });
