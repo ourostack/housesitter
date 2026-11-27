@@ -48,6 +48,7 @@ export const DP = {
   // Free space below which a pass starts reclaiming is a share of the volume (the old backlog bar: keep it under 80% full),
   // not a fixed 500 GiB: on a 926 GiB disk that bar can never be met, so every pass was under it and cleared caches.
   floorPct: 0.2,
+  keepUnsaved: false, // a host's `disk_prune.keep_unsaved` keeps a worktree with unsaved work instead of saving it under ~/AgentBundles
   marginPct: 0.05, // it stops once free space is floor + this share
   floorFallback: 500 * 1073741824, // used only when the volume's size is unknown
   marginFallback: 50 * 1073741824,
@@ -400,11 +401,11 @@ export async function pass(opts, deps, say = () => {}) {
         try {
           const g = deps.git(c);
           if (g.unknown) unknown = true;
-          else if (g.dirty || g.unpushed) b = deps.rescue(c);
+          else if (g.dirty || g.unpushed) { if (t.keepUnsaved) unknown = true; else b = deps.rescue(c); }
         } catch { unknown = true; }
         if (b) { reclaimed.rescued.push(b); out(`saved ${c}'s unsaved work to ${b}`); }
       }
-      if (unknown) { keep('unlisted sessions', 'git did not answer'); out(`kept the files of unlisted session ${sdir.id.slice(0, 8)}: git did not answer`); continue; }
+      if (unknown) { keep('unlisted sessions', 'git did not answer or it holds unsaved work'); out(`kept the files of unlisted session ${sdir.id.slice(0, 8)}: git did not answer or it holds unsaved work`); continue; }
       for (const h of sdir.heavy) deps.remove(h);
     }
     reclaimed.sessions += n; out(`dropped the files of unlisted session ${sdir.id.slice(0, 8)}: ${gib(n)}`);
@@ -447,9 +448,9 @@ export async function pass(opts, deps, say = () => {}) {
       let g, b = null;
       try {
         g = deps.git(dir);
-        if (!g.unknown && (g.dirty || g.unpushed)) b = deps.rescue(dir);
+        if (!g.unknown && (g.dirty || g.unpushed)) { if (t.keepUnsaved) g = { unknown: true }; else b = deps.rescue(dir); }
       } catch { g = { unknown: true }; }
-      if (g.unknown) { keep('worktrees', 'git did not answer'); out(`kept ${dir}: git did not answer`); continue; }
+      if (g.unknown) { keep('worktrees', 'git did not answer or it holds unsaved work'); out(`kept ${dir}: git did not answer or it holds unsaved work`); continue; }
       if (b) { reclaimed.rescued.push(b); out(`saved ${dir}'s unsaved work to ${b}`); }
       // A session that still lists the folder is archived first (reversible), so none is left pointing at a missing folder.
       if (used.has(dir)) { const a = await deps.archiveSessions(dir); if (!a.ok) { out(`kept ${dir}: could not archive its session first (${a.error})`); continue; } }
