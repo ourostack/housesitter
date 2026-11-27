@@ -933,7 +933,83 @@ test('a pass that would run for ever ends at its deadline, and its row says wher
   const r = await pass({ force: true, t: { passDeadline: 150 } }, d, (l) => log.push(l));
   assert.ok(r.reclaimed.landed.length > 0 && r.reclaimed.landed.length < 40, `some finished, not all: ${r.reclaimed.landed.length}`);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].deadline.after, 'loose work');
+  assert.equal(rows[0].deadline.after, 'lane build output');
   assert.equal(rows[0].landed.length, r.reclaimed.landed.length, 'what it finished is recorded');
   assert.ok(log.some((l) => /pass deadline/.test(l)));
+});
+
+// A lane pool on real temp folders: three runs, each with a nested checkout and an `engine/target` of Rust build output.
+async function lanePool() {
+  const { spawnSync } = await import('node:child_process');
+  const { realDiskDeps } = await import('../src/disk-prune.mjs');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-lane-'));
+  const work = path.join(home, '.lane', 'work');
+  const put = (rel, body = 'x') => { const p = path.join(work, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); return p; };
+  const deadPid = spawnSync('true').pid;
+  for (const [run, pid] of [['stopped', deadPid], ['live', process.pid], ['nopid', null]]) {
+    put(`${run}/engine/target/debug/big.rlib`); put(`${run}/engine/src/main.rs`, 'fn main(){}'); put(`${run}/.git/HEAD`);
+    put(`${run}/test/.tmp-lane-1-worktree/engine/target/debug/big.rlib`); put(`${run}/test/.tmp-lane-1-worktree/engine/src/lib.rs`);
+    if (pid) { fs.mkdirSync(path.join(home, '.lane', 'runs', run), { recursive: true }); fs.writeFileSync(path.join(home, '.lane', 'runs', run, 'copilot.pid'), `${pid}\n`); }
+  }
+  put('stopped/other/target/keep.txt'); // named like one, no CACHEDIR.TAG, not beside engine
+  put('stopped/tool/target/CACHEDIR.TAG'); put('stopped/tool/target/out.bin');
+  return { home, work, real: realDiskDeps({ home, laneRoots: [work] }) };
+}
+const withLane = (f, real, root) => {
+  f.d.laneBuildOutputs = real.laneBuildOutputs;
+  f.d.remove = (p) => { fs.rmSync(p, { recursive: true, force: true }); f.log.cache.push(p); };
+  return root;
+};
+
+test('lane build output: a stopped run\'s nested engine/target goes near the floor, and is kept when space is plentiful', async () => {
+  const { home, work, real } = await lanePool();
+  const near = fake({ freeGib: 510 }); withLane(near, real);
+  const r = await pass({ t: { margin: 100 * GIB } }, near.d);
+  const rel = near.log.cache.map((p) => path.relative(work, p)).sort();
+  assert.deepEqual(rel, ['nopid/engine/target', 'nopid/test/.tmp-lane-1-worktree/engine/target', 'stopped/engine/target', 'stopped/test/.tmp-lane-1-worktree/engine/target', 'stopped/tool/target']);
+  assert.deepEqual(r.reclaimed.laneBuild.map((x) => path.relative(work, x.dir)).sort(), rel);
+  assert.equal(r.reclaimed.laneBytes, 5 * 2 * GIB);
+  assert.ok(!fs.existsSync(path.join(work, 'stopped/engine/target')));
+  const plenty = fake({ freeGib: 900 }); withLane(plenty, real);
+  const calm = await pass({}, plenty.d);
+  assert.equal(calm.action, 'ok'); assert.deepEqual(plenty.log.cache, []);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('lane build output: a live run (copilot.pid alive) keeps its target; source, .git and a non-build "target" survive', async () => {
+  const { home, work, real } = await lanePool();
+  const f = fake({ freeGib: 400 }); withLane(f, real);
+  const r = await pass({}, f.d);
+  assert.ok(r.reclaimed.laneBuild.length > 0);
+  assert.ok(fs.existsSync(path.join(work, 'live/engine/target/debug/big.rlib')), 'a live run keeps its build output');
+  assert.ok(fs.existsSync(path.join(work, 'live/test/.tmp-lane-1-worktree/engine/target/debug/big.rlib')));
+  for (const run of ['stopped', 'live', 'nopid']) {
+    assert.ok(fs.existsSync(path.join(work, run, 'engine/src/main.rs')), 'source stays');
+    assert.ok(fs.existsSync(path.join(work, run, '.git/HEAD')), '.git stays');
+  }
+  assert.ok(fs.existsSync(path.join(work, 'stopped/other/target/keep.txt')), 'a target with no CACHEDIR.TAG outside engine/ is kept');
+  assert.equal(r.keeps['lane build output']['its run is live (copilot.pid)'], 2);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('lane build output: a run a process has open is kept, and a dry run removes nothing', async () => {
+  const { home, work, real } = await lanePool();
+  const f = fake({ freeGib: 400, openFiles: [path.join(work, 'stopped')] }); withLane(f, real);
+  await pass({}, f.d);
+  assert.ok(fs.existsSync(path.join(work, 'stopped/engine/target')));
+  assert.ok(!fs.existsSync(path.join(work, 'nopid/engine/target')));
+  const g = fake({ freeGib: 400 }); withLane(g, real);
+  const r = await pass({ dry_run: true }, g.d);
+  assert.ok(r.reclaimed.laneBuild.length > 0); assert.deepEqual(g.log.cache, []);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('breakdown volumes: the other mounted volumes of the Data container are named, Data and VM are not', async () => {
+  const { siblingVolumes } = await import('../src/disk-prune.mjs');
+  const apfs = { Containers: [
+    { Volumes: [{ DeviceIdentifier: 'disk3s1', Name: 'Macintosh HD', Roles: ['System'], CapacityInUse: 15e9 }, { DeviceIdentifier: 'disk3s5', Name: 'Data', Roles: ['Data'], CapacityInUse: 500e9 },
+      { DeviceIdentifier: 'disk3s3', Name: 'VM', Roles: ['VM'], CapacityInUse: 2e9 }, { DeviceIdentifier: 'disk3s7', Name: 'LaneWork', Roles: [], CapacityInUse: 187.8e9 }, { DeviceIdentifier: 'disk3s8', Name: 'Unmounted', Roles: [], CapacityInUse: 1e9 }] },
+    { Volumes: [{ DeviceIdentifier: 'disk5s1', Name: 'Other', Roles: [], CapacityInUse: 9e9 }] }] };
+  const got = siblingVolumes(apfs, new Set(['disk3s1', 'disk3s5', 'disk3s3', 'disk3s7', 'disk5s1']));
+  assert.deepEqual(got, [{ name: 'Macintosh HD', used: 15e9 }, { name: 'LaneWork', used: 187.8e9 }]);
 });
